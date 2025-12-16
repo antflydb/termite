@@ -9,10 +9,6 @@ ML inference service for embeddings, chunking, and reranking with two-tier cachi
 ```bash
 # Standalone server
 go run ./cmd/termite run
-
-# Or build and run
-go build -o termite ./cmd/termite
-./termite run
 ```
 
 ## Inference Backends
@@ -22,12 +18,16 @@ go build -o termite ./cmd/termite
 For ~16x faster CPU inference. See `lib/hugot/README.md` for setup.
 
 **Dependencies:**
-- [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) - download for your platform
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) - download for your platform or install with homebrew
 - [Tokenizers](https://github.com/daulet/tokenizers/releases/) - HuggingFace tokenizers bindings
 
 ```bash
-CGO_ENABLED=1 go build -tags="onnx,ORT" -o termite ./cmd/termite
-DYLD_LIBRARY_PATH=/opt/homebrew/opt/onnxruntime/lib ./termite run
+# Assuming you have the libtokenizers.a in your working directory
+# and installed ONNX with homebrew
+CGO_ENABLED=1 \
+DYLD_LIBRARY_PATH=/opt/homebrew/opt/onnxruntime/lib \
+CGO_LDFLAGS="-L$(pwd) -ltokenizers" \
+go run -tags="onnx,ORT" ./pkg/termite/cmd run
 ```
 
 ### XLA Runtime (TPU/GPU)
