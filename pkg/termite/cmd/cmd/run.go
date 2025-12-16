@@ -17,12 +17,11 @@ import (
 	"context"
 	"net/http"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/logging"
 	"github.com/antflydb/antfly-go/libaf/healthserver"
+	"github.com/antflydb/antfly-go/libaf/logging"
 	"github.com/antflydb/termite/pkg/termite"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -43,10 +42,6 @@ func init() {
 	// Run command flags
 	runCmd.Flags().IntVar(&healthPort, "health-port", 4200, "health/metrics server port")
 	mustBindPFlag("health_port", runCmd.Flags().Lookup("health-port"))
-
-	// Also bind to root for backward compatibility (termite --health-port)
-	rootCmd.Flags().IntVar(&healthPort, "health-port", 4200, "health/metrics server port")
-	mustBindPFlag("health_port", rootCmd.Flags().Lookup("health-port"))
 }
 
 func runServer(cmd *cobra.Command, args []string) error {
@@ -66,15 +61,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// Build termite config from viper/env
 	cfg := termite.Config{
-		ApiUrl:            viper.GetString("api_url"),
-		EmbedderModelsDir: viper.GetString("embedder_models_dir"),
-		ChunkerModelsDir:  viper.GetString("chunker_models_dir"),
-		RerankerModelsDir: viper.GetString("reranker_models_dir"),
-		Gpu:               viper.GetString("gpu"),
-		KeepAlive:         viper.GetString("keep_alive"),
-		MaxLoadedModels:   viper.GetInt("max_loaded_models"),
-		MaxMemoryMb:       viper.GetInt("max_memory_mb"),
-		Preload:           viper.GetStringSlice("preload"),
+		ApiUrl:          viper.GetString("api_url"),
+		ModelsDir:       modelsDir, // Set from --models-dir flag (defaults to ~/.termite/models)
+		Gpu:             viper.GetString("gpu"),
+		KeepAlive:       viper.GetString("keep_alive"),
+		MaxLoadedModels: viper.GetInt("max_loaded_models"),
+		MaxMemoryMb:     viper.GetInt("max_memory_mb"),
+		Preload:         viper.GetStringSlice("preload"),
 	}
 
 	// Parse model_strategies from config (map[string]string -> map[string]ConfigModelStrategies)
@@ -83,17 +76,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 		for model, strategy := range rawStrategies {
 			cfg.ModelStrategies[model] = termite.ConfigModelStrategies(strategy)
 		}
-	}
-
-	// Set default model directories if not configured
-	if cfg.EmbedderModelsDir == "" {
-		cfg.EmbedderModelsDir = filepath.Join(modelsDir, "embedders")
-	}
-	if cfg.ChunkerModelsDir == "" {
-		cfg.ChunkerModelsDir = filepath.Join(modelsDir, "chunkers")
-	}
-	if cfg.RerankerModelsDir == "" {
-		cfg.RerankerModelsDir = filepath.Join(modelsDir, "rerankers")
 	}
 
 	// Start health server with ready checker that queries termite's /readyz

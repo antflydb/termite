@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
@@ -121,13 +122,19 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config) {
 		zl.Info("Eager loading mode (all models loaded at startup)")
 	}
 
+	// Compute model subdirectory paths from models_dir
+	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir string
+	if config.ModelsDir != "" {
+		embedderModelsDir = filepath.Join(config.ModelsDir, "embedders")
+		chunkerModelsDir = filepath.Join(config.ModelsDir, "chunkers")
+		rerankerModelsDir = filepath.Join(config.ModelsDir, "rerankers")
+	}
+
 	// Create shared Hugot session for all ONNX models
 	// IMPORTANT: ONNX Runtime backend allows only ONE session at a time.
 	// All models (chunker, reranker, embedder) must share this session.
 	var sharedSession *khugot.Session
-	hasModels := config.ChunkerModelsDir != "" ||
-		config.RerankerModelsDir != "" ||
-		config.EmbedderModelsDir != ""
+	hasModels := config.ModelsDir != ""
 
 	if hasModels {
 		sharedSession, err = hugot.NewSession()
@@ -141,9 +148,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config) {
 	}
 
 	// Initialize chunker with optional model directory support
-	// If chunker_models_dir is set in config, Termite will discover and load models
+	// If models_dir is set in config, Termite will discover and load chunker models
 	// If not set, Termite falls back to semantic-only chunking
-	cachedChunker, err := NewCachedChunker(config.ChunkerModelsDir, sharedSession, zl.Named("chunker"))
+	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sharedSession, zl.Named("chunker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
@@ -158,7 +165,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config) {
 		// Lazy loading mode: models loaded on demand, unloaded after keep_alive
 		lazyEmbedderRegistry, err = NewLazyEmbedderRegistry(
 			LazyEmbedderConfig{
-				ModelsDir:       config.EmbedderModelsDir,
+				ModelsDir:       embedderModelsDir,
 				KeepAlive:       keepAlive,
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
 			},
@@ -202,7 +209,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config) {
 		}
 	} else {
 		// Eager loading mode: all models loaded at startup (legacy behavior)
-		embedderRegistry, err = NewEmbedderRegistry(config.EmbedderModelsDir, sharedSession, zl.Named("embedder"))
+		embedderRegistry, err = NewEmbedderRegistry(embedderModelsDir, sharedSession, zl.Named("embedder"))
 		if err != nil {
 			zl.Fatal("Failed to initialize embedder registry", zap.Error(err))
 		}
@@ -213,9 +220,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config) {
 	}
 
 	// Initialize reranker registry with optional model directory support
-	// If reranker_models_dir is set in config, Termite will discover and load models
+	// If models_dir is set in config, Termite will discover and load reranker models
 	// If not set, reranking endpoint will not be available
-	rerankerRegistry, err := NewRerankerRegistry(config.RerankerModelsDir, sharedSession, zl.Named("reranker"))
+	rerankerRegistry, err := NewRerankerRegistry(rerankerModelsDir, sharedSession, zl.Named("reranker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
 	}

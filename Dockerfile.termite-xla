@@ -107,10 +107,8 @@ ENV PJRT_PLUGIN_LIBRARY_PATH="/usr/local/lib/go-xla"
 # API server configuration (used by termite run command)
 ENV TERMITE_API_URL="http://0.0.0.0:8080"
 
-# Model directories (mounted at runtime)
-ENV TERMITE_EMBEDDER_MODELS_DIR="/models/embedders"
-ENV TERMITE_CHUNKER_MODELS_DIR="/models/chunkers"
-ENV TERMITE_RERANKER_MODELS_DIR="/models/rerankers"
+# Model directory (mounted at runtime, contains embedders/, chunkers/, rerankers/ subdirs)
+ENV TERMITE_MODELS_DIR="/models"
 
 # Create model directories
 RUN mkdir -p /models/embedders /models/chunkers /models/rerankers && \

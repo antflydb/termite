@@ -391,9 +391,9 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 
 	// Build response
 	resp := ChunkResponse{
-		Chunks:    chunks,
-		ModelUsed: internalConfig.Model,
-		CacheHit:  cacheHit,
+		Chunks:   chunks,
+		Model:    internalConfig.Model,
+		CacheHit: cacheHit,
 	}
 
 	// Return response

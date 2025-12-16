@@ -28,7 +28,7 @@ info:
     ## Features
 
     ### Embedding Generation
-    - **Models**: ONNX models auto-discovered from `embedder_models_dir`
+    - **Models**: ONNX models auto-discovered from `{models_dir}/embedders/`
     - **API**: Ollama-compatible `/api/embed` endpoint
     - **Response Formats**: Binary (default), JSON
 
@@ -40,12 +40,12 @@ info:
 
     ### Text Chunking
     - **Models**: Fixed-size chunking (always available) + ONNX models
-    - **Model Discovery**: Auto-discovers models from `chunker_models_dir`
+    - **Model Discovery**: Auto-discovers models from `{models_dir}/chunkers/`
     - **Caching**: 2-minute TTL memory cache
     - **Fallback**: Falls back to fixed chunking if model fails
 
     ### Reranking
-    - **Model Discovery**: Auto-discovers ONNX models from `reranker_models_dir`
+    - **Model Discovery**: Auto-discovers ONNX models from `{models_dir}/rerankers/`
     - **Quantization**: Automatically uses quantized models if available
     - **Input**: Pre-rendered text prompts (client handles field extraction)
 
@@ -124,7 +124,7 @@ components:
       properties:
         model:
           type: string
-          description: Name of the embedder model from embedder_models_dir
+          description: Name of the embedder model from models_dir/embedders/
           example: "bge-small-en-v1.5"
         input:
           oneOf:
@@ -278,7 +278,7 @@ components:
       properties:
         model:
           type: string
-          description: Name of reranking model from `reranker_models_dir`
+          description: Name of reranking model from models_dir/rerankers/
           example: "bge-reranker-v2-m3"
         query:
           type: string
@@ -337,7 +337,7 @@ components:
           type: array
           items:
             type: string
-          description: Available embedding models from embedder_models_dir
+          description: Available embedding models from models_dir/embedders/
           example: ["bge-small-en-v1.5", "bge-small-en-v1.5-i8-qt"]
 
     Config:
@@ -350,21 +350,16 @@ components:
           format: uri
           description: "URL of the Termite embedding/chunking service"
           example: "http://localhost:8080"
-        chunker_models_dir:
+        models_dir:
           type: string
-          description: "Directory containing chunker ONNX models. Termite will discover and load all models in this directory (similar to Ollama). If not set, only built-in 'fixed' chunking is available."
-          default: "./models/chunkers"
-          example: "./models/chunkers"
-        embedder_models_dir:
-          type: string
-          description: "Directory containing embedder ONNX models. Termite will discover and load all models in this directory (similar to Ollama). If not set, embedding endpoint will not be available."
-          default: "./models/embedders"
-          example: "./models/embedders"
-        reranker_models_dir:
-          type: string
-          description: "Directory containing reranker ONNX models. Termite will discover and load all models in this directory (similar to Ollama). If not set, reranking endpoint will not be available."
-          default: "./models/rerankers"
-          example: "./models/rerankers"
+          description: |
+            Base directory containing model subdirectories. Termite auto-discovers models from:
+            - `{models_dir}/embedders/` - Embedding models (ONNX)
+            - `{models_dir}/chunkers/` - Chunking models (ONNX)
+            - `{models_dir}/rerankers/` - Reranking models (ONNX)
+
+            Defaults to ~/.termite/models (set via viper). If not set, only built-in fixed chunking is available.
+          example: "~/.termite/models"
         content_security:
           $ref: "../../../antfly-go/libaf/scraping/openapi.yaml#/components/schemas/ContentSecurityConfig"
           description: "Security settings for downloading content from URLs (e.g., images for CLIP models). Controls allowed hosts, private IP blocking, download limits, and timeouts."
@@ -432,7 +427,7 @@ components:
           description: |
             List of model names to preload at startup (Ollama-compatible).
             These models are loaded immediately when Termite starts, avoiding first-request latency.
-            Model names should match those in embedder_models_dir (e.g., "bge-small-en-v1.5").
+            Model names should match those in models_dir/embedders/ (e.g., "bge-small-en-v1.5").
             Only effective when keep_alive is non-zero (lazy loading mode).
           example: ["bge-small-en-v1.5", "clip-vit-base-patch32"]
         max_memory_mb:
@@ -503,7 +498,7 @@ paths:
 
         ## Models
 
-        Models are auto-discovered from `embedder_models_dir` at startup.
+        Models are auto-discovered from `models_dir/embedders/` at startup.
         Use the `/api/models` endpoint to list available models.
 
         - **Text-only models** (e.g., bge-small-en-v1.5): Accept text strings
@@ -600,7 +595,7 @@ paths:
 
         ### ONNX Models
         - Semantic chunking based on content similarity
-        - Models auto-discovered from `chunker_models_dir`
+        - Models auto-discovered from `models_dir/chunkers/`
         - Falls back to fixed chunking if model fails
 
         ## Caching
@@ -664,7 +659,7 @@ paths:
 
         ## Models
 
-        - Models are auto-discovered from `reranker_models_dir`
+        - Models are auto-discovered from `models_dir/rerankers/`
         - Supports quantized models (`model_quantized.onnx`)
         - Automatically prefers quantized variants if available
 
@@ -730,17 +725,17 @@ paths:
 
         ## Embedders
 
-        - ONNX models from `embedder_models_dir`
-        - Quantized variants have `-i8-qt` suffix
+        - ONNX models from `models_dir/embedders/`
+        - Quantized variants have `-i8` suffix
 
         ## Chunkers
 
         - Always includes "fixed" (built-in)
-        - Plus any ONNX models from `chunker_models_dir`
+        - Plus any ONNX models from `models_dir/chunkers/`
 
         ## Rerankers
 
-        - ONNX models from `reranker_models_dir`
+        - ONNX models from `models_dir/rerankers/`
         - Empty if no models configured
 
         Models are discovered at service startup and cached.
