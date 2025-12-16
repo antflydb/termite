@@ -177,13 +177,17 @@ Config via file (`termite.yaml`), flags, or environment variables (`TERMITE_` pr
 ```yaml
 api_url: "http://localhost:11433"
 models_dir: "./models"
-gpu: "auto"  # auto, on, off
+gpu: "auto"  # auto, tpu, cuda, coreml, off
 keep_alive: "5m"
 max_loaded_models: 3
 log:
   level: info
   style: terminal
 ```
+
+## Community
+
+Join our [Discord](https://discord.gg/zrdjguy84P) for support, discussion, and updates.
 
 ## License
 

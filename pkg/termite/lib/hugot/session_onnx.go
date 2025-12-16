@@ -17,7 +17,6 @@
 package hugot
 
 import (
-	"os"
 	"sync"
 
 	"github.com/knights-analytics/hugot"
@@ -38,9 +37,13 @@ var (
 // Call this before creating any sessions to override auto-detection.
 //
 // Modes:
-//   - "auto": Auto-detect CUDA availability (default)
-//   - "true": Force CUDA on (will fail if unavailable)
-//   - "false": Force CPU only
+//   - "auto": Auto-detect GPU availability (default)
+//   - "tpu": Force TPU
+//   - "cuda": Force CUDA
+//   - "coreml": Force CoreML (macOS)
+//   - "off": CPU only
+//
+// Configure via TERMITE_GPU env var (viper auto-binding) or termite.yaml config.
 func SetGPUMode(mode GPUMode) {
 	gpuModeMu.Lock()
 	defer gpuModeMu.Unlock()
@@ -55,10 +58,9 @@ func GetGPUMode() GPUMode {
 }
 
 // useCUDA reports whether CUDA acceleration should be enabled.
-// Uses auto-detection by default, can be overridden via:
-//   - SetGPUMode() function call
-//   - ANTFLY_USE_CUDA=1 environment variable (legacy)
-//   - ANTFLY_GPU=auto|true|false environment variable
+// Uses auto-detection by default, can be overridden via SetGPUMode().
+//
+// Configure via TERMITE_GPU env var (viper auto-binding) or termite.yaml config.
 //
 // CUDA requires:
 //   - NVIDIA GPU with CUDA support
@@ -69,16 +71,6 @@ func useCUDA() bool {
 		gpuModeMu.RLock()
 		mode := configuredGPUMode
 		gpuModeMu.RUnlock()
-
-		// Check environment variable override
-		if envMode := os.Getenv("ANTFLY_GPU"); envMode != "" {
-			mode = ParseGPUMode(envMode)
-		}
-
-		// Legacy env var support
-		if os.Getenv("ANTFLY_USE_CUDA") == "1" {
-			mode = GPUModeOn
-		}
 
 		cudaEnabled = ShouldUseGPU(mode)
 	})
@@ -93,10 +85,9 @@ func IsCUDAEnabled() bool {
 }
 
 // newSessionImpl creates a Hugot session using ONNX Runtime.
-// By default auto-detects GPU availability. Override via:
-//   - SetGPUMode() before calling NewSession()
-//   - ANTFLY_GPU=auto|true|false environment variable
-//   - ANTFLY_USE_CUDA=1 environment variable (legacy)
+// By default auto-detects GPU availability. Override via SetGPUMode() before calling NewSession().
+//
+// Configure via TERMITE_GPU env var (viper auto-binding) or termite.yaml config.
 //
 // Runtime Requirements:
 //   - Set LD_LIBRARY_PATH before running:

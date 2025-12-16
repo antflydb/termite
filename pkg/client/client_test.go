@@ -78,7 +78,7 @@ func TestClient_Embed_Binary(t *testing.T) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 
-		var req map[string]interface{}
+		var req map[string]any
 		err = json.Unmarshal(body, &req)
 		require.NoError(t, err)
 		assert.Equal(t, "test-model", req["model"])
@@ -120,7 +120,7 @@ func TestClient_Embed_JSON(t *testing.T) {
 		if strings.Contains(acceptHeader, "application/json") {
 			// Return JSON response
 			w.Header().Set("Content-Type", "application/json")
-			resp := map[string]interface{}{
+			resp := map[string]any{
 				"model":      "test-model",
 				"embeddings": expectedEmbeddings,
 			}
@@ -207,15 +207,15 @@ func TestClient_Chunk(t *testing.T) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 
-		var req map[string]interface{}
+		var req map[string]any
 		err = json.Unmarshal(body, &req)
 		require.NoError(t, err)
 		assert.Equal(t, "This is a test document.", req["text"])
 
 		// Return chunks
 		w.Header().Set("Content-Type", "application/json")
-		resp := map[string]interface{}{
-			"chunks": []map[string]interface{}{
+		resp := map[string]any{
+			"chunks": []map[string]any{
 				{"id": 0, "text": "This is a test", "start_char": 0, "end_char": 14},
 				{"id": 1, "text": "test document.", "start_char": 10, "end_char": 24},
 			},
@@ -270,18 +270,18 @@ func TestClient_Rerank(t *testing.T) {
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 
-		var req map[string]interface{}
+		var req map[string]any
 		err = json.Unmarshal(body, &req)
 		require.NoError(t, err)
 		assert.Equal(t, "test-reranker", req["model"])
 		assert.Equal(t, "what is machine learning?", req["query"])
 
-		prompts := req["prompts"].([]interface{})
+		prompts := req["prompts"].([]any)
 		assert.Len(t, prompts, 3)
 
 		// Return scores
 		w.Header().Set("Content-Type", "application/json")
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"model":  "test-reranker",
 			"scores": expectedScores,
 		}
@@ -346,7 +346,7 @@ func TestClient_ListModels(t *testing.T) {
 		assert.Equal(t, "GET", r.Method)
 
 		w.Header().Set("Content-Type", "application/json")
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"embedders": []string{"bge-small-en-v1.5", "clip-vit-base-patch32"},
 			"chunkers":  []string{"fixed", "chonky"},
 			"rerankers": []string{"bge-reranker-v2-m3"},
@@ -399,7 +399,7 @@ func TestClient_GetVersion(t *testing.T) {
 func TestClient_CustomHTTPClient(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		resp := map[string]interface{}{
+		resp := map[string]any{
 			"embedders": []string{},
 			"chunkers":  []string{"fixed"},
 			"rerankers": []string{},
@@ -463,9 +463,9 @@ func TestClient_URLNormalization(t *testing.T) {
 	// Test that trailing slash is handled correctly
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify no double slashes
-		assert.False(t, strings.Contains(r.URL.Path, "//"))
+		assert.NotContains(t, r.URL.Path, "//")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"embedders": []string{},
 			"chunkers":  []string{},
 			"rerankers": []string{},

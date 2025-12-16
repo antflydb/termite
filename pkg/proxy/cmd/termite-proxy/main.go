@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/logging"
 	"github.com/antflydb/antfly-go/libaf/healthserver"
+	"github.com/antflydb/antfly-go/libaf/logging"
 	"github.com/antflydb/termite/pkg/proxy"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

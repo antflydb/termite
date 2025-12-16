@@ -16,8 +16,8 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/cli"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/spf13/cobra"
 )
 

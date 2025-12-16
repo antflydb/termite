@@ -61,6 +61,17 @@ servers:
 
 components:
   schemas:
+    GPUMode:
+      type: string
+      enum: [auto, tpu, cuda, coreml, "off"]
+      description: |
+        GPU/accelerator mode. Configurable via TERMITE_GPU env var (viper auto-binding).
+        - "auto": Auto-detect (default). TPU > CUDA/CoreML > CPU based on availability.
+        - "tpu": Force TPU. Fails if TPU not available.
+        - "cuda": Force CUDA. Fails if CUDA not available.
+        - "coreml": Force CoreML (macOS only).
+        - "off": CPU only, disable all GPU acceleration.
+
     Error:
       type: object
       required:
@@ -384,18 +395,9 @@ components:
           default: 0
           example: 3
         gpu:
-          type: string
-          description: |
-            GPU acceleration mode:
-            - "auto": Auto-detect GPU availability (default). Uses CUDA on Linux if nvidia-smi is available, CoreML on macOS.
-            - "true": Force GPU on. Will fail at runtime if GPU is not available.
-            - "false": Force GPU off (CPU only).
-
-            On macOS, CoreML is always used when available (no configuration needed).
-            On Linux, CUDA is auto-detected via nvidia-smi or CUDA library presence.
-            Legacy env var ANTFLY_USE_CUDA=1 still works but this config takes precedence.
+          allOf:
+            - $ref: "#/components/schemas/GPUMode"
           default: "auto"
-          example: "auto"
         max_concurrent_requests:
           type: integer
           description: |

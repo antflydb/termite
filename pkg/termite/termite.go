@@ -97,9 +97,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// Configure GPU mode before creating session
 	if config.Gpu != "" {
-		gpuMode := hugot.ParseGPUMode(config.Gpu)
+		gpuMode := hugot.GPUMode(config.Gpu)
 		hugot.SetGPUMode(gpuMode)
-		zl.Info("GPU mode configured", zap.String("mode", config.Gpu))
+		zl.Info("GPU mode configured", zap.String("mode", string(config.Gpu)))
 	}
 
 	// Detect and log GPU info, set metrics

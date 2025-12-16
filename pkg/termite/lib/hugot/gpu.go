@@ -23,13 +23,16 @@ import (
 	"sync"
 )
 
-// GPUMode controls how GPU acceleration is enabled
+// GPUMode controls how GPU acceleration is enabled.
+// Values must match the GPUMode enum in openapi.yaml.
 type GPUMode string
 
 const (
-	GPUModeAuto GPUMode = "auto"  // Auto-detect GPU availability
-	GPUModeOn   GPUMode = "true"  // Force GPU on (fail if unavailable)
-	GPUModeOff  GPUMode = "false" // Force GPU off (CPU only)
+	GPUModeAuto   GPUMode = "auto"   // Auto-detect GPU availability
+	GPUModeTpu    GPUMode = "tpu"    // Force TPU
+	GPUModeCuda   GPUMode = "cuda"   // Force CUDA
+	GPUModeCoreML GPUMode = "coreml" // Force CoreML (macOS only)
+	GPUModeOff    GPUMode = "off"    // CPU only
 )
 
 var (
@@ -90,15 +93,7 @@ func detectGPUImpl() GPUInfo {
 func detectTPU() GPUInfo {
 	info := GPUInfo{Type: "none"}
 
-	// Method 1: Check ANTFLY_USE_TPU env var (explicit override)
-	if os.Getenv("ANTFLY_USE_TPU") == "1" {
-		info.Available = true
-		info.Type = "tpu"
-		info.DeviceName = "TPU (forced via ANTFLY_USE_TPU)"
-		return info
-	}
-
-	// Method 2: Check GOMLX_BACKEND for xla:tpu
+	// Method 1: Check GOMLX_BACKEND for xla:tpu
 	if backend := os.Getenv("GOMLX_BACKEND"); strings.Contains(strings.ToLower(backend), "tpu") {
 		info.Available = true
 		info.Type = "tpu"
@@ -181,15 +176,7 @@ func IsTPUAvailable() bool {
 func detectCUDA() GPUInfo {
 	info := GPUInfo{Type: "none"}
 
-	// Method 1: Check ANTFLY_USE_CUDA env var (explicit override)
-	if os.Getenv("ANTFLY_USE_CUDA") == "1" {
-		info.Available = true
-		info.Type = "cuda"
-		info.DeviceName = "CUDA (forced via ANTFLY_USE_CUDA)"
-		return info
-	}
-
-	// Method 2: Try nvidia-smi command
+	// Method 1: Try nvidia-smi command
 	if nvidiaInfo := tryNvidiaSMI(); nvidiaInfo.Available {
 		return nvidiaInfo
 	}
@@ -270,10 +257,10 @@ func cudaLibsExist() bool {
 // ShouldUseGPU determines if GPU should be used based on mode and availability
 func ShouldUseGPU(mode GPUMode) bool {
 	switch mode {
-	case GPUModeOn:
-		return true // Force on, will fail at runtime if unavailable
 	case GPUModeOff:
 		return false
+	case GPUModeTpu, GPUModeCuda, GPUModeCoreML:
+		return true // Force specific accelerator, will fail at runtime if unavailable
 	case GPUModeAuto, "":
 		return IsGPUAvailable()
 	default:
@@ -281,15 +268,20 @@ func ShouldUseGPU(mode GPUMode) bool {
 	}
 }
 
-// ParseGPUMode parses a string into GPUMode
+// ParseGPUMode parses a string into GPUMode.
+// Only accepts values from the GPUMode enum in openapi.yaml.
 func ParseGPUMode(s string) GPUMode {
 	switch strings.ToLower(s) {
-	case "true", "on", "1", "yes":
-		return GPUModeOn
-	case "false", "off", "0", "no":
-		return GPUModeOff
 	case "auto", "":
 		return GPUModeAuto
+	case "tpu":
+		return GPUModeTpu
+	case "cuda":
+		return GPUModeCuda
+	case "coreml":
+		return GPUModeCoreML
+	case "off":
+		return GPUModeOff
 	default:
 		return GPUModeAuto
 	}
