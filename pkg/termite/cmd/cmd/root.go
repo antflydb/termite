@@ -48,7 +48,7 @@ Examples:
 
   # Pull a model from the registry
   termite pull bge-small-en-v1.5
-  termite pull --quantized mxbai-rerank-base-v1`,
+  termite pull --variants i8 mxbai-rerank-base-v1`,
 	// Default behavior when no subcommand is provided: run the server
 	RunE: runServer,
 }
@@ -92,7 +92,7 @@ func init() {
 	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
 		viper.SetDefault("log.style", "json")
 	} else {
-		viper.SetDefault("log.style", "terminal")
+		viper.SetDefault("log.style", "logfmt")
 	}
 }
 
