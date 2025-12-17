@@ -1,18 +1,45 @@
-# Termite
+# Termite 🐜
 
 [![Build status](https://github.com/antflydb/termite/actions/workflows/termite-go.yml/badge.svg)](https://github.com/antflydb/termite/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/antflydb/termite.svg)](https://pkg.go.dev/github.com/antflydb/termite)
+[![Go Report Card](https://goreportcard.com/badge/github.com/antflydb/termite)](https://goreportcard.com/report/github.com/antflydb/termite)
 [![Docs](https://img.shields.io/badge/docs-antfly.io-blue)](https://antfly.io/termite)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-ML inference service for embeddings, chunking, and reranking with two-tier caching (memory + singleflight).
+**Fast, lightweight ML inference for embeddings, chunking, and reranking — no Python required.**
+
+- 🚀 16x faster inference with ONNX Runtime
+- 🔌 Drop-in replacement for OpenAI embeddings API
+- ☁️ Kubernetes-native with TPU/GPU autoscaling
+- 📦 Single binary, zero dependencies (pure Go mode)
 
 **[Documentation](https://antfly.io/termite)** | **[Discord](https://discord.gg/zrdjguy84P)**
 
-## Running
+## Quick Start
 
 ```bash
-# Standalone server
-go run ./cmd/termite run
+# Install
+go install github.com/antflydb/termite/cmd/termite@latest
+
+# Pull a model and start the server
+termite pull bge-small-en-v1.5
+termite run
+
+# Get embeddings (OpenAI-compatible API)
+curl http://localhost:11433/api/embeddings \
+  -d '{"model": "bge-small-en-v1.5", "input": "Hello world"}'
 ```
+
+## Why Termite?
+
+| Feature | Termite | Ollama | Python (sentence-transformers) |
+|---------|---------|--------|--------------------------------|
+| Embedding inference | ✅ | ✅ | ✅ |
+| Reranking | ✅ | ❌ | ✅ |
+| Text chunking | ✅ | ❌ | ❌ |
+| Single binary | ✅ | ✅ | ❌ |
+| K8s operator | ✅ | ❌ | ❌ |
+| TPU support | ✅ | ❌ | Limited |
 
 ## Inference Backends
 
