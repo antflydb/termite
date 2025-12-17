@@ -35,15 +35,12 @@ jobs:
           - backend: pure-go
             tags: ""
             cgo: "0"
-            test_paths: "./..."
           - backend: onnx
             tags: "onnx,ORT"
             cgo: "1"
-            test_paths: "./pkg/termite/..."
           - backend: xla
             tags: "xla,XLA"
             cgo: "1"
-            test_paths: "./pkg/termite/..."
 
     steps:
       - uses: actions/checkout@v6
@@ -98,16 +95,24 @@ jobs:
           echo "GOMLX_BACKEND=xla:cpu" >> $GITHUB_ENV
 
       - name: Download dependencies
-        run: go mod download
+        run: |
+          # Multi-module workspace - download deps for each module
+          for mod in pkg/client pkg/operator pkg/proxy pkg/termite; do
+            (cd $mod && go mod download)
+          done
 
       - name: Build
         env:
           CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           if [ -n "${{ matrix.tags }}" ]; then
-            go build -v -tags="${{ matrix.tags }}" ./...
+            # Backend-specific builds only need pkg/termite
+            cd pkg/termite && go build -v -tags="${{ matrix.tags }}" ./...
           else
-            go build -v ./...
+            # Pure-go builds all modules
+            for mod in pkg/client pkg/operator pkg/proxy pkg/termite; do
+              (cd $mod && go build -v ./...)
+            done
           fi
 
       - name: Test
@@ -115,7 +120,8 @@ jobs:
           CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           if [ -n "${{ matrix.tags }}" ]; then
-            go test -v -tags="${{ matrix.tags }}" ${{ matrix.test_paths }}
+            # Backend-specific tests only run in pkg/termite
+            cd pkg/termite && go test -v -tags="${{ matrix.tags }}" ./...
           else
             # Use make test for pure-go to include envtest setup for operator tests
             make test
