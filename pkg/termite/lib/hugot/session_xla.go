@@ -130,12 +130,15 @@ func backendNameImpl() string {
 // SetGPUMode sets the GPU mode for XLA backend.
 //
 //   - GPUModeAuto: Autodetect best available (TPU > CUDA > CPU)
-//   - GPUModeOn: Force CUDA (use GOMLX_BACKEND=xla:tpu to force TPU)
+//   - GPUModeCuda: Force CUDA
+//   - GPUModeTpu: Force TPU
 //   - GPUModeOff: Force CPU only
 func SetGPUMode(mode GPUMode) {
 	switch mode {
-	case GPUModeOn:
+	case GPUModeCuda:
 		os.Setenv("GOMLX_BACKEND", "xla:cuda")
+	case GPUModeTpu:
+		os.Setenv("GOMLX_BACKEND", "xla:tpu")
 	case GPUModeOff:
 		os.Setenv("GOMLX_BACKEND", "xla:cpu")
 	case GPUModeAuto:
@@ -149,9 +152,9 @@ func GetGPUMode() GPUMode {
 	device := getXLADevice()
 	switch device {
 	case "cuda":
-		return GPUModeOn
+		return GPUModeCuda
 	case "tpu":
-		return GPUModeOn // TPU is a form of accelerator
+		return GPUModeTpu
 	default:
 		return GPUModeOff
 	}

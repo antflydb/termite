@@ -1,8 +1,11 @@
 # Termite
 
 [![Build status](https://github.com/antflydb/termite/actions/workflows/termite-go.yml/badge.svg)](https://github.com/antflydb/termite/actions)
+[![Docs](https://img.shields.io/badge/docs-antfly.io-blue)](https://antfly.io/termite)
 
 ML inference service for embeddings, chunking, and reranking with two-tier caching (memory + singleflight).
+
+**[Documentation](https://antfly.io/termite)** | **[Discord](https://discord.gg/zrdjguy84P)**
 
 ## Running
 
