@@ -1,7 +1,7 @@
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
 github.com/Masterminds/semver/v3 v3.4.0/go.mod h1:4V+yj/TJE1HU9XfppCwVMZq3I84lprf4nC11bSS5beM=
-github.com/antflydb/antfly-go/libaf v0.0.0-20251216061942-2d4984853a57 h1:c5iut27HAcixCfFirSzjzS/QJd/QH1zob0CuJZmC4VM=
-github.com/antflydb/antfly-go/libaf v0.0.0-20251216061942-2d4984853a57/go.mod h1:Cm2P05Au+crlgKA+S5URoIpyw1bjegC7AEjl5liBrDk=
+github.com/antflydb/antfly-go/libaf v0.0.0-20251216081525-fe1ac2f03f39 h1:6osgEehEsC2FtVjTn1K/9jT+gnZ8mOrmEmt43iF2/Mk=
+github.com/antflydb/antfly-go/libaf v0.0.0-20251216081525-fe1ac2f03f39/go.mod h1:Cm2P05Au+crlgKA+S5URoIpyw1bjegC7AEjl5liBrDk=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

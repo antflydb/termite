@@ -9,7 +9,7 @@ replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20
 replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251216073604-08dec061401c
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251216061942-2d4984853a57
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251216081525-fe1ac2f03f39
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
@@ -25,7 +25,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/sugarme/tokenizer v0.3.0
-	github.com/yalue/onnxruntime_go v1.24.0
+	github.com/yalue/onnxruntime_go v1.25.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/image v0.34.0
 	golang.org/x/sync v0.19.0
