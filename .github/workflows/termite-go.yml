@@ -60,7 +60,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y build-essential pkg-config curl
           elif command -v dnf &> /dev/null; then
-            sudo dnf install -y gcc gcc-c++ make pkgconfig curl
+            sudo dnf install -y --allowerasing gcc gcc-c++ make pkgconfig curl
           elif command -v yum &> /dev/null; then
             sudo yum install -y gcc gcc-c++ make pkgconfig curl
           fi
