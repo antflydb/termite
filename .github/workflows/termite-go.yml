@@ -37,8 +37,9 @@ env:
 jobs:
   test:
     name: Test (${{ matrix.backend }})
-    runs-on:
-      - codebuild-GitHubActionsRunnerTermite-${{ github.run_id }}-${{ github.run_attempt }}
+    # runs-on:
+    #   - codebuild-GitHubActionsRunnerTermite-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
