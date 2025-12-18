@@ -9,7 +9,7 @@ replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20
 replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251216073604-08dec061401c
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251216081525-fe1ac2f03f39
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251218041248-7d57e4c8b270
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
