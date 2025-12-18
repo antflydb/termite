@@ -308,7 +308,7 @@ blobs:
     region: auto  # Required for Cloudflare R2
     bucket: antfly-releases
     extra_files:
-      - glob: ./termite/scripts/install.sh
+      - glob: ./scripts/install.sh
     include_meta: true
   # Upload to /latest/ path for easy installation
   - provider: s3
@@ -317,5 +317,5 @@ blobs:
     bucket: antfly-releases
     directory: "termite/latest"
     extra_files:
-      - glob: ./termite/scripts/install.sh
+      - glob: ./scripts/install.sh
     include_meta: true
