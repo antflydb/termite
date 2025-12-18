@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	antflyaiv1alpha1 "github.com/antflydb/termite/pkg/operator/api/v1alpha1"
-	"github.com/antflydb/termite/pkg/operator/controller"
+	"github.com/antflydb/termite/pkg/operator/controllers"
 )
 
 var (
@@ -197,7 +197,7 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	}
 
 	// Setup TermitePool controller
-	if err := (&controller.TermitePoolReconciler{
+	if err := (&controllers.TermitePoolReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		TermiteImage: termiteImage,
@@ -206,7 +206,7 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	}
 
 	// Setup TermiteRoute controller
-	if err := (&controller.TermiteRouteReconciler{
+	if err := (&controllers.TermiteRouteReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {

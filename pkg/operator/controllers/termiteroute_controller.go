@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package controller implements the Kubernetes controllers for Termite CRDs.
-package controller
+// Package controllers implements the Kubernetes controllers for Termite CRDs.
+package controllers
 
 import (
 	"context"

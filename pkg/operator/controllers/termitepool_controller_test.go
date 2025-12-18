@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package controller
+package controllers
 
 import (
 	"context"
@@ -85,7 +85,7 @@ var _ = Describe("TermitePool Controller", func() {
 			Expect(createdService.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 			Expect(createdService.Spec.Ports).To(HaveLen(1))
 			Expect(createdService.Spec.Ports[0].Name).To(Equal("http"))
-			Expect(createdService.Spec.Ports[0].Port).To(Equal(int32(11433)))
+			Expect(createdService.Spec.Ports[0].Port).To(Equal(int32(TermiteAPIPort)))
 
 			// Verify the ConfigMap was created
 			configMapLookupKey := types.NamespacedName{Name: poolName + "-config", Namespace: poolNamespace}
