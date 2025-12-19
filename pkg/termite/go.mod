@@ -2,11 +2,11 @@ module github.com/antflydb/termite/pkg/termite
 
 go 1.25
 
-replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251210070626-c04002ff0b65
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251217194311-d3b7c50c8459
 
-replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251209204201-d59f6f4b6f96
+replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251216073604-08dec061401c
+replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251219045106-38a69c966d89
 
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251218041248-7d57e4c8b270
@@ -52,16 +52,16 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/gomlx v0.25.0 // indirect
-	github.com/gomlx/gopjrt v0.10.0 // indirect
-	github.com/gomlx/onnx-gomlx v0.3.3 // indirect
-	github.com/gomlx/stablehlo v0.2.0 // indirect
+	github.com/gomlx/go-xla v0.1.4 // indirect
+	github.com/gomlx/gomlx v0.26.0 // indirect
+	github.com/gomlx/onnx-gomlx v0.3.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
+	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -106,6 +106,7 @@ require (
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/term v0.38.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/tools v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

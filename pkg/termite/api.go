@@ -29,6 +29,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
@@ -69,12 +70,25 @@ func (t *TermiteAPI) RerankPrompts(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRerank(w, r)
 }
 
+// GenerateText implements ServerInterface
+func (t *TermiteAPI) GenerateText(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiGenerate(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
-	resp := ModelsResponse{
-		Chunkers:  []string{},
-		Rerankers: []string{},
-		Embedders: []string{},
+	// Use extended response with generators field
+	// (ModelsResponse in api.gen.go will include this after code generation)
+	resp := struct {
+		Chunkers   []string `json:"chunkers"`
+		Rerankers  []string `json:"rerankers"`
+		Embedders  []string `json:"embedders"`
+		Generators []string `json:"generators"`
+	}{
+		Chunkers:   []string{},
+		Rerankers:  []string{},
+		Embedders:  []string{},
+		Generators: []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -87,6 +101,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.rerankerRegistry != nil {
 		resp.Rerankers = t.node.rerankerRegistry.List()
+	}
+
+	if t.node.generatorRegistry != nil {
+		resp.Generators = t.node.generatorRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -507,6 +525,125 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 	}{
 		Model:  req.Model,
 		Scores: scores,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleApiGenerate handles text generation requests using LLM models
+func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if generation is available
+	if ln.generatorRegistry == nil || len(ln.generatorRegistry.List()) == 0 {
+		http.Error(w, "generation not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request
+	var req GenerateRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Messages) == 0 {
+		http.Error(w, "messages are required", http.StatusBadRequest)
+		return
+	}
+
+	// Get generator from registry
+	generator, err := ln.generatorRegistry.Get(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Convert messages to internal format
+	messages := make([]generation.Message, len(req.Messages))
+	for i, m := range req.Messages {
+		messages[i] = generation.Message{
+			Role:    string(m.Role),
+			Content: m.Content,
+		}
+	}
+
+	// Set options from request, using defaults for zero values
+	opts := generation.GenerateOptions{
+		MaxTokens:   256,
+		Temperature: 0.7,
+		TopP:        0.9,
+		TopK:        50,
+	}
+	if req.MaxTokens > 0 {
+		opts.MaxTokens = req.MaxTokens
+	}
+	if req.Temperature > 0 {
+		opts.Temperature = req.Temperature
+	}
+	if req.TopP > 0 {
+		opts.TopP = req.TopP
+	}
+	if req.TopK > 0 {
+		opts.TopK = req.TopK
+	}
+
+	// Generate text
+	result, err := generator.Generate(r.Context(), messages, opts)
+	if err != nil {
+		ln.logger.Error("generation failed",
+			zap.String("model", req.Model),
+			zap.Int("num_messages", len(req.Messages)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("generation failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record metrics
+	RecordGeneratorRequest(req.Model)
+	RecordTokenGeneration(req.Model, result.TokensUsed)
+
+	ln.logger.Info("generation request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_messages", len(req.Messages)),
+		zap.Int("tokens_generated", result.TokensUsed))
+
+	// Send response
+	resp := GenerateResponse{
+		Model:        req.Model,
+		Text:         result.Text,
+		TokensUsed:   result.TokensUsed,
+		FinishReason: GenerateResponseFinishReason(result.FinishReason),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
