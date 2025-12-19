@@ -26,9 +26,10 @@ import (
 type ModelType string
 
 const (
-	ModelTypeEmbedder ModelType = "embedder"
-	ModelTypeChunker  ModelType = "chunker"
-	ModelTypeReranker ModelType = "reranker"
+	ModelTypeEmbedder   ModelType = "embedder"
+	ModelTypeChunker    ModelType = "chunker"
+	ModelTypeReranker   ModelType = "reranker"
+	ModelTypeGenerator  ModelType = "generator"
 )
 
 // ParseModelType parses a string into a ModelType
@@ -40,8 +41,10 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeChunker, nil
 	case "reranker", "rerankers":
 		return ModelTypeReranker, nil
+	case "generator", "generators":
+		return ModelTypeGenerator, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, generator)", s)
 	}
 }
 
@@ -59,6 +62,8 @@ func (t ModelType) DirName() string {
 		return "chunkers"
 	case ModelTypeReranker:
 		return "rerankers"
+	case ModelTypeGenerator:
+		return "generators"
 	default:
 		return string(t) + "s"
 	}

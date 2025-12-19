@@ -41,9 +41,10 @@ type ReadyResponse struct {
 
 // ReadyModels shows model availability
 type ReadyModels struct {
-	Embedders int `json:"embedders"`
-	Chunkers  int `json:"chunkers"`
-	Rerankers int `json:"rerankers"`
+	Embedders  int `json:"embedders"`
+	Chunkers   int `json:"chunkers"`
+	Rerankers  int `json:"rerankers"`
+	Generators int `json:"generators"`
 }
 
 // handleHealthz returns 200 if the service is running (liveness check)
@@ -70,10 +71,13 @@ func (ln *TermiteNode) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if ln.rerankerRegistry != nil {
 		resp.Models.Rerankers = len(ln.rerankerRegistry.List())
 	}
+	if ln.generatorRegistry != nil {
+		resp.Models.Generators = len(ln.generatorRegistry.List())
+	}
 
 	// Service is ready if at least one model type is available
 	// (chunker always has "fixed" built-in, so we're always ready)
-	totalModels := resp.Models.Embedders + resp.Models.Chunkers + resp.Models.Rerankers
+	totalModels := resp.Models.Embedders + resp.Models.Chunkers + resp.Models.Rerankers + resp.Models.Generators
 	if totalModels == 0 {
 		resp.Status = "not_ready"
 		w.Header().Set("Content-Type", "application/json")
