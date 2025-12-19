@@ -53,6 +53,7 @@ type TermiteNode struct {
 
 	cachedChunker         *CachedChunker
 	rerankerRegistry      *RerankerRegistry
+	generatorRegistry     *GeneratorRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -124,11 +125,12 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Compute model subdirectory paths from models_dir
-	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir string
+	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir string
 	if config.ModelsDir != "" {
 		embedderModelsDir = filepath.Join(config.ModelsDir, "embedders")
 		chunkerModelsDir = filepath.Join(config.ModelsDir, "chunkers")
 		rerankerModelsDir = filepath.Join(config.ModelsDir, "rerankers")
+		generatorModelsDir = filepath.Join(config.ModelsDir, "generators")
 	}
 
 	// Create shared Hugot session for all ONNX models
@@ -231,6 +233,17 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		defer func() { _ = rerankerRegistry.Close() }()
 	}
 
+	// Initialize generator registry with optional model directory support
+	// If models_dir is set in config, Termite will discover and load generator (LLM) models
+	// If not set, generation endpoint will not be available
+	generatorRegistry, err := NewGeneratorRegistry(generatorModelsDir, sharedSession, zl.Named("generator"))
+	if err != nil {
+		zl.Fatal("Failed to initialize generator registry", zap.Error(err))
+	}
+	if generatorRegistry != nil {
+		defer func() { _ = generatorRegistry.Close() }()
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -291,6 +304,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		lazyEmbedderRegistry:  lazyEmbedderRegistry,
 		cachedChunker:         cachedChunker,
 		rerankerRegistry:      rerankerRegistry,
+		generatorRegistry:     generatorRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
@@ -309,6 +323,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// Health endpoints (outside /api prefix for k8s compatibility)
 	rootMux.HandleFunc("GET /healthz", node.handleHealthz)
 	rootMux.HandleFunc("GET /readyz", node.handleReadyz)
+
+	// Generate endpoint (manually registered until OpenAPI codegen is updated)
+	rootMux.HandleFunc("POST /api/generate", node.handleApiGenerate)
 
 	// Mount the OpenAPI-generated API handler (includes /api/version)
 	rootMux.Handle("/api/", apiHandler)
