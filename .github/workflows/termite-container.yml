@@ -101,37 +101,21 @@ jobs:
           cache-from: type=gha,scope=termite-base-bookworm
           cache-to: type=gha,mode=max,scope=termite-base-bookworm
 
-      # Build termite:xla-tpu (TPU inference, amd64 only)
-      - name: Build and push termite:xla-tpu
+      # Build termite:omni (ONNX + XLA backends, amd64 only)
+      - name: Build and push termite:omni
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.termite-xla
+          file: ./Dockerfile.termite-omni
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/antflydb/termite:xla-tpu
-            ghcr.io/antflydb/termite:xla-tpu-${{ steps.version.outputs.version }}
-            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:xla-tpu
-            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:xla-tpu-${{ steps.version.outputs.version }}
-          cache-from: type=gha,scope=termite-xla-bookworm
-          cache-to: type=gha,mode=max,scope=termite-xla-bookworm
-
-      # Build termite:onnx (GPU/ONNX inference, amd64 only)
-      - name: Build and push termite:onnx
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.termite-onnx
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/antflydb/termite:onnx
-            ghcr.io/antflydb/termite:onnx-${{ steps.version.outputs.version }}
-            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:onnx
-            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:onnx-${{ steps.version.outputs.version }}
-          cache-from: type=gha,scope=termite-onnx-bookworm
-          cache-to: type=gha,mode=max,scope=termite-onnx-bookworm
+            ghcr.io/antflydb/termite:omni
+            ghcr.io/antflydb/termite:omni-${{ steps.version.outputs.version }}
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:omni
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.GAR_PROJECT }}/${{ env.GAR_REPOSITORY }}/termite:omni-${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=termite-omni-bookworm
+          cache-to: type=gha,mode=max,scope=termite-omni-bookworm
 
       # Install cosign for container image signing
       - uses: sigstore/cosign-installer@v3
@@ -150,17 +134,8 @@ jobs:
               ghcr.io/antflydb/termite:${tag}
           done
 
-          # Sign termite:xla-tpu images
-          for tag in xla-tpu "xla-tpu-${VERSION}"; do
-            cosign sign --yes \
-              -a "repo=${{ github.repository }}" \
-              -a "workflow=${{ github.workflow }}" \
-              -a "ref=${{ github.sha }}" \
-              ghcr.io/antflydb/termite:${tag}
-          done
-
-          # Sign termite:onnx images
-          for tag in onnx "onnx-${VERSION}"; do
+          # Sign termite:omni images
+          for tag in omni "omni-${VERSION}"; do
             cosign sign --yes \
               -a "repo=${{ github.repository }}" \
               -a "workflow=${{ github.workflow }}" \
@@ -183,17 +158,8 @@ jobs:
               ${GAR_BASE}/termite:${tag}
           done
 
-          # Sign termite:xla-tpu images
-          for tag in xla-tpu "xla-tpu-${VERSION}"; do
-            cosign sign --yes \
-              -a "repo=${{ github.repository }}" \
-              -a "workflow=${{ github.workflow }}" \
-              -a "ref=${{ github.sha }}" \
-              ${GAR_BASE}/termite:${tag}
-          done
-
-          # Sign termite:onnx images
-          for tag in onnx "onnx-${VERSION}"; do
+          # Sign termite:omni images
+          for tag in omni "omni-${VERSION}"; do
             cosign sign --yes \
               -a "repo=${{ github.repository }}" \
               -a "workflow=${{ github.workflow }}" \

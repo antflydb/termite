@@ -26,7 +26,6 @@ import (
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
-	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 )
 
@@ -95,12 +94,30 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		zl.Fatal("Invalid API URL", zap.String("url", config.ApiUrl), zap.Error(err))
 	}
 
-	// Configure GPU mode before creating session
-	if config.Gpu != "" {
-		gpuMode := hugot.GPUMode(config.Gpu)
-		hugot.SetGPUMode(gpuMode)
-		zl.Info("GPU mode configured", zap.String("mode", string(config.Gpu)))
+	// Parse backend priority (supports "backend" or "backend:device" format)
+	var backendPriority []hugot.BackendSpec
+	if len(config.BackendPriority) > 0 {
+		var err error
+		backendPriority, err = hugot.ParseBackendPriority(config.BackendPriority)
+		if err != nil {
+			zl.Fatal("Invalid backend_priority configuration", zap.Error(err))
+		}
+		// Also set global priority for backward compatibility
+		globalPriority := make([]hugot.BackendType, 0, len(backendPriority))
+		for _, spec := range backendPriority {
+			globalPriority = append(globalPriority, spec.Backend)
+		}
+		hugot.SetPriority(globalPriority)
+		zl.Info("Backend priority configured", zap.Any("priority", config.BackendPriority))
 	}
+
+	// Log available backends
+	availableBackends := hugot.ListAvailable()
+	backendNames := make([]string, 0, len(availableBackends))
+	for _, b := range availableBackends {
+		backendNames = append(backendNames, b.Name())
+	}
+	zl.Info("Available inference backends", zap.Strings("backends", backendNames))
 
 	// Detect and log GPU info, set metrics
 	gpuInfo := hugot.GetGPUInfo()
@@ -131,27 +148,35 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		rerankerModelsDir = filepath.Join(config.ModelsDir, "rerankers")
 	}
 
-	// Create shared Hugot session for all ONNX models
+	// Create session manager for multi-backend support
+	// SessionManager handles backend selection per-model and manages sessions.
 	// IMPORTANT: ONNX Runtime backend allows only ONE session at a time.
-	// All models (chunker, reranker, embedder) must share this session.
-	var sharedSession *khugot.Session
+	// SessionManager enforces this by sharing sessions within each backend type.
+	var sessionManager *hugot.SessionManager
 	hasModels := config.ModelsDir != ""
 
 	if hasModels {
-		sharedSession, err = hugot.NewSession()
-		if err != nil {
-			zl.Fatal("Failed to create shared Hugot session", zap.Error(err))
-		}
-		defer func() { _ = sharedSession.Destroy() }()
+		sessionManager = hugot.NewSessionManager()
+		defer func() { _ = sessionManager.Close() }()
 
-		backendName := hugot.BackendName()
-		zl.Info("Created shared Hugot session for all models", zap.String("backend", backendName))
+		// Configure session manager with backend priority (includes device preferences)
+		if len(backendPriority) > 0 {
+			sessionManager.SetPriority(backendPriority)
+		}
+
+		defaultBackend := hugot.GetDefaultBackend()
+		if defaultBackend != nil {
+			zl.Info("Session manager initialized",
+				zap.String("default_backend", defaultBackend.Name()))
+		} else {
+			zl.Warn("No inference backends available")
+		}
 	}
 
 	// Initialize chunker with optional model directory support
 	// If models_dir is set in config, Termite will discover and load chunker models
 	// If not set, Termite falls back to semantic-only chunking
-	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sharedSession, zl.Named("chunker"))
+	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, zl.Named("chunker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
@@ -170,7 +195,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				KeepAlive:       keepAlive,
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
 			},
-			sharedSession,
+			sessionManager,
 			zl.Named("embedder"),
 		)
 		if err != nil {
@@ -210,7 +235,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	} else {
 		// Eager loading mode: all models loaded at startup (legacy behavior)
-		embedderRegistry, err = NewEmbedderRegistry(embedderModelsDir, sharedSession, zl.Named("embedder"))
+		embedderRegistry, err = NewEmbedderRegistry(embedderModelsDir, sessionManager, zl.Named("embedder"))
 		if err != nil {
 			zl.Fatal("Failed to initialize embedder registry", zap.Error(err))
 		}
@@ -223,7 +248,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// Initialize reranker registry with optional model directory support
 	// If models_dir is set in config, Termite will discover and load reranker models
 	// If not set, reranking endpoint will not be available
-	rerankerRegistry, err := NewRerankerRegistry(rerankerModelsDir, sharedSession, zl.Named("reranker"))
+	rerankerRegistry, err := NewRerankerRegistry(rerankerModelsDir, sessionManager, zl.Named("reranker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
 	}

@@ -476,8 +476,26 @@ func NewPooledHugotChunker(config HugotChunkerConfig, modelPath string, onnxFile
 // onnxFilename specifies which ONNX file to load (e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx").
 // If empty, defaults to "model.onnx".
 func NewPooledHugotChunkerWithSession(config HugotChunkerConfig, modelPath string, onnxFilename string, poolSize int, sharedSession *khugot.Session, logger *zap.Logger) (*PooledHugotChunker, error) {
+	chunker, _, err := newPooledHugotChunkerInternal(config, modelPath, onnxFilename, poolSize, sharedSession, nil, nil, logger)
+	return chunker, err
+}
+
+// NewPooledHugotChunkerWithSessionManager creates a new pooled chunker using a SessionManager.
+// The SessionManager handles backend selection based on priority and model compatibility.
+// Returns the chunker, the backend type that was used, and any error.
+// poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
+// onnxFilename specifies which ONNX file to load (e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx").
+// If empty, defaults to "model.onnx".
+// modelBackends specifies which backends this model supports (nil = all backends).
+func NewPooledHugotChunkerWithSessionManager(config HugotChunkerConfig, modelPath string, onnxFilename string, poolSize int, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*PooledHugotChunker, hugot.BackendType, error) {
+	return newPooledHugotChunkerInternal(config, modelPath, onnxFilename, poolSize, nil, sessionManager, modelBackends, logger)
+}
+
+// newPooledHugotChunkerInternal is the shared implementation for creating pooled chunkers.
+// Either sharedSession or sessionManager should be provided, not both.
+func newPooledHugotChunkerInternal(config HugotChunkerConfig, modelPath string, onnxFilename string, poolSize int, sharedSession *khugot.Session, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*PooledHugotChunker, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required for Hugot chunking")
+		return nil, hugot.BackendGo, errors.New("model path is required for Hugot chunking")
 	}
 
 	// Default to model.onnx if not specified
@@ -514,16 +532,37 @@ func NewPooledHugotChunkerWithSession(config HugotChunkerConfig, modelPath strin
 		zap.Int("target_tokens", config.TargetTokens),
 		zap.String("backend", hugot.BackendName()))
 
-	// Use shared session or create a new one
-	session, err := hugot.NewSessionOrUseExisting(sharedSession)
-	if err != nil {
-		logger.Error("Failed to create Hugot session", zap.Error(err))
-		return nil, fmt.Errorf("creating hugot session: %w", err)
-	}
-	sessionShared := (sharedSession != nil)
-	if sessionShared {
+	// Get session from SessionManager, shared session, or create new one
+	var session *khugot.Session
+	var backendUsed hugot.BackendType
+	var err error
+	var sessionShared bool
+
+	if sessionManager != nil {
+		// Use SessionManager for backend selection
+		session, backendUsed, err = sessionManager.GetSessionForModel(modelBackends)
+		if err != nil {
+			logger.Error("Failed to get session from SessionManager", zap.Error(err))
+			return nil, backendUsed, fmt.Errorf("getting session from SessionManager: %w", err)
+		}
+		sessionShared = true // SessionManager owns the session
+		logger.Info("Using session from SessionManager",
+			zap.String("backend", string(backendUsed)))
+	} else if sharedSession != nil {
+		// Use provided shared session
+		session = sharedSession
+		sessionShared = true
+		backendUsed = hugot.GetDefaultBackend().Type()
 		logger.Info("Using shared Hugot session", zap.String("backend", hugot.BackendName()))
 	} else {
+		// Create new session
+		session, err = hugot.NewSession()
+		if err != nil {
+			logger.Error("Failed to create Hugot session", zap.Error(err))
+			return nil, hugot.BackendGo, fmt.Errorf("creating hugot session: %w", err)
+		}
+		sessionShared = false
+		backendUsed = hugot.GetDefaultBackend().Type()
 		logger.Info("Created new Hugot session", zap.String("backend", hugot.BackendName()))
 	}
 
@@ -546,7 +585,7 @@ func NewPooledHugotChunkerWithSession(config HugotChunkerConfig, modelPath strin
 			logger.Error("Failed to create pipeline",
 				zap.Int("index", i),
 				zap.Error(err))
-			return nil, fmt.Errorf("creating token classification pipeline %d: %w", i, err)
+			return nil, backendUsed, fmt.Errorf("creating token classification pipeline %d: %w", i, err)
 		}
 		// Set aggregation strategy to "SIMPLE" to group adjacent tokens
 		pipeline.AggregationStrategy = "SIMPLE"
@@ -565,7 +604,7 @@ func NewPooledHugotChunkerWithSession(config HugotChunkerConfig, modelPath strin
 		logger:        logger,
 		sessionShared: sessionShared,
 		poolSize:      poolSize,
-	}, nil
+	}, backendUsed, nil
 }
 
 // Chunk splits text using neural token classification with per-request config overrides.

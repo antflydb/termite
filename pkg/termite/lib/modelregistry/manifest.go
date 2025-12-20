@@ -31,6 +31,13 @@ const (
 	ModelTypeReranker ModelType = "reranker"
 )
 
+// Model capabilities
+const (
+	// CapabilityMultimodal indicates the model can embed both images and text
+	// (e.g., CLIP models with visual_model.onnx + text_model.onnx)
+	CapabilityMultimodal = "multimodal"
+)
+
 // ParseModelType parses a string into a ModelType
 func ParseModelType(s string) (ModelType, error) {
 	switch strings.ToLower(s) {
@@ -120,11 +127,81 @@ type ModelManifest struct {
 	Type ModelType `json:"type"`
 	// Description is a human-readable description
 	Description string `json:"description,omitempty"`
+	// Capabilities lists special capabilities of the model.
+	// Valid values: "multimodal" (for CLIP-style models that embed images and text)
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Files lists all required files for the model (includes model.onnx)
 	Files []ModelFile `json:"files"`
-	// Variants maps variant identifiers to their model files
-	// Keys are variant IDs like "f16", "i8", "i8-st", "i4", "bf16"
-	Variants map[string]ModelFile `json:"variants,omitempty"`
+	// Variants maps variant identifiers to their model files.
+	// For single-model types (embedder, chunker, reranker), this is a single file.
+	// For multimodal embedders (CLIP), this can be an array of files (visual + text).
+	// Use VariantFiles() to get the slice of files for a variant.
+	Variants map[string]VariantEntry `json:"variants,omitempty"`
+	// Backends lists supported inference backends for this model.
+	// Valid values: "onnx", "xla", "go"
+	// If empty, all backends are supported (default).
+	Backends []string `json:"backends,omitempty"`
+}
+
+// VariantEntry can be either a single ModelFile or an array of ModelFiles.
+// This supports both single-model variants and multi-model variants (like CLIP).
+type VariantEntry struct {
+	Files []ModelFile
+}
+
+// UnmarshalJSON handles both single file and array of files
+func (v *VariantEntry) UnmarshalJSON(data []byte) error {
+	// Try as array first
+	var files []ModelFile
+	if err := json.Unmarshal(data, &files); err == nil {
+		v.Files = files
+		return nil
+	}
+
+	// Try as single file
+	var file ModelFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return err
+	}
+	v.Files = []ModelFile{file}
+	return nil
+}
+
+// MarshalJSON serializes the variant entry
+func (v VariantEntry) MarshalJSON() ([]byte, error) {
+	if len(v.Files) == 1 {
+		return json.Marshal(v.Files[0])
+	}
+	return json.Marshal(v.Files)
+}
+
+// SupportsBackend returns true if the model supports the given backend.
+// If no backends are specified, all backends are supported.
+func (m *ModelManifest) SupportsBackend(backend string) bool {
+	if len(m.Backends) == 0 {
+		return true // All backends supported by default
+	}
+	for _, b := range m.Backends {
+		if b == backend {
+			return true
+		}
+	}
+	return false
+}
+
+// HasCapability returns true if the model has the specified capability.
+func (m *ModelManifest) HasCapability(capability string) bool {
+	for _, c := range m.Capabilities {
+		if c == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMultimodal returns true if the model has the multimodal capability.
+func (m *ModelManifest) IsMultimodal() bool {
+	return m.HasCapability(CapabilityMultimodal)
 }
 
 // Validate checks that the manifest is well-formed
@@ -145,11 +222,18 @@ func (m *ModelManifest) Validate() error {
 		return fmt.Errorf("manifest must have at least one file")
 	}
 
-	// Check for required model.onnx file
-	hasOnnx := false
+	// Validate file entries
+	hasModelOnnx := false
+	hasVisualOnnx := false
+	hasTextOnnx := false
 	for _, f := range m.Files {
-		if f.Name == "model.onnx" {
-			hasOnnx = true
+		switch f.Name {
+		case "model.onnx":
+			hasModelOnnx = true
+		case "visual_model.onnx":
+			hasVisualOnnx = true
+		case "text_model.onnx":
+			hasTextOnnx = true
 		}
 		if f.Name == "" {
 			return fmt.Errorf("file entry missing name")
@@ -162,17 +246,35 @@ func (m *ModelManifest) Validate() error {
 		}
 	}
 
-	if !hasOnnx {
-		return fmt.Errorf("manifest must include model.onnx file")
+	// Check for required ONNX files based on capability
+	if m.IsMultimodal() {
+		// Multimodal embedders (CLIP) require visual_model.onnx + text_model.onnx
+		if !hasVisualOnnx || !hasTextOnnx {
+			return fmt.Errorf("multimodal embedder must include visual_model.onnx and text_model.onnx")
+		}
+		// Multimodal models only support ONNX runtime
+		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
+			return fmt.Errorf("multimodal embedders only support ONNX backend")
+		}
+	} else {
+		// Standard models require model.onnx
+		if !hasModelOnnx {
+			return fmt.Errorf("manifest must include model.onnx file")
+		}
 	}
 
 	// Validate variant files if present
-	for variantID, variantFile := range m.Variants {
-		if variantFile.Name == "" {
-			return fmt.Errorf("variant %s file missing name", variantID)
+	for variantID, variantEntry := range m.Variants {
+		if len(variantEntry.Files) == 0 {
+			return fmt.Errorf("variant %s has no files", variantID)
 		}
-		if variantFile.Digest == "" {
-			return fmt.Errorf("variant %s file missing digest", variantID)
+		for _, variantFile := range variantEntry.Files {
+			if variantFile.Name == "" {
+				return fmt.Errorf("variant %s file missing name", variantID)
+			}
+			if variantFile.Digest == "" {
+				return fmt.Errorf("variant %s file missing digest", variantID)
+			}
 		}
 		// Validate variant ID is known
 		if _, ok := VariantFilenames[variantID]; !ok {
@@ -211,6 +313,8 @@ type ModelIndexEntry struct {
 	Type ModelType `json:"type"`
 	// Description is a human-readable description
 	Description string `json:"description,omitempty"`
+	// Capabilities lists special capabilities (e.g., ["multimodal"])
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Size is the total size of all files in bytes
 	Size int64 `json:"size,omitempty"`
 	// Variants lists available variant identifiers (e.g., ["f16", "i8"])

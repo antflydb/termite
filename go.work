@@ -1,8 +1,13 @@
 go 1.25.5
 
 use (
+	./e2e
 	./pkg/client
 	./pkg/operator
 	./pkg/proxy
 	./pkg/termite
 )
+
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251218235241-74992cedba51
+
+replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251216183743-5f89a03da602

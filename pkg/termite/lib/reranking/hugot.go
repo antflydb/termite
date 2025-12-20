@@ -231,8 +231,26 @@ func NewPooledHugotReranker(modelPath string, onnxFilename string, poolSize int,
 // onnxFilename specifies which ONNX file to load (e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx").
 // If empty, defaults to "model.onnx".
 func NewPooledHugotRerankerWithSession(modelPath string, onnxFilename string, poolSize int, sharedSession *khugot.Session, logger *zap.Logger) (*PooledHugotReranker, error) {
+	reranker, _, err := newPooledHugotRerankerInternal(modelPath, onnxFilename, poolSize, sharedSession, nil, nil, logger)
+	return reranker, err
+}
+
+// NewPooledHugotRerankerWithSessionManager creates a new pooled reranker using a SessionManager.
+// The SessionManager handles backend selection based on priority and model compatibility.
+// Returns the reranker, the backend type that was used, and any error.
+// poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
+// onnxFilename specifies which ONNX file to load (e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx").
+// If empty, defaults to "model.onnx".
+// modelBackends specifies which backends this model supports (nil = all backends).
+func NewPooledHugotRerankerWithSessionManager(modelPath string, onnxFilename string, poolSize int, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*PooledHugotReranker, hugot.BackendType, error) {
+	return newPooledHugotRerankerInternal(modelPath, onnxFilename, poolSize, nil, sessionManager, modelBackends, logger)
+}
+
+// newPooledHugotRerankerInternal is the shared implementation for creating pooled rerankers.
+// Either sharedSession or sessionManager should be provided, not both.
+func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolSize int, sharedSession *khugot.Session, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*PooledHugotReranker, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required")
+		return nil, hugot.BackendGo, errors.New("model path is required")
 	}
 
 	// Default to model.onnx if not specified
@@ -255,16 +273,37 @@ func NewPooledHugotRerankerWithSession(modelPath string, onnxFilename string, po
 		zap.Int("poolSize", poolSize),
 		zap.String("backend", hugot.BackendName()))
 
-	// Use shared session or create a new one
-	session, err := hugot.NewSessionOrUseExisting(sharedSession)
-	if err != nil {
-		logger.Error("Failed to create Hugot session", zap.Error(err))
-		return nil, fmt.Errorf("creating hugot session: %w", err)
-	}
-	sessionShared := (sharedSession != nil)
-	if sessionShared {
+	// Get session from SessionManager, shared session, or create new one
+	var session *khugot.Session
+	var backendUsed hugot.BackendType
+	var err error
+	var sessionShared bool
+
+	if sessionManager != nil {
+		// Use SessionManager for backend selection
+		session, backendUsed, err = sessionManager.GetSessionForModel(modelBackends)
+		if err != nil {
+			logger.Error("Failed to get session from SessionManager", zap.Error(err))
+			return nil, backendUsed, fmt.Errorf("getting session from SessionManager: %w", err)
+		}
+		sessionShared = true // SessionManager owns the session
+		logger.Info("Using session from SessionManager",
+			zap.String("backend", string(backendUsed)))
+	} else if sharedSession != nil {
+		// Use provided shared session
+		session = sharedSession
+		sessionShared = true
+		backendUsed = hugot.GetDefaultBackend().Type()
 		logger.Info("Using shared Hugot session", zap.String("backend", hugot.BackendName()))
 	} else {
+		// Create new session
+		session, err = hugot.NewSession()
+		if err != nil {
+			logger.Error("Failed to create Hugot session", zap.Error(err))
+			return nil, hugot.BackendGo, fmt.Errorf("creating hugot session: %w", err)
+		}
+		sessionShared = false
+		backendUsed = hugot.GetDefaultBackend().Type()
 		logger.Info("Created new Hugot session", zap.String("backend", hugot.BackendName()))
 	}
 
@@ -290,7 +329,7 @@ func NewPooledHugotRerankerWithSession(modelPath string, onnxFilename string, po
 			logger.Error("Failed to create pipeline",
 				zap.Int("index", i),
 				zap.Error(err))
-			return nil, fmt.Errorf("creating cross-encoder pipeline %d: %w", i, err)
+			return nil, backendUsed, fmt.Errorf("creating cross-encoder pipeline %d: %w", i, err)
 		}
 		pipelinesList[i] = pipeline
 		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
@@ -305,7 +344,7 @@ func NewPooledHugotRerankerWithSession(modelPath string, onnxFilename string, po
 		logger:        logger,
 		sessionShared: sessionShared,
 		poolSize:      poolSize,
-	}, nil
+	}, backendUsed, nil
 }
 
 // Rerank scores pre-rendered prompts based on relevance to the query.

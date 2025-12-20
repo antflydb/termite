@@ -47,6 +47,11 @@ jobs:
           ./scripts/download-onnxruntime.sh
           echo "ONNXRUNTIME_ROOT=${{ github.workspace }}/onnxruntime" >> $GITHUB_ENV
 
+      - name: Download PJRT libraries
+        run: |
+          ./scripts/download-pjrt.sh
+          echo "PJRT_ROOT=${{ github.workspace }}/pjrt" >> $GITHUB_ENV
+
       - name: Download macOS SDK for cross-compilation
         run: |
           # Download macOS SDK for cross-compilation

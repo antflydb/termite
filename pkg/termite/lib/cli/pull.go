@@ -116,11 +116,12 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 		requestedVariants[v] = true
 	}
 
-	// Count supporting files (non-ONNX) and f32 if requested
+	// Count supporting files (non-ONNX) and f32 ONNX files if requested
 	for _, f := range manifest.Files {
 		if strings.HasSuffix(f.Name, ".onnx") {
-			// Only count model.onnx if f32 is requested
-			if f.Name == "model.onnx" && requestedVariants[modelregistry.VariantF32] {
+			// Count all ONNX files in base manifest if f32 is requested
+			// This supports both single-model (model.onnx) and multi-model (visual_model.onnx, text_model.onnx)
+			if requestedVariants[modelregistry.VariantF32] {
 				totalSize += f.Size
 			}
 		} else {
@@ -134,8 +135,11 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 		if variantID == modelregistry.VariantF32 {
 			continue // Already counted above
 		}
-		if variantFile, ok := manifest.Variants[variantID]; ok {
-			totalSize += variantFile.Size
+		if variantEntry, ok := manifest.Variants[variantID]; ok {
+			// Sum sizes of all files in the variant (supports both single and multi-model variants)
+			for _, variantFile := range variantEntry.Files {
+				totalSize += variantFile.Size
+			}
 		}
 	}
 
@@ -302,12 +306,27 @@ func ListLocalModels(opts ListOptions) error {
 			standardPath := filepath.Join(modelDir, "model.onnx")
 
 			hasStandard := false
+			hasMultimodal := false
 			var totalSize int64
 			var variants []string
+			var capabilities []string
 
+			// Check for standard model
 			if info, err := os.Stat(standardPath); err == nil {
 				hasStandard = true
 				totalSize += info.Size()
+			}
+
+			// Check for multimodal (CLIP-style) model files
+			visualPath := filepath.Join(modelDir, "visual_model.onnx")
+			textPath := filepath.Join(modelDir, "text_model.onnx")
+			if visualInfo, err := os.Stat(visualPath); err == nil {
+				if textInfo, err := os.Stat(textPath); err == nil {
+					hasMultimodal = true
+					capabilities = append(capabilities, "multimodal")
+					totalSize += visualInfo.Size()
+					totalSize += textInfo.Size()
+				}
 			}
 
 			// Check for variant files
@@ -319,7 +338,7 @@ func ListLocalModels(opts ListOptions) error {
 				}
 			}
 
-			if !hasStandard && len(variants) == 0 {
+			if !hasStandard && !hasMultimodal && len(variants) == 0 {
 				continue
 			}
 
@@ -331,7 +350,7 @@ func ListLocalModels(opts ListOptions) error {
 				}
 				name := f.Name()
 				// Skip ONNX files (already counted)
-				if name == "model.onnx" || strings.HasSuffix(name, ".onnx") {
+				if strings.HasSuffix(name, ".onnx") {
 					continue
 				}
 				if info, err := f.Info(); err == nil {
@@ -344,9 +363,15 @@ func ListLocalModels(opts ListOptions) error {
 				variantsStr = strings.Join(variants, ",")
 			}
 
+			// Add capability info to display name for multimodal models
+			displayType := string(modelType)
+			if len(capabilities) > 0 {
+				displayType = displayType + " [" + strings.Join(capabilities, ",") + "]"
+			}
+
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 				entry.Name(),
-				modelType,
+				displayType,
 				FormatBytes(totalSize),
 				variantsStr,
 			)
