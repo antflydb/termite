@@ -125,6 +125,24 @@ type ModelManifest struct {
 	// Variants maps variant identifiers to their model files
 	// Keys are variant IDs like "f16", "i8", "i8-st", "i4", "bf16"
 	Variants map[string]ModelFile `json:"variants,omitempty"`
+	// Backends lists supported inference backends for this model.
+	// Valid values: "onnx", "xla", "go"
+	// If empty, all backends are supported (default).
+	Backends []string `json:"backends,omitempty"`
+}
+
+// SupportsBackend returns true if the model supports the given backend.
+// If no backends are specified, all backends are supported.
+func (m *ModelManifest) SupportsBackend(backend string) bool {
+	if len(m.Backends) == 0 {
+		return true // All backends supported by default
+	}
+	for _, b := range m.Backends {
+		if b == backend {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate checks that the manifest is well-formed

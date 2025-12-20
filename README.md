@@ -16,6 +16,31 @@ go run ./cmd/termite run
 
 ## Inference Backends
 
+Termite supports multiple inference backends selected via build tags. The **omni** build includes all backends for maximum flexibility.
+
+| Build | Tags | Description | Use Case |
+|-------|------|-------------|----------|
+| Pure Go | (none) | No CGO, always works | Development, testing |
+| ONNX | `onnx,ORT` | Fast CPU/GPU via ONNX Runtime | Production (recommended) |
+| XLA | `xla,XLA` | TPU/CUDA via GoMLX | Cloud TPU, NVIDIA GPU |
+| **Omni** | `onnx,ORT,xla,XLA` | All backends | Maximum flexibility |
+
+### Omni Build (Recommended)
+
+The omni build includes both ONNX and XLA backends, enabling runtime backend selection without recompilation.
+
+```bash
+# Download dependencies for all platforms
+./scripts/download-onnxruntime.sh
+./scripts/download-pjrt.sh
+
+# Build omni binary
+CGO_ENABLED=1 go build -tags="onnx,ORT,xla,XLA" -o termite ./pkg/termite/cmd
+
+# Run with backend priority (tries in order until one works)
+./termite run --backend-priority="onnx:cuda,xla:tpu,onnx:cpu,go"
+```
+
 ### ONNX Runtime
 
 For ~16x faster CPU inference. See `lib/hugot/README.md` for setup.
@@ -25,8 +50,10 @@ For ~16x faster CPU inference. See `lib/hugot/README.md` for setup.
 - [Tokenizers](https://github.com/daulet/tokenizers/releases/) - HuggingFace tokenizers bindings
 
 ```bash
-# Assuming you have the libtokenizers.a in your working directory
-# and installed ONNX with homebrew
+# Download dependencies
+./scripts/download-onnxruntime.sh
+
+# Or manually (macOS with homebrew)
 CGO_ENABLED=1 \
 DYLD_LIBRARY_PATH=/opt/homebrew/opt/onnxruntime/lib \
 CGO_LDFLAGS="-L$(pwd) -ltokenizers" \
@@ -42,8 +69,11 @@ For TPU or CUDA GPU acceleration via GoMLX XLA backend. Hardware is autodetected
 - [Tokenizers](https://github.com/daulet/tokenizers/releases/) - HuggingFace tokenizers bindings
 
 ```bash
+# Download dependencies
+./scripts/download-pjrt.sh
+
 # Build with XLA support
-go build -tags="xla,XLA" -o termite ./cmd/termite
+go build -tags="xla,XLA" -o termite ./pkg/termite/cmd
 
 # Run with autodetection (TPU > CUDA > CPU)
 ./termite run
@@ -53,16 +83,31 @@ go build -tags="xla,XLA" -o termite ./cmd/termite
 - **TPU**: Detected via `libtpu.so`, `/dev/accel*` devices, or GKE TPU node metadata
 - **CUDA**: Detected via `nvidia-smi` or `libcudart.so` in library path
 
-**Override autodetection:**
+**Installing Additional PJRT Plugins:**
+
+The omni and XLA builds bundle a CPU PJRT plugin that's auto-discovered from `lib/` next to the binary. To use TPU or CUDA acceleration, install the appropriate plugin:
+
 ```bash
-GOMLX_BACKEND="xla:tpu" ./termite run   # Force TPU
-GOMLX_BACKEND="xla:cuda" ./termite run  # Force CUDA
-GOMLX_BACKEND="xla:cpu" ./termite run   # Force CPU
+# Install TPU plugin (for Google Cloud TPU)
+go run github.com/gomlx/go-xla/cmd/pjrt_installer@latest -plugin=tpu
+
+# Install CUDA plugin (for NVIDIA GPU)
+go run github.com/gomlx/go-xla/cmd/pjrt_installer@latest -plugin=cuda
+
+# Install to a specific location
+go run github.com/gomlx/go-xla/cmd/pjrt_installer@latest -plugin=tpu -path=/usr/local/lib/go-xla
 ```
 
-**Environment Variables:**
-- `GOMLX_BACKEND`: Override autodetection (`xla:tpu`, `xla:cuda`, `xla:cpu`)
-- `PJRT_PLUGIN_LIBRARY_PATH`: Custom path to TPU PJRT plugin (optional)
+Installed plugins are found automatically via standard go-xla search paths. To override, set `PJRT_PLUGIN_LIBRARY_PATH`.
+
+**Platform Availability:**
+
+| Platform | PJRT CPU | Notes |
+|----------|----------|-------|
+| linux-amd64 | ✓ | |
+| linux-arm64 | ✓ | |
+| darwin-arm64 | ✓ | Apple Silicon |
+| darwin-amd64 | ✗ | Intel Mac not supported upstream |
 
 ## Models
 
@@ -180,12 +225,51 @@ Config via file (`termite.yaml`), flags, or environment variables (`TERMITE_` pr
 ```yaml
 api_url: "http://localhost:11433"
 models_dir: "./models"
-gpu: "auto"  # auto, tpu, cuda, coreml, off
+
+# Backend priority with optional device specifiers
+# Format: "backend" or "backend:device"
+# Devices: auto (default), cuda, coreml, tpu, cpu
+backend_priority:
+  - onnx:cuda      # Try ONNX with CUDA first
+  - xla:tpu        # Then XLA with TPU
+  - onnx:cpu       # Fall back to ONNX CPU
+  - go             # Pure Go fallback (always works)
+
 keep_alive: "5m"
 max_loaded_models: 3
 log:
   level: info
   style: terminal
+```
+
+### Backend Priority
+
+The `backend_priority` setting controls which inference backends Termite tries, in order. Each entry can be:
+
+- **Backend only**: `onnx`, `xla`, `go` - uses auto device detection
+- **Backend with device**: `onnx:cuda`, `xla:tpu`, `onnx:coreml` - explicit device
+
+**Available backends** (depend on build tags):
+| Backend | Build Tags | Devices Supported |
+|---------|------------|-------------------|
+| `onnx` | `onnx,ORT` | `cuda`, `coreml` (macOS), `cpu` |
+| `xla` | `xla,XLA` | `tpu`, `cuda`, `cpu` |
+| `go` | (none) | `cpu` only |
+
+**Example configurations:**
+
+```yaml
+# GPU-first with CPU fallback
+backend_priority: ["onnx:cuda", "xla:cuda", "onnx:cpu", "go"]
+
+# macOS with CoreML acceleration
+backend_priority: ["onnx:coreml", "go"]
+
+# Cloud TPU deployment
+backend_priority: ["xla:tpu", "xla:cpu"]
+
+# Simple auto-detection (default)
+backend_priority: ["onnx", "xla", "go"]
 ```
 
 ## Community

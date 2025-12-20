@@ -326,6 +326,101 @@ func NewPooledHugotEmbedderWithSession(modelPath string, onnxFilename string, po
 	}, nil
 }
 
+// NewPooledHugotEmbedderWithSessionManager creates a new pooled embedder using a SessionManager.
+// The SessionManager handles backend selection based on priority and model restrictions.
+// poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
+// modelBackends specifies which backends this model supports (nil = all backends).
+// Returns the embedder and the backend type that was used.
+func NewPooledHugotEmbedderWithSessionManager(
+	modelPath string,
+	onnxFilename string,
+	poolSize int,
+	sessionManager *hugot.SessionManager,
+	modelBackends []string,
+	logger *zap.Logger,
+) (*PooledHugotEmbedder, hugot.BackendType, error) {
+	if modelPath == "" {
+		return nil, "", errors.New("model path is required")
+	}
+
+	// Default to model.onnx if not specified
+	if onnxFilename == "" {
+		onnxFilename = "model.onnx"
+	}
+
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	// Auto-detect pool size from CPU count if not specified
+	if poolSize <= 0 {
+		poolSize = runtime.NumCPU()
+	}
+
+	// Get session from session manager
+	var session *khugot.Session
+	var backendUsed hugot.BackendType
+	var err error
+
+	if sessionManager != nil {
+		session, backendUsed, err = sessionManager.GetSessionForModel(modelBackends)
+		if err != nil {
+			return nil, "", fmt.Errorf("getting session from manager: %w", err)
+		}
+		logger.Info("Using session from SessionManager",
+			zap.String("backend", string(backendUsed)))
+	} else {
+		// Fallback to default session creation for backward compatibility
+		session, err = hugot.NewSession()
+		if err != nil {
+			return nil, "", fmt.Errorf("creating hugot session: %w", err)
+		}
+		backendUsed = hugot.GetDefaultBackend().Type()
+	}
+
+	logger.Info("Initializing pooled Hugot embedder",
+		zap.String("modelPath", modelPath),
+		zap.String("onnxFilename", onnxFilename),
+		zap.Int("poolSize", poolSize),
+		zap.String("backend", string(backendUsed)))
+
+	// Create N pipelines with unique names
+	pipelinesList := make([]*pipelines.FeatureExtractionPipeline, poolSize)
+	for i := 0; i < poolSize; i++ {
+		pipelineName := fmt.Sprintf("%s:%s:%d", modelPath, onnxFilename, i)
+		pipelineConfig := khugot.FeatureExtractionConfig{
+			ModelPath:    modelPath,
+			Name:         pipelineName,
+			OnnxFilename: onnxFilename,
+			Options: []backends.PipelineOption[*pipelines.FeatureExtractionPipeline]{
+				pipelines.WithNormalization(),
+			},
+		}
+
+		pipeline, err := khugot.NewPipeline(session, pipelineConfig)
+		if err != nil {
+			logger.Error("Failed to create pipeline",
+				zap.Int("index", i),
+				zap.Error(err))
+			return nil, "", fmt.Errorf("creating feature extraction pipeline %d: %w", i, err)
+		}
+		pipelinesList[i] = pipeline
+		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
+	}
+
+	logger.Info("Successfully created pooled feature extraction pipelines", zap.Int("count", poolSize))
+
+	return &PooledHugotEmbedder{
+		session:       session,
+		pipelines:     pipelinesList,
+		sem:           semaphore.NewWeighted(int64(poolSize)),
+		logger:        logger,
+		sessionShared: true, // SessionManager owns the session
+		poolSize:      poolSize,
+		caps:          embeddings.TextOnlyCapabilities(),
+	}, backendUsed, nil
+}
+
 // Capabilities returns the capabilities of this embedder
 func (p *PooledHugotEmbedder) Capabilities() embeddings.EmbedderCapabilities {
 	return p.caps

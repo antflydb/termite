@@ -23,16 +23,12 @@ import (
 	"github.com/knights-analytics/hugot/options"
 )
 
-var (
-	// configuredGPUMode is set via SetGPUMode or config
-	configuredGPUMode GPUMode = GPUModeAuto
-	gpuModeMu         sync.RWMutex
-)
+func init() {
+	RegisterBackend(&onnxDarwinBackend{})
+}
 
-// newSessionImpl creates a Hugot session using ONNX Runtime with CoreML acceleration.
-// This implementation is used by default on macOS (darwin) with -tags="onnx,ORT".
-//
-// CoreML provides hardware acceleration on Apple Silicon and Intel Macs with
+// onnxDarwinBackend implements Backend using ONNX Runtime with CoreML on macOS.
+// This provides hardware acceleration on Apple Silicon and Intel Macs via
 // Neural Engine, GPU, or CPU execution depending on the model and hardware.
 //
 // Runtime Requirements:
@@ -44,30 +40,50 @@ var (
 //   - ONNX Runtime libraries must be available at link time
 //   - libomp installed (brew install libomp)
 //   - Tokenizers library available (CGO_LDFLAGS)
-func newSessionImpl(opts ...options.WithOption) (*hugot.Session, error) {
+type onnxDarwinBackend struct {
+	gpuMode   GPUMode
+	gpuModeMu sync.RWMutex
+}
+
+func (b *onnxDarwinBackend) Type() BackendType {
+	return BackendONNX
+}
+
+func (b *onnxDarwinBackend) Name() string {
+	return "ONNX Runtime (CoreML)"
+}
+
+func (b *onnxDarwinBackend) Available() bool {
+	// CoreML is always available on macOS via ONNX Runtime
+	return true
+}
+
+func (b *onnxDarwinBackend) Priority() int {
+	// Highest priority when available
+	return 10
+}
+
+func (b *onnxDarwinBackend) CreateSession(opts ...options.WithOption) (*hugot.Session, error) {
 	// Prepend CoreML provider - user options can override if needed
 	coremlOpts := []options.WithOption{options.WithCoreML(nil)}
 	opts = append(coremlOpts, opts...)
 	return hugot.NewORTSession(opts...)
 }
 
-// backendNameImpl returns the name of the ONNX Runtime backend with CoreML.
-func backendNameImpl() string {
-	return "ONNX Runtime (CoreML)"
+// SetGPUMode sets the GPU mode. On macOS, CoreML automatically uses the best
+// available accelerator (Neural Engine, GPU, or CPU), so this is mostly informational.
+func (b *onnxDarwinBackend) SetGPUMode(mode GPUMode) {
+	b.gpuModeMu.Lock()
+	defer b.gpuModeMu.Unlock()
+	b.gpuMode = mode
 }
 
-// SetGPUMode sets the GPU mode for future sessions.
-// On macOS, CoreML automatically uses the best available accelerator
-// (Neural Engine, GPU, or CPU), so this is mostly informational.
-func SetGPUMode(mode GPUMode) {
-	gpuModeMu.Lock()
-	defer gpuModeMu.Unlock()
-	configuredGPUMode = mode
-}
-
-// GetGPUMode returns the currently configured GPU mode.
-func GetGPUMode() GPUMode {
-	gpuModeMu.RLock()
-	defer gpuModeMu.RUnlock()
-	return configuredGPUMode
+// GetGPUMode returns the current GPU mode.
+func (b *onnxDarwinBackend) GetGPUMode() GPUMode {
+	b.gpuModeMu.RLock()
+	defer b.gpuModeMu.RUnlock()
+	if b.gpuMode == "" {
+		return GPUModeAuto
+	}
+	return b.gpuMode
 }

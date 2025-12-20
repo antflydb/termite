@@ -1,1 +1,5 @@
 /bin/k8s
+/termite
+/libtokenizers.a
+/onnxruntime
+/pjrt

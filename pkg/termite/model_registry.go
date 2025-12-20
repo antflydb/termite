@@ -26,9 +26,9 @@ import (
 	"github.com/antflydb/antfly-go/libaf/reranking"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
-	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 )
 
@@ -61,8 +61,8 @@ type ChunkerRegistry struct {
 
 // NewChunkerRegistry creates a registry and discovers models in the given directory
 // Directory structure: modelsDir/model_name/model.onnx
-// If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
-func NewChunkerRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*ChunkerRegistry, error) {
+// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
+func NewChunkerRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*ChunkerRegistry, error) {
 	registry := &ChunkerRegistry{
 		models: make(map[string]chunking.Chunker),
 		logger: logger,
@@ -133,8 +133,8 @@ func NewChunkerRegistry(modelsDir string, sharedSession *khugot.Session, logger 
 			// Create chunker config for this model with sensible defaults
 			config := termchunking.DefaultHugotChunkerConfig()
 
-			// Pass model path, ONNX filename, and shared session to pooled chunker
-			chunker, err := termchunking.NewPooledHugotChunkerWithSession(config, modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+			// Pass model path, ONNX filename, and session manager to pooled chunker
+			chunker, backendUsed, err := termchunking.NewPooledHugotChunkerWithSessionManager(config, modelPath, onnxFilename, poolSize, sessionManager, nil, logger.Named(registryName))
 			if err != nil {
 				logger.Warn("Failed to load chunker model variant",
 					zap.String("name", registryName),
@@ -145,6 +145,7 @@ func NewChunkerRegistry(modelsDir string, sharedSession *khugot.Session, logger 
 				logger.Info("Successfully loaded chunker model",
 					zap.String("name", registryName),
 					zap.String("onnxFile", onnxFilename),
+					zap.String("backend", string(backendUsed)),
 					zap.Int("poolSize", poolSize))
 			}
 		}
@@ -203,8 +204,8 @@ type RerankerRegistry struct {
 }
 
 // NewRerankerRegistry creates a registry and discovers models in the given directory
-// If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
-func NewRerankerRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*RerankerRegistry, error) {
+// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
+func NewRerankerRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*RerankerRegistry, error) {
 	registry := &RerankerRegistry{
 		models: make(map[string]reranking.Model),
 		logger: logger,
@@ -272,8 +273,8 @@ func NewRerankerRegistry(modelsDir string, sharedSession *khugot.Session, logger
 				registryName = modelName + "-" + variantID
 			}
 
-			// Pass model path, ONNX filename, and shared session to pooled reranker
-			model, err := termreranking.NewPooledHugotRerankerWithSession(modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+			// Pass model path, ONNX filename, and session manager to pooled reranker
+			model, backendUsed, err := termreranking.NewPooledHugotRerankerWithSessionManager(modelPath, onnxFilename, poolSize, sessionManager, nil, logger.Named(registryName))
 			if err != nil {
 				logger.Warn("Failed to load reranker model variant",
 					zap.String("name", registryName),
@@ -284,6 +285,7 @@ func NewRerankerRegistry(modelsDir string, sharedSession *khugot.Session, logger
 				logger.Info("Successfully loaded reranker model",
 					zap.String("name", registryName),
 					zap.String("onnxFile", onnxFilename),
+					zap.String("backend", string(backendUsed)),
 					zap.Int("poolSize", poolSize))
 			}
 		}
@@ -342,8 +344,8 @@ type EmbedderRegistry struct {
 }
 
 // NewEmbedderRegistry creates a registry and discovers models in the given directory
-// If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
-func NewEmbedderRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*EmbedderRegistry, error) {
+// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
+func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*EmbedderRegistry, error) {
 	registry := &EmbedderRegistry{
 		models: make(map[string]embeddings.Embedder),
 		logger: logger,
@@ -411,8 +413,8 @@ func NewEmbedderRegistry(modelsDir string, sharedSession *khugot.Session, logger
 				registryName = modelName + "-" + variantID
 			}
 
-			// Pass model path, ONNX filename, and shared session to pooled embedder
-			model, err := termembeddings.NewPooledHugotEmbedderWithSession(modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+			// Pass model path, ONNX filename, and session manager to pooled embedder
+			model, backendUsed, err := termembeddings.NewPooledHugotEmbedderWithSessionManager(modelPath, onnxFilename, poolSize, sessionManager, nil, logger.Named(registryName))
 			if err != nil {
 				logger.Warn("Failed to load embedder model variant",
 					zap.String("name", registryName),
@@ -423,6 +425,7 @@ func NewEmbedderRegistry(modelsDir string, sharedSession *khugot.Session, logger
 				logger.Info("Successfully loaded embedder model",
 					zap.String("name", registryName),
 					zap.String("onnxFile", onnxFilename),
+					zap.String("backend", string(backendUsed)),
 					zap.Int("poolSize", poolSize))
 			}
 		}
