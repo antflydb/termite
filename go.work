@@ -8,6 +8,6 @@ use (
 	./pkg/termite
 )
 
-replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251217091346-d7843cc468e0
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251218235241-74992cedba51
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251216183743-5f89a03da602

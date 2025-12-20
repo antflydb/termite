@@ -1,15 +1,15 @@
 module github.com/antflydb/termite/pkg/termite
 
-go 1.25
+go 1.25.0
 
-replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251217091346-d7843cc468e0
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251218235241-74992cedba51
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251216183743-5f89a03da602
 
 replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251220213222-3441dd5335d4
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251219015450-5c56af7f4266
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
@@ -35,6 +35,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
+	github.com/charmbracelet/colorprofile v0.3.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -71,6 +72,8 @@ require (
 	github.com/oapi-codegen/oapi-codegen/v2 v2.5.1 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
+	github.com/onsi/ginkgo v1.16.5 // indirect
+	github.com/onsi/gomega v1.38.2 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect

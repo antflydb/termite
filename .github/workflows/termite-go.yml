@@ -13,6 +13,7 @@ on:
     branches: ["main"]
     paths:
       - "pkg/**"
+      - "e2e/**"
       - "go.work"
       - "go.work.sum"
       - "Makefile"
@@ -21,6 +22,7 @@ on:
     branches: ["main"]
     paths:
       - "pkg/**"
+      - "e2e/**"
       - "go.work"
       - "go.work.sum"
       - "Makefile"
@@ -150,3 +152,55 @@ jobs:
             # Use make test for pure-go to include envtest setup for operator tests
             make test
           fi
+
+  e2e:
+    name: E2E Tests (ONNX)
+    runs-on: ubuntu-latest
+    # Only run on main branch pushes to avoid long CI times on PRs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Clone antfly-go (for OpenAPI refs)
+        run: git clone --depth 1 https://github.com/antflydb/antfly-go.git ../antfly-go
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config curl
+
+      - name: Download libtokenizers
+        run: |
+          ARCH=$([ "$(uname -m)" = "aarch64" ] && echo "arm64" || echo "amd64")
+          curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${ARCH}.tar.gz" \
+            | sudo tar -xzf - -C /usr/local/lib
+          sudo ldconfig
+
+      - name: Download ONNX Runtime
+        run: |
+          ARCH=$([ "$(uname -m)" = "aarch64" ] && echo "aarch64" || echo "x64")
+          mkdir -p /tmp/onnxruntime
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-${ARCH}-${ONNXRUNTIME_VERSION}.tgz" \
+            | tar -xzf - --strip-components=1 -C /tmp/onnxruntime
+          echo "CGO_CFLAGS=-I/tmp/onnxruntime/include" >> $GITHUB_ENV
+          echo "CGO_LDFLAGS=-L/tmp/onnxruntime/lib -lonnxruntime" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/tmp/onnxruntime/lib:/usr/local/lib" >> $GITHUB_ENV
+          echo "ORT_DYLIB_PATH=/tmp/onnxruntime/lib/libonnxruntime.so" >> $GITHUB_ENV
+
+      - name: Download dependencies
+        run: |
+          for mod in pkg/client pkg/termite e2e; do
+            (cd $mod && go mod download)
+          done
+
+      - name: Run E2E tests
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          cd e2e && go test -v -tags="onnx,ORT" -timeout 15m ./...
