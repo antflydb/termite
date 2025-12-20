@@ -6,7 +6,7 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512182352
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251216183743-5f89a03da602
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251220213222-3441dd5335d4
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20251220223438-4f404c897e78
 
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af

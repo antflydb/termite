@@ -1,6 +1,6 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/hugot v0.0.0-20251220213222-3441dd5335d4 h1:Y7MQlZ0np1OoQFaTioe7Fo8LLej3dMwF8oQPOYwlHYk=
-github.com/ajroetker/hugot v0.0.0-20251220213222-3441dd5335d4/go.mod h1:SZei6UfspsKpiJM7gKq69OPWS58zCUuvAD/1FmroPpQ=
+github.com/ajroetker/hugot v0.0.0-20251220223438-4f404c897e78 h1:+JOcrmqErydK7DcPlwlwbuZYEKoZ1Nh33ET7Fmg0ODY=
+github.com/ajroetker/hugot v0.0.0-20251220223438-4f404c897e78/go.mod h1:SZei6UfspsKpiJM7gKq69OPWS58zCUuvAD/1FmroPpQ=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af h1:aHNE0ziBmRYymxHHnxFIurc3mOuuP6SyX/bfX60Uz1w=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af/go.mod h1:Cm2P05Au+crlgKA+S5URoIpyw1bjegC7AEjl5liBrDk=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
