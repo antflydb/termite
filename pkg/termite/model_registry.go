@@ -407,7 +407,7 @@ func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager,
 
 			// Load standard precision multimodal model
 			if hasMultimodalStd {
-				model, err := termembeddings.NewHugotCLIPEmbedder(modelPath, false, logger.Named(modelName))
+				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, false, sessionManager, logger.Named(modelName))
 				if err != nil {
 					logger.Warn("Failed to load multimodal embedder model",
 						zap.String("name", modelName),
@@ -416,14 +416,15 @@ func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager,
 					registry.models[modelName] = model
 					logger.Info("Successfully loaded multimodal embedder model",
 						zap.String("name", modelName),
-						zap.String("type", "clip"))
+						zap.String("type", "clip"),
+						zap.String("backend", string(backendUsed)))
 				}
 			}
 
 			// Load quantized multimodal model with suffix
 			if hasMultimodalQt {
 				quantizedName := modelName + "-i8-qt"
-				model, err := termembeddings.NewHugotCLIPEmbedder(modelPath, true, logger.Named(quantizedName))
+				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, true, sessionManager, logger.Named(quantizedName))
 				if err != nil {
 					logger.Warn("Failed to load quantized multimodal embedder model",
 						zap.String("name", quantizedName),
@@ -432,7 +433,8 @@ func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager,
 					registry.models[quantizedName] = model
 					logger.Info("Successfully loaded quantized multimodal embedder model",
 						zap.String("name", quantizedName),
-						zap.String("type", "clip"))
+						zap.String("type", "clip"),
+						zap.String("backend", string(backendUsed)))
 				}
 			}
 			continue // Skip standard embedder loading for multimodal models

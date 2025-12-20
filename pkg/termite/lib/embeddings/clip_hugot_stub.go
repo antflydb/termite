@@ -22,6 +22,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	libafembed "github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 )
@@ -38,6 +39,11 @@ func NewHugotCLIPEmbedder(modelPath string, quantized bool, logger *zap.Logger) 
 // NewHugotCLIPEmbedderWithSession returns an error when CLIP support is disabled.
 func NewHugotCLIPEmbedderWithSession(modelPath string, quantized bool, sharedSession *khugot.Session, logger *zap.Logger) (*HugotCLIPEmbedder, error) {
 	return nil, errors.New("HugotCLIP embedder not available: build with -tags=\"onnx,ORT\" to enable")
+}
+
+// NewHugotCLIPEmbedderWithSessionManager returns an error when CLIP support is disabled.
+func NewHugotCLIPEmbedderWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotCLIPEmbedder, hugot.BackendType, error) {
+	return nil, "", errors.New("HugotCLIP embedder not available: build with -tags=\"onnx,ORT\" to enable")
 }
 
 // Capabilities returns empty capabilities for the stub.

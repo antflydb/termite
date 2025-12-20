@@ -32,7 +32,6 @@ import (
 	"github.com/antflydb/termite/pkg/client"
 	"github.com/antflydb/termite/pkg/client/oapi"
 	"github.com/antflydb/termite/pkg/termite"
-	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -45,28 +44,24 @@ const (
 )
 
 // TestCLIPMultimodalE2E tests the full CLIP multimodal embedding pipeline:
-// 1. Pulls CLIP model from registry
-// 2. Starts termite server
-// 3. Tests text and image embedding
-// 4. Verifies cross-modal embedding dimensions match
+// 1. Starts termite server with CLIP model (downloaded by TestMain)
+// 2. Tests text and image embedding
+// 3. Verifies cross-modal embedding dimensions match
 func TestCLIPMultimodalE2E(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode (requires network and ~500MB model download)")
+		t.Skip("Skipping E2E test in short mode")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	logger := zaptest.NewLogger(t)
 
-	// 1. Create temp directory for models
-	modelsDir := t.TempDir()
+	// Use shared models directory from test harness
+	modelsDir := getTestModelsDir()
 	t.Logf("Using models directory: %s", modelsDir)
 
-	// 2. Pull CLIP model from registry
-	pullCLIPModel(t, ctx, modelsDir)
-
-	// 3. Find an available port
+	// Find an available port
 	port := findAvailablePort(t)
 	serverURL := fmt.Sprintf("http://localhost:%d", port)
 	t.Logf("Starting server on %s", serverURL)
@@ -129,38 +124,6 @@ func TestCLIPMultimodalE2E(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Error("Timeout waiting for server shutdown")
 	}
-}
-
-// pullCLIPModel downloads the CLIP model from the registry
-func pullCLIPModel(t *testing.T, ctx context.Context, modelsDir string) {
-	t.Helper()
-	t.Logf("Pulling CLIP model %s...", clipModelName)
-
-	regClient := modelregistry.NewClient(
-		modelregistry.WithProgressHandler(func(downloaded, total int64, filename string) {
-			if total > 0 {
-				percent := float64(downloaded) / float64(total) * 100
-				t.Logf("  %s: %.1f%% (%d/%d bytes)", filename, percent, downloaded, total)
-			}
-		}),
-	)
-
-	manifest, err := regClient.FetchManifest(ctx, clipModelName)
-	if err != nil {
-		t.Fatalf("Failed to fetch manifest for %s: %v", clipModelName, err)
-	}
-
-	t.Logf("Model: %s (type: %s)", manifest.Name, manifest.Type)
-	if manifest.IsMultimodal() {
-		t.Log("Model has multimodal capability")
-	}
-
-	// Pull the f32 variant (default)
-	if err := regClient.PullModel(ctx, manifest, modelsDir, []string{modelregistry.VariantF32}); err != nil {
-		t.Fatalf("Failed to pull model: %v", err)
-	}
-
-	t.Log("Model pull complete")
 }
 
 // testListModels verifies the CLIP model appears in the models list

@@ -3,13 +3,13 @@ module github.com/antflydb/termite/e2e
 go 1.25.0
 
 require (
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
 	go.uber.org/zap v1.27.1
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251219015450-5c56af7f4266 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
