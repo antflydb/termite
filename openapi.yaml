@@ -352,11 +352,84 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /generate:
+    post:
+      summary: Generate text
+      description: |
+        Generate text using Seq2Seq models (T5, FLAN-T5, BART, etc.).
+
+        ## Models
+
+        - Models are auto-discovered from `models_dir/generators/`
+        - Seq2Seq models have encoder.onnx, decoder-init.onnx, and decoder.onnx files
+        - Compatible with LMQG question generation models
+
+        ## Use Cases
+
+        - **Question Generation**: Generate questions from answer-context pairs
+        - **Translation**: Translate text between languages
+        - **Summarization**: Generate summaries of text
+        - **Text-to-Text**: General text transformation tasks
+
+        ## Example
+
+        ```json
+        {
+          "model": "flan-t5-small",
+          "inputs": ["Translate to German: Hello, how are you?"]
+        }
+        ```
+
+        For question generation with LMQG models:
+        ```json
+        {
+          "model": "lmqg-qg-flan-t5-small",
+          "inputs": ["generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."]
+        }
+        ```
+      operationId: generateText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+      responses:
+        '200':
+          description: Text generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Generation service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, reranking, and NER models.
+        Returns lists of available embedding, chunking, reranking, NER, and generation models.
 
         ## Embedders
 
@@ -376,7 +449,12 @@ paths:
         ## NER
 
         - ONNX models from `models_dir/ner/`
-        - Empty if no models configured
+        - Includes GLiNER models for zero-shot NER
+
+        ## Generators
+
+        - Seq2Seq models from `models_dir/generators/`
+        - T5, FLAN-T5, BART, and LMQG question generation models
 
         Models are discovered at service startup and cached.
       operationId: listModels
@@ -739,6 +817,20 @@ components:
           example:
             - John Smith works at Google.
             - Apple Inc. is in Cupertino.
+        labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Custom entity labels to extract (GLiNER models only).
+            When using a GLiNER model, you can specify any entity types to extract,
+            enabling zero-shot NER without model retraining.
+            If not provided, the model's default labels are used.
+          example:
+            - person
+            - company
+            - product
+            - date
     NERResponse:
       type: object
       required:
@@ -755,6 +847,39 @@ components:
             items:
               $ref: '#/components/schemas/NEREntity'
           description: Array of entity arrays (one per input text)
+    GenerateRequest:
+      type: object
+      required:
+        - model
+        - inputs
+      properties:
+        model:
+          type: string
+          description: Name of Seq2Seq model from models_dir/generators/
+          example: flan-t5-small
+        inputs:
+          type: array
+          items:
+            type: string
+          description: Input texts to generate from
+          example:
+            - 'Translate to German: Hello, how are you?'
+    GenerateResponse:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of model used for generation
+        texts:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+          description: Generated texts (array of arrays, one per input, multiple per beam)
     ModelsResponse:
       type: object
       required:
@@ -762,6 +887,7 @@ components:
         - rerankers
         - embedders
         - ner
+        - generators
       properties:
         chunkers:
           type: array
@@ -794,6 +920,23 @@ components:
           example:
             - bert-base-ner
             - distilbert-ner
+            - gliner-small
+        gliner:
+          type: array
+          items:
+            type: string
+          description: Available GLiNER models (zero-shot NER with custom labels)
+          example:
+            - gliner-small
+            - gliner-multitask
+        generators:
+          type: array
+          items:
+            type: string
+          description: Available Seq2Seq generation models from models_dir/generators/
+          example:
+            - flan-t5-small
+            - lmqg-question-generation
     Config:
       type: object
       required:

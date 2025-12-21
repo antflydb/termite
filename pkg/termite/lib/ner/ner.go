@@ -42,3 +42,40 @@ type Model interface {
 	// Close releases any resources held by the model.
 	Close() error
 }
+
+// GLiNERModel extends Model with zero-shot NER capabilities.
+// GLiNER models can recognize any entity types specified at inference time
+// without requiring model retraining.
+type GLiNERModel interface {
+	Model
+
+	// RecognizeWithLabels extracts entities of the specified types (zero-shot NER).
+	// This is the key feature of GLiNER - it can extract any entity type without retraining.
+	RecognizeWithLabels(ctx context.Context, texts []string, labels []string) ([][]Entity, error)
+
+	// Labels returns the default entity labels this model uses.
+	Labels() []string
+}
+
+// Relation represents a relationship between two entities.
+type Relation struct {
+	// HeadEntity is the source entity in the relationship
+	HeadEntity Entity `json:"head"`
+	// TailEntity is the target entity in the relationship
+	TailEntity Entity `json:"tail"`
+	// Label is the relationship type (e.g., "founded", "works_at", "located_in")
+	Label string `json:"label"`
+	// Score is the model's confidence in this relationship (0.0-1.0)
+	Score float32 `json:"score"`
+}
+
+// RelationExtractionModel extends GLiNERModel with relationship extraction capabilities.
+type RelationExtractionModel interface {
+	GLiNERModel
+
+	// RecognizeWithRelations extracts both entities and relationships between them.
+	RecognizeWithRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]Entity, [][]Relation, error)
+
+	// RelationLabels returns the default relation labels this model uses.
+	RelationLabels() []string
+}

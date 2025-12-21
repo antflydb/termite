@@ -29,6 +29,7 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
+	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 )
@@ -489,17 +490,19 @@ func (r *EmbedderRegistry) Close() error {
 
 // NERRegistry manages multiple NER (Named Entity Recognition) models loaded from a directory
 type NERRegistry struct {
-	models map[string]ner.Model // model name -> NER model instance
-	mu     sync.RWMutex
-	logger *zap.Logger
+	models       map[string]ner.Model       // model name -> NER model instance
+	glinerModels map[string]ner.GLiNERModel // model name -> GLiNER model instance
+	mu           sync.RWMutex
+	logger       *zap.Logger
 }
 
 // NewNERRegistry creates a registry and discovers NER models in the given directory
 // If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
 func NewNERRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*NERRegistry, error) {
 	registry := &NERRegistry{
-		models: make(map[string]ner.Model),
-		logger: logger,
+		models:       make(map[string]ner.Model),
+		glinerModels: make(map[string]ner.GLiNERModel),
+		logger:       logger,
 	}
 
 	if modelsDir == "" {
@@ -528,61 +531,97 @@ func NewNERRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap
 		modelName := entry.Name()
 		modelPath := filepath.Join(modelsDir, modelName)
 
-		// Discover all available model variants
-		variants := discoverModelVariants(modelPath)
+		// Check if this is a GLiNER model
+		isGLiNER := ner.IsGLiNERModel(modelPath)
 
-		// Skip if no model files exist
-		if len(variants) == 0 {
-			logger.Debug("Skipping directory without model files",
-				zap.String("dir", modelName))
-			continue
-		}
+		if isGLiNER {
+			// Load GLiNER model (no variants, uses model.onnx or model_quantized.onnx)
+			logger.Info("Discovered GLiNER model directory",
+				zap.String("name", modelName),
+				zap.String("path", modelPath))
 
-		// Log discovered variants
-		variantIDs := make([]string, 0, len(variants))
-		for v := range variants {
-			if v == "" {
-				variantIDs = append(variantIDs, "default")
-			} else {
-				variantIDs = append(variantIDs, v)
-			}
-		}
-		logger.Info("Discovered NER model directory",
-			zap.String("name", modelName),
-			zap.String("path", modelPath),
-			zap.Strings("variants", variantIDs))
-
-		// Pool size for concurrent pipeline access
-		// Cap at 4 to avoid excessive memory usage (each pipeline loads full model)
-		poolSize := min(runtime.NumCPU(), 4)
-
-		// Load each variant
-		for variantID, onnxFilename := range variants {
-			// Determine registry name
-			registryName := modelName
-			if variantID != "" {
-				registryName = modelName + "-" + variantID
+			// Try quantized first, then non-quantized
+			quantized := false
+			if _, err := os.Stat(filepath.Join(modelPath, "model_quantized.onnx")); err == nil {
+				quantized = true
+			} else if _, err := os.Stat(filepath.Join(modelPath, "model.onnx")); err != nil {
+				logger.Debug("Skipping GLiNER directory without model files",
+					zap.String("dir", modelName))
+				continue
 			}
 
-			// Pass model path, ONNX filename, and shared session to pooled NER model
-			model, err := ner.NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+			model, err := ner.NewHugotGLiNERWithSession(modelPath, quantized, sharedSession, logger.Named(modelName))
 			if err != nil {
-				logger.Warn("Failed to load NER model variant",
-					zap.String("name", registryName),
-					zap.String("onnxFile", onnxFilename),
+				logger.Warn("Failed to load GLiNER model",
+					zap.String("name", modelName),
+					zap.Bool("quantized", quantized),
 					zap.Error(err))
 			} else {
-				registry.models[registryName] = model
-				logger.Info("Successfully loaded NER model",
-					zap.String("name", registryName),
-					zap.String("onnxFile", onnxFilename),
-					zap.Int("poolSize", poolSize))
+				registry.glinerModels[modelName] = model
+				registry.models[modelName] = model // Also register as regular Model for compatibility
+				logger.Info("Successfully loaded GLiNER model",
+					zap.String("name", modelName),
+					zap.Bool("quantized", quantized),
+					zap.Strings("default_labels", model.Labels()))
+			}
+		} else {
+			// Discover all available model variants for regular NER models
+			variants := discoverModelVariants(modelPath)
+
+			// Skip if no model files exist
+			if len(variants) == 0 {
+				logger.Debug("Skipping directory without model files",
+					zap.String("dir", modelName))
+				continue
+			}
+
+			// Log discovered variants
+			variantIDs := make([]string, 0, len(variants))
+			for v := range variants {
+				if v == "" {
+					variantIDs = append(variantIDs, "default")
+				} else {
+					variantIDs = append(variantIDs, v)
+				}
+			}
+			logger.Info("Discovered NER model directory",
+				zap.String("name", modelName),
+				zap.String("path", modelPath),
+				zap.Strings("variants", variantIDs))
+
+			// Pool size for concurrent pipeline access
+			// Cap at 4 to avoid excessive memory usage (each pipeline loads full model)
+			poolSize := min(runtime.NumCPU(), 4)
+
+			// Load each variant
+			for variantID, onnxFilename := range variants {
+				// Determine registry name
+				registryName := modelName
+				if variantID != "" {
+					registryName = modelName + "-" + variantID
+				}
+
+				// Pass model path, ONNX filename, and shared session to pooled NER model
+				model, err := ner.NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, sharedSession, logger.Named(registryName))
+				if err != nil {
+					logger.Warn("Failed to load NER model variant",
+						zap.String("name", registryName),
+						zap.String("onnxFile", onnxFilename),
+						zap.Error(err))
+				} else {
+					registry.models[registryName] = model
+					logger.Info("Successfully loaded NER model",
+						zap.String("name", registryName),
+						zap.String("onnxFile", onnxFilename),
+						zap.Int("poolSize", poolSize))
+				}
 			}
 		}
 	}
 
 	logger.Info("NER registry initialized",
-		zap.Int("models_loaded", len(registry.models)))
+		zap.Int("models_loaded", len(registry.models)),
+		zap.Int("gliner_models", len(registry.glinerModels)))
 
 	return registry, nil
 }
@@ -599,6 +638,27 @@ func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
 	return model, nil
 }
 
+// GetGLiNER returns a GLiNER model by name (for zero-shot NER with custom labels)
+func (r *NERRegistry) GetGLiNER(modelName string) (ner.GLiNERModel, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model, ok := r.glinerModels[modelName]
+	if !ok {
+		return nil, fmt.Errorf("GLiNER model not found: %s", modelName)
+	}
+	return model, nil
+}
+
+// IsGLiNER returns true if the model is a GLiNER model
+func (r *NERRegistry) IsGLiNER(modelName string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	_, ok := r.glinerModels[modelName]
+	return ok
+}
+
 // List returns all available NER model names
 func (r *NERRegistry) List() []string {
 	r.mu.RLock()
@@ -606,6 +666,18 @@ func (r *NERRegistry) List() []string {
 
 	names := make([]string, 0, len(r.models))
 	for name := range r.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+// ListGLiNER returns all available GLiNER model names
+func (r *NERRegistry) ListGLiNER() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.glinerModels))
+	for name := range r.glinerModels {
 		names = append(names, name)
 	}
 	return names
@@ -619,6 +691,137 @@ func (r *NERRegistry) Close() error {
 	for name, model := range r.models {
 		if err := model.Close(); err != nil {
 			r.logger.Warn("Error closing NER model",
+				zap.String("name", name),
+				zap.Error(err))
+		}
+	}
+	return nil
+}
+
+// Seq2SeqRegistry manages multiple Seq2Seq text generation models loaded from a directory
+type Seq2SeqRegistry struct {
+	models map[string]seq2seq.Model // model name -> Seq2Seq model instance
+	mu     sync.RWMutex
+	logger *zap.Logger
+}
+
+// NewSeq2SeqRegistry creates a registry and discovers Seq2Seq models in the given directory
+// Seq2Seq models have encoder.onnx, decoder-init.onnx, and decoder.onnx files
+// If sharedSession is provided, all models will share the same Hugot session
+func NewSeq2SeqRegistry(modelsDir string, sharedSession *khugot.Session, logger *zap.Logger) (*Seq2SeqRegistry, error) {
+	registry := &Seq2SeqRegistry{
+		models: make(map[string]seq2seq.Model),
+		logger: logger,
+	}
+
+	if modelsDir == "" {
+		logger.Info("No Seq2Seq models directory configured")
+		return registry, nil
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(modelsDir); os.IsNotExist(err) {
+		logger.Warn("Seq2Seq models directory does not exist",
+			zap.String("dir", modelsDir))
+		return registry, nil
+	}
+
+	// Scan directory for model subdirectories
+	entries, err := os.ReadDir(modelsDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading Seq2Seq models directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		modelName := entry.Name()
+		modelPath := filepath.Join(modelsDir, modelName)
+
+		// Check if this is a Seq2Seq model (has encoder.onnx, decoder-init.onnx, decoder.onnx)
+		if !seq2seq.IsSeq2SeqModel(modelPath) {
+			logger.Debug("Skipping directory - not a Seq2Seq model",
+				zap.String("dir", modelName))
+			continue
+		}
+
+		logger.Info("Discovered Seq2Seq model directory",
+			zap.String("name", modelName),
+			zap.String("path", modelPath))
+
+		// Load the Seq2Seq model
+		model, err := seq2seq.NewHugotSeq2SeqWithSession(modelPath, sharedSession, logger.Named(modelName))
+		if err != nil {
+			logger.Warn("Failed to load Seq2Seq model",
+				zap.String("name", modelName),
+				zap.Error(err))
+		} else {
+			registry.models[modelName] = model
+			config := model.Config()
+			logger.Info("Successfully loaded Seq2Seq model",
+				zap.String("name", modelName),
+				zap.String("task", config.Task),
+				zap.Int("max_length", config.MaxLength))
+		}
+	}
+
+	logger.Info("Seq2Seq registry initialized",
+		zap.Int("models_loaded", len(registry.models)))
+
+	return registry, nil
+}
+
+// Get returns a Seq2Seq model by name
+func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model, ok := r.models[modelName]
+	if !ok {
+		return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+	}
+	return model, nil
+}
+
+// GetQuestionGenerator returns a Seq2Seq model as a QuestionGenerator by name
+func (r *Seq2SeqRegistry) GetQuestionGenerator(modelName string) (seq2seq.QuestionGenerator, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model, ok := r.models[modelName]
+	if !ok {
+		return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+	}
+
+	qg, ok := model.(seq2seq.QuestionGenerator)
+	if !ok {
+		return nil, fmt.Errorf("model %s does not support question generation", modelName)
+	}
+	return qg, nil
+}
+
+// List returns all available Seq2Seq model names
+func (r *Seq2SeqRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.models))
+	for name := range r.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Close closes all loaded Seq2Seq models
+func (r *Seq2SeqRegistry) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, model := range r.models {
+		if err := model.Close(); err != nil {
+			r.logger.Warn("Error closing Seq2Seq model",
 				zap.String("name", name),
 				zap.Error(err))
 		}

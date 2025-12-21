@@ -54,6 +54,7 @@ type TermiteNode struct {
 	cachedChunker         *CachedChunker
 	rerankerRegistry      *RerankerRegistry
 	nerRegistry           *NERRegistry
+	seq2seqRegistry       *Seq2SeqRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -248,6 +249,21 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		defer func() { _ = nerRegistry.Close() }()
 	}
 
+	// Initialize Seq2Seq registry with optional model directory support
+	// If models_dir is set in config, Termite will discover and load Seq2Seq models
+	// If not set, generate endpoint will not be available
+	var generatorsModelsDir string
+	if config.ModelsDir != "" {
+		generatorsModelsDir = filepath.Join(config.ModelsDir, "generators")
+	}
+	seq2seqRegistry, err := NewSeq2SeqRegistry(generatorsModelsDir, sharedSession, zl.Named("seq2seq"))
+	if err != nil {
+		zl.Fatal("Failed to initialize Seq2Seq registry", zap.Error(err))
+	}
+	if seq2seqRegistry != nil {
+		defer func() { _ = seq2seqRegistry.Close() }()
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -312,6 +328,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		cachedChunker:         cachedChunker,
 		rerankerRegistry:      rerankerRegistry,
 		nerRegistry:           nerRegistry,
+		seq2seqRegistry:       seq2seqRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
