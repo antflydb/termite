@@ -75,8 +75,8 @@ func (t *TermiteAPI) RecognizeEntities(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiNER(w, r)
 }
 
-// GenerateText implements ServerInterface
-func (t *TermiteAPI) GenerateText(w http.ResponseWriter, r *http.Request) {
+// GenerateQuestions implements ServerInterface
+func (t *TermiteAPI) GenerateQuestions(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiGenerate(w, r)
 }
 

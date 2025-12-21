@@ -853,11 +853,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /ner:
+  /recognize:
     post:
-      summary: Extract named entities
+      summary: Recognize named entities
       description: |
-        Extracts named entities (persons, organizations, locations, etc.) from text using ONNX NER models.
+        Recognizes named entities (persons, organizations, locations, etc.) from text using ONNX NER models.
 
         ## Entity Types
 
@@ -872,6 +872,7 @@ paths:
         - Models are auto-discovered from `models_dir/ner/`
         - Supports quantized variants (model_i8.onnx)
         - Compatible with HuggingFace BERT-based NER models
+        - GLiNER models support custom entity labels via the `labels` parameter
 
         ## Example
 
@@ -920,11 +921,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /generate:
+  /question:
     post:
-      summary: Generate text
+      summary: Generate questions
       description: |
-        Generate text using Seq2Seq models (T5, FLAN-T5, BART, etc.).
+        Generate questions using Seq2Seq models (T5, FLAN-T5, BART, etc.).
 
         ## Models
 
@@ -935,27 +936,18 @@ paths:
         ## Use Cases
 
         - **Question Generation**: Generate questions from answer-context pairs
-        - **Translation**: Translate text between languages
-        - **Summarization**: Generate summaries of text
-        - **Text-to-Text**: General text transformation tasks
+        - **Query Generation**: Generate search queries from documents
 
         ## Example
-
-        ```json
-        {
-          "model": "flan-t5-small",
-          "inputs": ["Translate to German: Hello, how are you?"]
-        }
-        ```
 
         For question generation with LMQG models:
         ```json
         {
-          "model": "lmqg-qg-flan-t5-small",
+          "model": "flan-t5-small-squad-qg",
           "inputs": ["generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."]
         }
         ```
-      operationId: generateText
+      operationId: generateQuestions
       requestBody:
         required: true
         content:

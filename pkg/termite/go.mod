@@ -2,7 +2,7 @@ module github.com/antflydb/termite/pkg/termite
 
 go 1.25.0
 
-replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251217194311-d3b7c50c8459
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
