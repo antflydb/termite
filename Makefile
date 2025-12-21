@@ -321,3 +321,56 @@ examples: ## Show example usage.
 	@echo ""
 	@echo "4. View pool details:"
 	@echo "   kubectl describe termitepool read-heavy-embedders -n termite-operator-namespace"
+
+##@ E2E Testing
+
+# Detect OS and architecture for library paths
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Darwin)
+    ifeq ($(UNAME_M),arm64)
+        PLATFORM := darwin-arm64
+    else
+        PLATFORM := darwin-amd64
+    endif
+else
+    ifeq ($(UNAME_M),aarch64)
+        PLATFORM := linux-arm64
+    else
+        PLATFORM := linux-amd64
+    endif
+endif
+
+.PHONY: e2e-deps
+e2e-deps: ## Download ONNX Runtime and PJRT for omni builds.
+	@echo "Downloading ONNX Runtime..."
+	./scripts/download-onnxruntime.sh
+	@echo "Downloading PJRT..."
+	./scripts/download-pjrt.sh
+
+.PHONY: e2e
+e2e: e2e-deps ## Run E2E tests with omni build (ONNX + XLA).
+	@echo "Running E2E tests with omni build..."
+	@echo "This will download the CLIP model (~500MB) on first run."
+	@echo "Platform: $(PLATFORM)"
+	export ONNXRUNTIME_ROOT=$$(pwd)/onnxruntime && \
+	export PJRT_ROOT=$$(pwd)/pjrt && \
+	export CGO_ENABLED=1 && \
+	export LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LIBRARY_PATH && \
+	export LD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
+	export DYLD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
+	cd e2e && go mod tidy && \
+	go test -v -tags="onnx,ORT,xla,XLA" -timeout 15m ./...
+
+.PHONY: e2e-onnx
+e2e-onnx: ## Run E2E tests with ONNX only (no XLA).
+	@echo "Running E2E tests with ONNX build..."
+	@echo "Platform: $(PLATFORM)"
+	./scripts/download-onnxruntime.sh
+	export ONNXRUNTIME_ROOT=$$(pwd)/onnxruntime && \
+	export CGO_ENABLED=1 && \
+	export LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LIBRARY_PATH && \
+	export LD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
+	export DYLD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
+	cd e2e && go mod tidy && \
+	go test -v -tags="onnx,ORT" -timeout 15m ./...

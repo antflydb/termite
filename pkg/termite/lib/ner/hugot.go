@@ -131,6 +131,75 @@ func NewHugotNERWithSession(modelPath string, onnxFilename string, sharedSession
 	}, nil
 }
 
+// NewHugotNERWithSessionManager creates a new NER model using a SessionManager.
+// The SessionManager handles backend selection based on priority and model compatibility.
+func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotNER, error) {
+	if modelPath == "" {
+		return nil, errors.New("model path is required")
+	}
+
+	if onnxFilename == "" {
+		onnxFilename = "model.onnx"
+	}
+
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	if sessionManager == nil {
+		// Fall back to creating a new session
+		return NewHugotNERWithSession(modelPath, onnxFilename, nil, logger)
+	}
+
+	// Load NER configuration (labels)
+	config, err := LoadNERConfig(modelPath)
+	if err != nil {
+		logger.Warn("Failed to load NER config, using default labels",
+			zap.String("modelPath", modelPath),
+			zap.Error(err))
+		config = &NERConfig{
+			Labels: []string{"O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MISC", "I-MISC"},
+		}
+	}
+
+	logger.Info("Initializing Hugot NER with SessionManager",
+		zap.String("modelPath", modelPath),
+		zap.String("onnxFilename", onnxFilename),
+		zap.Int("numLabels", len(config.Labels)))
+
+	// Get session from SessionManager
+	session, _, err := sessionManager.GetSessionForModel(nil)
+	if err != nil {
+		logger.Error("Failed to get session from SessionManager", zap.Error(err))
+		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+	}
+
+	// Create token classification pipeline
+	pipelineName := fmt.Sprintf("ner:%s:%s", modelPath, onnxFilename)
+	pipelineConfig := khugot.TokenClassificationConfig{
+		ModelPath:    modelPath,
+		Name:         pipelineName,
+		OnnxFilename: onnxFilename,
+	}
+
+	pipeline, err := khugot.NewPipeline(session, pipelineConfig)
+	if err != nil {
+		logger.Error("Failed to create pipeline", zap.Error(err))
+		return nil, fmt.Errorf("creating token classification pipeline: %w", err)
+	}
+
+	pipeline.AggregationStrategy = "SIMPLE"
+	logger.Info("Successfully created NER token classification pipeline")
+
+	return &HugotNER{
+		session:       session,
+		pipeline:      pipeline,
+		config:        config,
+		logger:        logger,
+		sessionShared: true, // SessionManager owns the session
+	}, nil
+}
+
 // Recognize extracts named entities from the given texts.
 func (h *HugotNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
 	if len(texts) == 0 {
@@ -343,6 +412,90 @@ func NewPooledHugotNERWithSession(modelPath string, onnxFilename string, poolSiz
 		sem:           semaphore.NewWeighted(int64(poolSize)),
 		logger:        logger,
 		sessionShared: sessionShared,
+		poolSize:      poolSize,
+	}, nil
+}
+
+// NewPooledHugotNERWithSessionManager creates a new pooled NER model using a SessionManager.
+// The SessionManager handles backend selection based on priority and model compatibility.
+func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, poolSize int, sessionManager *hugot.SessionManager, logger *zap.Logger) (*PooledHugotNER, error) {
+	if modelPath == "" {
+		return nil, errors.New("model path is required")
+	}
+
+	if onnxFilename == "" {
+		onnxFilename = "model.onnx"
+	}
+
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	if sessionManager == nil {
+		// Fall back to creating a new session
+		return NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, nil, logger)
+	}
+
+	if poolSize <= 0 {
+		poolSize = runtime.NumCPU()
+	}
+
+	// Load NER configuration (labels)
+	config, err := LoadNERConfig(modelPath)
+	if err != nil {
+		logger.Warn("Failed to load NER config, using default labels",
+			zap.String("modelPath", modelPath),
+			zap.Error(err))
+		config = &NERConfig{
+			Labels: []string{"O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MISC", "I-MISC"},
+		}
+	}
+
+	logger.Info("Initializing pooled Hugot NER with SessionManager",
+		zap.String("modelPath", modelPath),
+		zap.String("onnxFilename", onnxFilename),
+		zap.Int("poolSize", poolSize),
+		zap.Int("numLabels", len(config.Labels)))
+
+	// Get session from SessionManager
+	session, _, err := sessionManager.GetSessionForModel(nil)
+	if err != nil {
+		logger.Error("Failed to get session from SessionManager", zap.Error(err))
+		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+	}
+
+	// Create N pipelines with unique names
+	pipelinesList := make([]*pipelines.TokenClassificationPipeline, poolSize)
+	for i := 0; i < poolSize; i++ {
+		pipelineName := fmt.Sprintf("ner:%s:%s:%d", modelPath, onnxFilename, i)
+		pipelineConfig := khugot.TokenClassificationConfig{
+			ModelPath:    modelPath,
+			Name:         pipelineName,
+			OnnxFilename: onnxFilename,
+		}
+
+		pipeline, err := khugot.NewPipeline(session, pipelineConfig)
+		if err != nil {
+			logger.Error("Failed to create pipeline",
+				zap.Int("index", i),
+				zap.Error(err))
+			return nil, fmt.Errorf("creating token classification pipeline %d: %w", i, err)
+		}
+
+		pipeline.AggregationStrategy = "SIMPLE"
+		pipelinesList[i] = pipeline
+		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
+	}
+
+	logger.Info("Successfully created pooled NER pipelines", zap.Int("count", poolSize))
+
+	return &PooledHugotNER{
+		session:       session,
+		pipelines:     pipelinesList,
+		config:        config,
+		sem:           semaphore.NewWeighted(int64(poolSize)),
+		logger:        logger,
+		sessionShared: true, // SessionManager owns the session
 		poolSize:      poolSize,
 	}, nil
 }

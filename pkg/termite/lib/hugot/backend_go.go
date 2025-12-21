@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build !(onnx && ORT) && !(xla && XLA)
-
 package hugot
 
 import (
@@ -21,8 +19,12 @@ import (
 	"github.com/knights-analytics/hugot/options"
 )
 
-// newSessionImpl creates a Hugot session using the pure Go backend (goMLX).
-// This is the default implementation when no build tags are specified.
+func init() {
+	RegisterBackend(&goBackend{})
+}
+
+// goBackend implements Backend using the pure Go goMLX runtime.
+// This backend is always available as it has no external dependencies.
 //
 // Advantages:
 //   - No CGO required
@@ -31,24 +33,27 @@ import (
 //   - Works everywhere
 //
 // Trade-offs:
-//   - Slower inference compared to ONNX Runtime
-func newSessionImpl(opts ...options.WithOption) (*hugot.Session, error) {
-	return hugot.NewGoSession(opts...)
+//   - Slower inference compared to ONNX Runtime or XLA
+type goBackend struct{}
+
+func (b *goBackend) Type() BackendType {
+	return BackendGo
 }
 
-// backendNameImpl returns the name of the pure Go backend.
-func backendNameImpl() string {
+func (b *goBackend) Name() string {
 	return "goMLX (Pure Go)"
 }
 
-// SetGPUMode is a no-op for the pure Go backend.
-// GPU acceleration requires the ONNX Runtime backend (build with -tags onnx,ORT).
-func SetGPUMode(mode GPUMode) {
-	// No-op: pure Go backend doesn't support GPU acceleration
+func (b *goBackend) Available() bool {
+	// Pure Go backend is always available
+	return true
 }
 
-// GetGPUMode returns GPUModeOff for the pure Go backend.
-// GPU acceleration requires the ONNX Runtime backend.
-func GetGPUMode() GPUMode {
-	return GPUModeOff
+func (b *goBackend) Priority() int {
+	// Lowest priority (highest number) - fallback only
+	return 100
+}
+
+func (b *goBackend) CreateSession(opts ...options.WithOption) (*hugot.Session, error) {
+	return hugot.NewGoSession(opts...)
 }

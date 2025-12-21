@@ -25,8 +25,8 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"github.com/jellydator/ttlcache/v3"
-	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 )
 
@@ -45,9 +45,9 @@ type ModelInfo struct {
 
 // LazyEmbedderRegistry manages embedding models with lazy loading and TTL-based unloading
 type LazyEmbedderRegistry struct {
-	modelsDir     string
-	sharedSession *khugot.Session
-	logger        *zap.Logger
+	modelsDir      string
+	sessionManager *hugot.SessionManager
+	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
 	discovered map[string]*ModelInfo
@@ -75,7 +75,7 @@ type LazyEmbedderConfig struct {
 // NewLazyEmbedderRegistry creates a new lazy-loading embedder registry
 func NewLazyEmbedderRegistry(
 	config LazyEmbedderConfig,
-	sharedSession *khugot.Session,
+	sessionManager *hugot.SessionManager,
 	logger *zap.Logger,
 ) (*LazyEmbedderRegistry, error) {
 	if logger == nil {
@@ -89,7 +89,7 @@ func NewLazyEmbedderRegistry(
 
 	registry := &LazyEmbedderRegistry{
 		modelsDir:       config.ModelsDir,
-		sharedSession:   sharedSession,
+		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ModelInfo),
 		pinned:          make(map[string]embeddings.Embedder),
@@ -287,11 +287,12 @@ func (r *LazyEmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, 
 		zap.String("onnx_filename", info.OnnxFilename),
 		zap.Int("pool_size", info.PoolSize))
 
-	embedder, err := termembeddings.NewPooledHugotEmbedderWithSession(
+	embedder, backendUsed, err := termembeddings.NewPooledHugotEmbedderWithSessionManager(
 		info.Path,
 		info.OnnxFilename,
 		info.PoolSize,
-		r.sharedSession,
+		r.sessionManager,
+		nil, // modelBackends - use default priority
 		r.logger.Named(info.Name),
 	)
 	if err != nil {
@@ -306,6 +307,7 @@ func (r *LazyEmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, 
 
 	r.logger.Info("Successfully loaded embedder model",
 		zap.String("model", info.Name),
+		zap.String("backend", string(backendUsed)),
 		zap.Duration("keep_alive", r.keepAlive))
 
 	return embedder, nil

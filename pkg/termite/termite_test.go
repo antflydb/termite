@@ -444,7 +444,7 @@ func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	body, err := json.Marshal(reqBody)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("POST", "/api/ner", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/recognize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -495,7 +495,7 @@ func TestTermiteNode_HandleApiNER_NotAvailable(t *testing.T) {
 	body, err := json.Marshal(reqBody)
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("POST", "/api/ner", bytes.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/recognize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
 	w := httptest.NewRecorder()
@@ -579,7 +579,7 @@ func TestTermiteNode_HandleApiNER_InvalidRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/ner", bytes.NewReader([]byte(tt.body)))
+			req := httptest.NewRequest("POST", "/api/recognize", bytes.NewReader([]byte(tt.body)))
 			req.Header.Set("Content-Type", "application/json")
 
 			w := httptest.NewRecorder()

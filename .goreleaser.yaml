@@ -139,6 +139,122 @@ builds:
     main: ./cmd
     binary: termite
 
+  # ============================================
+  # OMNI builds (ONNX + XLA) for runtime backend selection
+  # ============================================
+
+  # Linux AMD64 Omni (ONNX + XLA)
+  - id: termite-omni-linux-amd64
+    dir: pkg/termite
+    env:
+      - CGO_ENABLED=1
+      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/linux-amd64/lib -lonnxruntime -ltokenizers -lstdc++
+      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/linux-amd64/include
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    tags:
+      - onnx
+      - ORT
+      - xla
+      - XLA
+    goos:
+      - linux
+    goarch:
+      - amd64
+    main: ./cmd
+    binary: termite
+
+  # Linux ARM64 Omni (ONNX + XLA) (cross-compile)
+  - id: termite-omni-linux-arm64
+    dir: pkg/termite
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+      - CXX=aarch64-linux-gnu-g++
+      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/linux-arm64/lib -lonnxruntime -ltokenizers -lstdc++
+      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/linux-arm64/include
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    tags:
+      - onnx
+      - ORT
+      - xla
+      - XLA
+    goos:
+      - linux
+    goarch:
+      - arm64
+    main: ./cmd
+    binary: termite
+
+  # macOS AMD64 Omni (ONNX + XLA) (Zig cross-compilation)
+  - id: termite-omni-darwin-amd64
+    dir: pkg/termite
+    env:
+      - CGO_ENABLED=1
+      - CC=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
+      - CXX=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
+      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/lib -L{{ .Env.SDK_PATH }}/usr/lib -lonnxruntime -ltokenizers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -framework CoreFoundation -framework Security
+      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/include -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -Wno-nullability-completeness
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -extldflags "-Wl,-rpath,@executable_path/lib"
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    tags:
+      - onnx
+      - ORT
+      - xla
+      - XLA
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    main: ./cmd
+    binary: termite
+
+  # macOS ARM64 Omni (ONNX + XLA) (Zig cross-compilation)
+  - id: termite-omni-darwin-arm64
+    dir: pkg/termite
+    env:
+      - CGO_ENABLED=1
+      - CC=zig c++ -target aarch64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
+      - CXX=zig c++ -target aarch64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
+      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/darwin-arm64/lib -L{{ .Env.SDK_PATH }}/usr/lib -lonnxruntime -ltokenizers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -framework CoreFoundation -framework Security
+      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/darwin-arm64/include -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -Wno-nullability-completeness
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -extldflags "-Wl,-rpath,@executable_path/lib"
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    tags:
+      - onnx
+      - ORT
+      - xla
+      - XLA
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    main: ./cmd
+    binary: termite
+
 archives:
   # Default pure Go builds
   - id: default
@@ -175,6 +291,33 @@ archives:
       - LICENSE
       # Bundle ONNX Runtime libraries for each platform
       - src: "onnxruntime/{{ .Os }}-{{ .Arch }}/lib/libonnxruntime*"
+        dst: lib/
+        strip_parent: true
+
+  # OMNI builds (ONNX + XLA) with runtime backend selection
+  # Includes bundled ONNX Runtime and PJRT libraries
+  - id: omni
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}-omni_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    builds:
+      - termite-omni-linux-amd64
+      - termite-omni-linux-arm64
+      - termite-omni-darwin-amd64
+      - termite-omni-darwin-arm64
+    files:
+      - README.md
+      - LICENSE
+      # Bundle ONNX Runtime libraries for each platform
+      - src: "onnxruntime/{{ .Os }}-{{ .Arch }}/lib/libonnxruntime*"
+        dst: lib/
+        strip_parent: true
+      # Bundle PJRT CPU plugin for XLA backend
+      - src: "pjrt/{{ .Os }}-{{ .Arch }}/lib/pjrt_c_api_cpu*"
         dst: lib/
         strip_parent: true
 
@@ -229,6 +372,9 @@ release:
 
     # XLA/TPU (Google Cloud TPU)
     docker pull ghcr.io/antflydb/termite:xla-tpu-{{.Tag}}
+
+    # Omni (ONNX + XLA, runtime backend selection)
+    docker pull ghcr.io/antflydb/termite:omni-{{.Tag}}
     ```
   mode: replace
   include_meta: true
@@ -277,6 +423,41 @@ homebrew_casks:
 
       For the standard version without ML dependencies, use:
         brew install --cask termite
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite"]
+            # Also clear quarantine on bundled libraries
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lib"]
+          end
+
+  # OMNI version with both ONNX Runtime and XLA backends
+  - name: termite-omni
+    ids:
+      - omni
+    repository:
+      owner: antflydb
+      name: homebrew-antfly
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://docs.antfly.io/docs/guides/termite"
+    description: "Termite with ONNX Runtime + XLA - multi-backend ML inference"
+    url:
+      template: "https://github.com/antflydb/termite/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    binary: "termite"
+    conflicts:
+      - cask: termite
+      - cask: termite-onnx
+    caveats: |
+      termite-omni includes both ONNX Runtime and XLA backends for ML inference.
+      Bundled libraries are auto-discovered from lib/ next to the binary.
+
+      Backend priority can be configured in termite.yaml:
+        backend_priority: ["onnx:coreml", "xla:cpu", "go"]
+
+      For single-backend versions:
+        brew install --cask termite      # Pure Go (no acceleration)
+        brew install --cask termite-onnx # ONNX Runtime only
     hooks:
       post:
         install: |

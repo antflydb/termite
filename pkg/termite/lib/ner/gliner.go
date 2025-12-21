@@ -195,6 +195,104 @@ func NewHugotGLiNERWithSession(modelPath string, quantized bool, sharedSession *
 	}, nil
 }
 
+// NewHugotGLiNERWithSessionManager creates a new GLiNER model using a SessionManager.
+// The SessionManager handles backend selection based on priority and model compatibility.
+func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotGLiNER, error) {
+	if modelPath == "" {
+		return nil, errors.New("model path is required")
+	}
+
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	if sessionManager == nil {
+		// Fall back to creating a new session
+		return NewHugotGLiNERWithSession(modelPath, quantized, nil, logger)
+	}
+
+	logger.Info("Initializing Hugot GLiNER model with SessionManager",
+		zap.String("modelPath", modelPath),
+		zap.Bool("quantized", quantized))
+
+	// Load GLiNER config if available
+	config := GLiNERConfig{
+		MaxWidth:          12,
+		DefaultLabels:     []string{"person", "organization", "location", "date", "product"},
+		Threshold:         0.5,
+		FlatNER:           true,
+		MultiLabel:        false,
+		ModelType:         GLiNERModelUniEncoder,
+		RelationThreshold: 0.5,
+	}
+	configPath := filepath.Join(modelPath, "gliner_config.json")
+	if data, err := os.ReadFile(configPath); err == nil {
+		if err := json.Unmarshal(data, &config); err != nil {
+			logger.Warn("Failed to parse GLiNER config", zap.Error(err))
+		}
+	}
+
+	if config.ModelType == "" {
+		config.ModelType = detectGLiNERModelType(modelPath)
+	}
+
+	// Get session from SessionManager
+	session, _, err := sessionManager.GetSessionForModel(nil)
+	if err != nil {
+		logger.Error("Failed to get session from SessionManager", zap.Error(err))
+		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+	}
+
+	// Determine which ONNX file to use
+	onnxFilename := "model.onnx"
+	if quantized {
+		onnxFilename = "model_quantized.onnx"
+	}
+
+	// Create GLiNER pipeline
+	pipelineName := fmt.Sprintf("gliner:%s:%s", modelPath, onnxFilename)
+	pipelineOptions := []khugot.GLiNEROption{
+		pipelines.WithGLiNERLabels(config.DefaultLabels),
+		pipelines.WithGLiNERMaxWidth(config.MaxWidth),
+		pipelines.WithGLiNERThreshold(config.Threshold),
+	}
+
+	if config.FlatNER {
+		pipelineOptions = append(pipelineOptions, pipelines.WithGLiNERFlatNER())
+	}
+	if config.MultiLabel {
+		pipelineOptions = append(pipelineOptions, pipelines.WithGLiNERMultiLabel())
+	}
+
+	pipelineConfig := khugot.GLiNERConfig{
+		ModelPath:    modelPath,
+		OnnxFilename: onnxFilename,
+		Name:         pipelineName,
+		Options:      pipelineOptions,
+	}
+
+	pipeline, err := khugot.NewPipeline(session, pipelineConfig)
+	if err != nil {
+		logger.Error("Failed to create GLiNER pipeline", zap.Error(err))
+		return nil, fmt.Errorf("creating GLiNER pipeline: %w", err)
+	}
+
+	logger.Info("GLiNER model initialization complete",
+		zap.Strings("default_labels", config.DefaultLabels),
+		zap.Int("max_width", config.MaxWidth),
+		zap.String("model_type", string(config.ModelType)))
+
+	return &HugotGLiNER{
+		session:        session,
+		pipeline:       pipeline,
+		logger:         logger,
+		sessionShared:  true, // SessionManager owns the session
+		config:         config,
+		labels:         config.DefaultLabels,
+		relationLabels: config.RelationLabels,
+	}, nil
+}
+
 // Recognize extracts named entities using default labels.
 func (g *HugotGLiNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
 	return g.RecognizeWithLabels(ctx, texts, g.labels)

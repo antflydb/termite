@@ -193,17 +193,17 @@ func (c *Client) PullModel(ctx context.Context, manifest *ModelManifest, modelsD
 		requestedVariants[v] = true
 	}
 
-	// Download supporting files (non-ONNX) and f32 model if requested
+	// Download supporting files (non-ONNX) and f32 model files if requested
 	for _, file := range manifest.Files {
 		isONNX := strings.HasSuffix(file.Name, ".onnx")
 		if isONNX {
-			// Only download model.onnx if f32 variant is requested
-			if file.Name == "model.onnx" && requestedVariants[VariantF32] {
+			// Download all ONNX files in base manifest if f32 variant is requested
+			// This supports both single-model (model.onnx) and multi-model (visual_model.onnx, text_model.onnx) cases
+			if requestedVariants[VariantF32] {
 				if err := c.downloadFile(ctx, file, modelDir); err != nil {
 					return fmt.Errorf("downloading %s: %w", file.Name, err)
 				}
 			}
-			// Skip other ONNX files in base manifest
 			continue
 		}
 		// Always download supporting files (tokenizer, config, etc.)
@@ -217,15 +217,18 @@ func (c *Client) PullModel(ctx context.Context, manifest *ModelManifest, modelsD
 		if variantID == VariantF32 {
 			continue // Already handled above
 		}
-		variantFile, ok := manifest.Variants[variantID]
+		variantEntry, ok := manifest.Variants[variantID]
 		if !ok {
 			c.logger.Warn("Requested variant not available in manifest",
 				zap.String("variant", variantID),
 				zap.String("model", manifest.Name))
 			continue
 		}
-		if err := c.downloadFile(ctx, variantFile, modelDir); err != nil {
-			return fmt.Errorf("downloading variant %s: %w", variantID, err)
+		// Download all files in the variant (supports both single and multi-model variants)
+		for _, variantFile := range variantEntry.Files {
+			if err := c.downloadFile(ctx, variantFile, modelDir); err != nil {
+				return fmt.Errorf("downloading variant %s file %s: %w", variantID, variantFile.Name, err)
+			}
 		}
 	}
 

@@ -321,8 +321,8 @@ spec:
                 description: Hardware defines TPU/accelerator configuration
                 properties:
                   accelerator:
-                    default: tpu-v5-lite-podslice
-                    description: Accelerator is the accelerator type label
+                    description: Accelerator is the accelerator type label (empty
+                      = no accelerator/CPU only)
                     type: string
                   machineType:
                     description: MachineType is the GKE machine type
@@ -332,8 +332,8 @@ spec:
                     description: Spot enables spot/preemptible instances
                     type: boolean
                   topology:
-                    default: 2x2
-                    description: Topology is the TPU topology (e.g., "2x2", "2x4")
+                    description: Topology is the TPU topology (e.g., "2x2", "2x4").
+                      Only required when accelerator is set.
                     type: string
                 type: object
               image:

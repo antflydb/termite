@@ -23,9 +23,9 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"github.com/cespare/xxhash/v2"
 	"github.com/jellydator/ttlcache/v3"
-	khugot "github.com/knights-analytics/hugot"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
@@ -49,10 +49,10 @@ type ChunkResult struct {
 }
 
 // NewCachedChunker creates a new cached chunker with model registry support
-// If sharedSession is provided, all models will share the same Hugot session (required for ONNX Runtime)
+// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
 func NewCachedChunker(
 	modelsDir string,
-	sharedSession *khugot.Session,
+	sessionManager *hugot.SessionManager,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {
 	// Create memory cache with 2-minute TTL (same as embeddings)
@@ -68,8 +68,8 @@ func NewCachedChunker(
 		return nil, fmt.Errorf("failed to create fixed chunker: %w", err)
 	}
 
-	// Create model registry with shared session
-	registry, err := NewChunkerRegistry(modelsDir, sharedSession, logger.Named("registry"))
+	// Create model registry with session manager
+	registry, err := NewChunkerRegistry(modelsDir, sessionManager, logger.Named("registry"))
 	if err != nil {
 		cache.Stop()
 		_ = fixedChunker.Close()
