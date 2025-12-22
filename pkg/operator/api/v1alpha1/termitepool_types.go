@@ -171,12 +171,12 @@ type PerModelReplica struct {
 
 // HardwareConfig defines TPU/accelerator configuration
 type HardwareConfig struct {
-	// Accelerator is the accelerator type label
-	// +kubebuilder:default="tpu-v5-lite-podslice"
+	// Accelerator is the accelerator type label (empty = no accelerator/CPU only)
+	// +optional
 	Accelerator string `json:"accelerator,omitempty"`
 
-	// Topology is the TPU topology (e.g., "2x2", "2x4")
-	// +kubebuilder:default="2x2"
+	// Topology is the TPU topology (e.g., "2x2", "2x4"). Only required when accelerator is set.
+	// +optional
 	Topology string `json:"topology,omitempty"`
 
 	// MachineType is the GKE machine type
