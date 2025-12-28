@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/proxy
 go 1.25.0
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
@@ -81,7 +81,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20251125145642-4e65d59e963e // indirect
-	k8s.io/utils v0.0.0-20251220205832-9d40a56c1308 // indirect
+	k8s.io/utils v0.0.0-20251222233032-718f0e51e6d2 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.1 // indirect

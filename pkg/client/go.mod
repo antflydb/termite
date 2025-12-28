@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/client
 go 1.25.0
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/oapi-codegen/runtime v1.1.2
 	github.com/stretchr/testify v1.11.1

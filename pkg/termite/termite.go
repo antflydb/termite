@@ -377,6 +377,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// Mount the OpenAPI-generated API handler (includes /api/version)
 	rootMux.Handle("/api/", apiHandler)
 
+	// Serve the embedded dashboard at root (SPA with fallback to index.html)
+	addDashboardRoutes(rootMux)
+
 	srv := &http.Server{
 		Addr:        u.Host,
 		Handler:     corsMiddleware(rootMux),

@@ -9,7 +9,7 @@ replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20
 replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251220003714-ef99c764668a
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
@@ -94,7 +94,7 @@ require (
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	github.com/viant/afs v1.29.0 // indirect
+	github.com/viant/afs v1.30.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
