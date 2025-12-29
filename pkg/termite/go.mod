@@ -8,6 +8,8 @@ replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20
 
 replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251220003714-ef99c764668a
 
+replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20251229052243-d2d8091589c4
+
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/bytedance/sonic v1.14.2
