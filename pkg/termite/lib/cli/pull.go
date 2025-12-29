@@ -163,7 +163,7 @@ func PullFromHuggingFace(repoID string, opts HuggingFaceOptions) error {
 	defer cancel()
 
 	if opts.ModelType == "" {
-		return fmt.Errorf("--type flag is required for HuggingFace pulls (embedder, chunker, reranker, ner, generator)")
+		return fmt.Errorf("--type flag is required for HuggingFace pulls (embedder, chunker, reranker, recognizer, questionator)")
 	}
 
 	modelType, err := modelregistry.ParseModelType(opts.ModelType)
@@ -270,8 +270,8 @@ func ListLocalModels(opts ListOptions) error {
 		modelregistry.ModelTypeEmbedder,
 		modelregistry.ModelTypeChunker,
 		modelregistry.ModelTypeReranker,
-		modelregistry.ModelTypeNER,
-		modelregistry.ModelTypeGenerator,
+		modelregistry.ModelTypeRecognizer,
+		modelregistry.ModelTypeQuestionator,
 	}
 
 	var filteredType modelregistry.ModelType

@@ -19,6 +19,7 @@ package modelregistry
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -26,11 +27,11 @@ import (
 type ModelType string
 
 const (
-	ModelTypeEmbedder  ModelType = "embedder"
-	ModelTypeChunker   ModelType = "chunker"
-	ModelTypeReranker  ModelType = "reranker"
-	ModelTypeNER       ModelType = "ner"
-	ModelTypeGenerator ModelType = "generator"
+	ModelTypeEmbedder     ModelType = "embedder"
+	ModelTypeChunker      ModelType = "chunker"
+	ModelTypeReranker     ModelType = "reranker"
+	ModelTypeRecognizer   ModelType = "recognizer"
+	ModelTypeQuestionator ModelType = "questionator"
 )
 
 // Model capabilities
@@ -49,12 +50,12 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeChunker, nil
 	case "reranker", "rerankers":
 		return ModelTypeReranker, nil
-	case "ner":
-		return ModelTypeNER, nil
-	case "generator", "generators":
-		return ModelTypeGenerator, nil
+	case "recognizer", "recognizers":
+		return ModelTypeRecognizer, nil
+	case "questionator", "questionators":
+		return ModelTypeQuestionator, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, ner, generator)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, recognizer, questionator)", s)
 	}
 }
 
@@ -72,10 +73,10 @@ func (t ModelType) DirName() string {
 		return "chunkers"
 	case ModelTypeReranker:
 		return "rerankers"
-	case ModelTypeNER:
-		return "ner"
-	case ModelTypeGenerator:
-		return "generators"
+	case ModelTypeRecognizer:
+		return "recognizers"
+	case ModelTypeQuestionator:
+		return "questionators"
 	default:
 		return string(t) + "s"
 	}
@@ -191,22 +192,12 @@ func (m *ModelManifest) SupportsBackend(backend string) bool {
 	if len(m.Backends) == 0 {
 		return true // All backends supported by default
 	}
-	for _, b := range m.Backends {
-		if b == backend {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Backends, backend)
 }
 
 // HasCapability returns true if the model has the specified capability.
 func (m *ModelManifest) HasCapability(capability string) bool {
-	for _, c := range m.Capabilities {
-		if c == capability {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Capabilities, capability)
 }
 
 // IsMultimodal returns true if the model has the multimodal capability.

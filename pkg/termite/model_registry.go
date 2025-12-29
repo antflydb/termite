@@ -26,6 +26,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/reranking"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/gliner"
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
@@ -415,7 +416,7 @@ func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager,
 
 			// Load standard precision multimodal model
 			if hasMultimodalStd {
-				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, false, sessionManager, logger.Named(modelName))
+				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, false, sessionManager, nil, logger.Named(modelName))
 				if err != nil {
 					logger.Warn("Failed to load multimodal embedder model",
 						zap.String("name", modelName),
@@ -432,7 +433,7 @@ func NewEmbedderRegistry(modelsDir string, sessionManager *hugot.SessionManager,
 			// Load quantized multimodal model with suffix
 			if hasMultimodalQt {
 				quantizedName := modelName + "-i8-qt"
-				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, true, sessionManager, logger.Named(quantizedName))
+				model, backendUsed, err := termembeddings.NewHugotCLIPEmbedderWithSessionManager(modelPath, true, sessionManager, nil, logger.Named(quantizedName))
 				if err != nil {
 					logger.Warn("Failed to load quantized multimodal embedder model",
 						zap.String("name", quantizedName),
@@ -540,8 +541,6 @@ func (r *EmbedderRegistry) Close() error {
 	for name, model := range r.models {
 		var err error
 		switch emb := model.(type) {
-		case *termembeddings.HugotEmbedder:
-			err = emb.Close()
 		case *termembeddings.PooledHugotEmbedder:
 			err = emb.Close()
 		case *termembeddings.HugotCLIPEmbedder:
@@ -558,19 +557,19 @@ func (r *EmbedderRegistry) Close() error {
 
 // NERRegistry manages multiple NER (Named Entity Recognition) models loaded from a directory
 type NERRegistry struct {
-	models       map[string]ner.Model       // model name -> NER model instance
-	glinerModels map[string]ner.GLiNERModel // model name -> GLiNER model instance
-	mu           sync.RWMutex
-	logger       *zap.Logger
+	models      map[string]ner.Model      // model name -> NER model instance
+	recognizers map[string]ner.Recognizer // model name -> zero-shot capable Recognizer (e.g., GLiNER)
+	mu          sync.RWMutex
+	logger      *zap.Logger
 }
 
 // NewNERRegistry creates a registry and discovers NER models in the given directory
 // If sessionManager is provided, all models will use it for backend selection (required for ONNX Runtime)
 func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*NERRegistry, error) {
 	registry := &NERRegistry{
-		models:       make(map[string]ner.Model),
-		glinerModels: make(map[string]ner.GLiNERModel),
-		logger:       logger,
+		models:      make(map[string]ner.Model),
+		recognizers: make(map[string]ner.Recognizer),
+		logger:      logger,
 	}
 
 	if modelsDir == "" {
@@ -600,7 +599,7 @@ func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logg
 		modelPath := filepath.Join(modelsDir, modelName)
 
 		// Check if this is a GLiNER model
-		isGLiNER := ner.IsGLiNERModel(modelPath)
+		isGLiNER := gliner.IsGLiNERModel(modelPath)
 
 		if isGLiNER {
 			// Load GLiNER model (no variants, uses model.onnx or model_quantized.onnx)
@@ -618,18 +617,19 @@ func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logg
 				continue
 			}
 
-			model, err := ner.NewHugotGLiNERWithSessionManager(modelPath, quantized, sessionManager, logger.Named(modelName))
+			model, backendUsed, err := gliner.NewHugotGLiNERWithSessionManager(modelPath, quantized, sessionManager, nil, logger.Named(modelName))
 			if err != nil {
 				logger.Warn("Failed to load GLiNER model",
 					zap.String("name", modelName),
 					zap.Bool("quantized", quantized),
 					zap.Error(err))
 			} else {
-				registry.glinerModels[modelName] = model
+				registry.recognizers[modelName] = model
 				registry.models[modelName] = model // Also register as regular Model for compatibility
 				logger.Info("Successfully loaded GLiNER model",
 					zap.String("name", modelName),
 					zap.Bool("quantized", quantized),
+					zap.String("backend", string(backendUsed)),
 					zap.Strings("default_labels", model.Labels()))
 			}
 		} else {
@@ -670,7 +670,7 @@ func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logg
 				}
 
 				// Pass model path, ONNX filename, and session manager to pooled NER model
-				model, err := ner.NewPooledHugotNERWithSessionManager(modelPath, onnxFilename, poolSize, sessionManager, logger.Named(registryName))
+				model, backendUsed, err := ner.NewPooledHugotNERWithSessionManager(modelPath, onnxFilename, poolSize, sessionManager, nil, logger.Named(registryName))
 				if err != nil {
 					logger.Warn("Failed to load NER model variant",
 						zap.String("name", registryName),
@@ -681,6 +681,7 @@ func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logg
 					logger.Info("Successfully loaded NER model",
 						zap.String("name", registryName),
 						zap.String("onnxFile", onnxFilename),
+						zap.String("backend", string(backendUsed)),
 						zap.Int("poolSize", poolSize))
 				}
 			}
@@ -689,7 +690,7 @@ func NewNERRegistry(modelsDir string, sessionManager *hugot.SessionManager, logg
 
 	logger.Info("NER registry initialized",
 		zap.Int("models_loaded", len(registry.models)),
-		zap.Int("gliner_models", len(registry.glinerModels)))
+		zap.Int("recognizers", len(registry.recognizers)))
 
 	return registry, nil
 }
@@ -706,24 +707,24 @@ func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
 	return model, nil
 }
 
-// GetGLiNER returns a GLiNER model by name (for zero-shot NER with custom labels)
-func (r *NERRegistry) GetGLiNER(modelName string) (ner.GLiNERModel, error) {
+// GetRecognizer returns a zero-shot capable Recognizer by name (e.g., GLiNER)
+func (r *NERRegistry) GetRecognizer(modelName string) (ner.Recognizer, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	model, ok := r.glinerModels[modelName]
+	model, ok := r.recognizers[modelName]
 	if !ok {
-		return nil, fmt.Errorf("GLiNER model not found: %s", modelName)
+		return nil, fmt.Errorf("Recognizer not found: %s", modelName)
 	}
 	return model, nil
 }
 
-// IsGLiNER returns true if the model is a GLiNER model
-func (r *NERRegistry) IsGLiNER(modelName string) bool {
+// IsRecognizer returns true if the model is a zero-shot capable Recognizer
+func (r *NERRegistry) IsRecognizer(modelName string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	_, ok := r.glinerModels[modelName]
+	_, ok := r.recognizers[modelName]
 	return ok
 }
 
@@ -739,13 +740,13 @@ func (r *NERRegistry) List() []string {
 	return names
 }
 
-// ListGLiNER returns all available GLiNER model names
-func (r *NERRegistry) ListGLiNER() []string {
+// ListRecognizers returns all available zero-shot Recognizer model names
+func (r *NERRegistry) ListRecognizers() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.glinerModels))
-	for name := range r.glinerModels {
+	names := make([]string, 0, len(r.recognizers))
+	for name := range r.recognizers {
 		names = append(names, name)
 	}
 	return names
@@ -820,7 +821,7 @@ func NewSeq2SeqRegistry(modelsDir string, sessionManager *hugot.SessionManager, 
 			zap.String("path", modelPath))
 
 		// Load the Seq2Seq model
-		model, err := seq2seq.NewHugotSeq2SeqWithSessionManager(modelPath, sessionManager, logger.Named(modelName))
+		model, backendUsed, err := seq2seq.NewHugotSeq2SeqWithSessionManager(modelPath, sessionManager, nil, logger.Named(modelName))
 		if err != nil {
 			logger.Warn("Failed to load Seq2Seq model",
 				zap.String("name", modelName),
@@ -831,7 +832,8 @@ func NewSeq2SeqRegistry(modelsDir string, sessionManager *hugot.SessionManager, 
 			logger.Info("Successfully loaded Seq2Seq model",
 				zap.String("name", modelName),
 				zap.String("task", config.Task),
-				zap.Int("max_length", config.MaxLength))
+				zap.Int("max_length", config.MaxLength),
+				zap.String("backend", string(backendUsed)))
 		}
 	}
 

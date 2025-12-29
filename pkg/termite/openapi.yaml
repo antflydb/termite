@@ -11,8 +11,8 @@ info:
     - **Embedding Generation**: Text and multimodal (CLIP) embedding models
     - **Text Chunking**: Semantic chunking with ONNX models or fixed-size fallback
     - **Reranking**: Relevance re-scoring for search results
-    - **Named Entity Recognition (NER)**: Extract persons, organizations, locations from text
-    - **Future**: Classification and generative model support planned
+    - **Named Entity Recognition**: Extract persons, organizations, locations from text
+    - **Question Generation**: Generate questions from text using Seq2Seq models
 
     Download the latest release at https://antfly.io/docs/downloads
 
@@ -356,7 +356,7 @@ components:
       properties:
         model:
           type: string
-          description: Name of NER model from models_dir/ner/
+          description: Name of recognizer model from models_dir/recognizers/
           example: "bert-base-ner"
         texts:
           type: array
@@ -401,7 +401,7 @@ components:
       properties:
         model:
           type: string
-          description: Name of Seq2Seq model from models_dir/generators/
+          description: Name of Seq2Seq questionator model from models_dir/questionators/
           example: "flan-t5-small"
         inputs:
           type: array
@@ -459,19 +459,19 @@ components:
           type: array
           items:
             type: string
-          description: Available NER models from models_dir/ner/
+          description: Available recognizer models from models_dir/recognizers/
           example: ["bert-base-ner", "distilbert-ner", "gliner-small"]
         gliner:
           type: array
           items:
             type: string
-          description: Available GLiNER models (zero-shot NER with custom labels)
+          description: Available GLiNER models (zero-shot recognition with custom labels)
           example: ["gliner-small", "gliner-multitask"]
         generators:
           type: array
           items:
             type: string
-          description: Available Seq2Seq generation models from models_dir/generators/
+          description: Available Seq2Seq questionator models from models_dir/questionators/
           example: ["flan-t5-small", "lmqg-question-generation"]
 
     Config:
@@ -491,6 +491,8 @@ components:
             - `{models_dir}/embedders/` - Embedding models (ONNX)
             - `{models_dir}/chunkers/` - Chunking models (ONNX)
             - `{models_dir}/rerankers/` - Reranking models (ONNX)
+            - `{models_dir}/recognizers/` - Recognition models (ONNX)
+            - `{models_dir}/questionators/` - Question generation models (ONNX)
 
             Defaults to ~/.termite/models (set via viper). If not set, only built-in fixed chunking is available.
           example: "~/.termite/models"
@@ -871,7 +873,7 @@ paths:
     post:
       summary: Recognize named entities
       description: |
-        Recognizes named entities (persons, organizations, locations, etc.) from text using ONNX NER models.
+        Recognizes named entities (persons, organizations, locations, etc.) from text using ONNX recognition models.
 
         ## Entity Types
 
@@ -883,9 +885,9 @@ paths:
 
         ## Models
 
-        - Models are auto-discovered from `models_dir/ner/`
+        - Models are auto-discovered from `models_dir/recognizers/`
         - Supports quantized variants (model_i8.onnx)
-        - Compatible with HuggingFace BERT-based NER models
+        - Compatible with HuggingFace BERT-based recognition models
         - GLiNER models support custom entity labels via the `labels` parameter
 
         ## Example
@@ -923,7 +925,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "503":
-          description: NER service unavailable (no models configured)
+          description: Recognition service unavailable (no models configured)
           content:
             application/json:
               schema:
@@ -935,15 +937,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /question:
+  /questionate:
     post:
       summary: Generate questions
       description: |
-        Generate questions using Seq2Seq models (T5, FLAN-T5, BART, etc.).
+        Generate questions using Seq2Seq questionator models (T5, FLAN-T5, BART, etc.).
 
         ## Models
 
-        - Models are auto-discovered from `models_dir/generators/`
+        - Models are auto-discovered from `models_dir/questionators/`
         - Seq2Seq models have encoder.onnx, decoder-init.onnx, and decoder.onnx files
         - Compatible with LMQG question generation models
 
@@ -1021,14 +1023,14 @@ paths:
         - ONNX models from `models_dir/rerankers/`
         - Empty if no models configured
 
-        ## NER
+        ## Recognizers
 
-        - ONNX models from `models_dir/ner/`
-        - Includes GLiNER models for zero-shot NER
+        - ONNX models from `models_dir/recognizers/`
+        - Includes GLiNER models for zero-shot recognition
 
-        ## Generators
+        ## Questionators
 
-        - Seq2Seq models from `models_dir/generators/`
+        - Seq2Seq models from `models_dir/questionators/`
         - T5, FLAN-T5, BART, and LMQG question generation models
 
         Models are discovered at service startup and cached.

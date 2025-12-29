@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ner
+package gliner
 
 import (
 	"context"
@@ -24,14 +24,15 @@ import (
 	"strings"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	khugot "github.com/knights-analytics/hugot"
 	"github.com/knights-analytics/hugot/pipelines"
 	"go.uber.org/zap"
 )
 
-// Ensure HugotGLiNER implements the GLiNERModel and RelationExtractionModel interfaces
-var _ GLiNERModel = (*HugotGLiNER)(nil)
-var _ RelationExtractionModel = (*HugotGLiNER)(nil)
+// Ensure HugotGLiNER implements the required interfaces
+var _ ner.Recognizer = (*HugotGLiNER)(nil)
+var _ ner.Extractor = (*HugotGLiNER)(nil)
 
 // GLiNERModelType represents the type of GLiNER model architecture
 type GLiNERModelType string
@@ -67,7 +68,7 @@ type GLiNERConfig struct {
 	RelationThreshold float32 `json:"relation_threshold,omitempty"`
 }
 
-// HugotGLiNER implements GLiNERModel using the hugot GLiNER pipeline.
+// HugotGLiNER implements ner.Recognizer using the hugot GLiNER pipeline.
 // GLiNER models are zero-shot NER models that can recognize any entity types.
 type HugotGLiNER struct {
 	session        *khugot.Session
@@ -197,9 +198,10 @@ func NewHugotGLiNERWithSession(modelPath string, quantized bool, sharedSession *
 
 // NewHugotGLiNERWithSessionManager creates a new GLiNER model using a SessionManager.
 // The SessionManager handles backend selection based on priority and model compatibility.
-func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotGLiNER, error) {
+// modelBackends restricts which backends can be used (empty = all backends allowed).
+func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*HugotGLiNER, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required")
+		return nil, "", errors.New("model path is required")
 	}
 
 	if logger == nil {
@@ -208,7 +210,12 @@ func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionM
 
 	if sessionManager == nil {
 		// Fall back to creating a new session
-		return NewHugotGLiNERWithSession(modelPath, quantized, nil, logger)
+		model, err := NewHugotGLiNERWithSession(modelPath, quantized, nil, logger)
+		if err != nil {
+			return nil, "", err
+		}
+		// When falling back, we don't know the backend type
+		return model, hugot.BackendType(""), nil
 	}
 
 	logger.Info("Initializing Hugot GLiNER model with SessionManager",
@@ -236,11 +243,11 @@ func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionM
 		config.ModelType = detectGLiNERModelType(modelPath)
 	}
 
-	// Get session from SessionManager
-	session, _, err := sessionManager.GetSessionForModel(nil)
+	// Get session from SessionManager with backend restrictions
+	session, backendUsed, err := sessionManager.GetSessionForModel(modelBackends)
 	if err != nil {
 		logger.Error("Failed to get session from SessionManager", zap.Error(err))
-		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+		return nil, "", fmt.Errorf("getting session from SessionManager: %w", err)
 	}
 
 	// Determine which ONNX file to use
@@ -274,13 +281,14 @@ func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionM
 	pipeline, err := khugot.NewPipeline(session, pipelineConfig)
 	if err != nil {
 		logger.Error("Failed to create GLiNER pipeline", zap.Error(err))
-		return nil, fmt.Errorf("creating GLiNER pipeline: %w", err)
+		return nil, "", fmt.Errorf("creating GLiNER pipeline: %w", err)
 	}
 
 	logger.Info("GLiNER model initialization complete",
 		zap.Strings("default_labels", config.DefaultLabels),
 		zap.Int("max_width", config.MaxWidth),
-		zap.String("model_type", string(config.ModelType)))
+		zap.String("model_type", string(config.ModelType)),
+		zap.String("backend", string(backendUsed)))
 
 	return &HugotGLiNER{
 		session:        session,
@@ -290,19 +298,19 @@ func NewHugotGLiNERWithSessionManager(modelPath string, quantized bool, sessionM
 		config:         config,
 		labels:         config.DefaultLabels,
 		relationLabels: config.RelationLabels,
-	}, nil
+	}, backendUsed, nil
 }
 
 // Recognize extracts named entities using default labels.
-func (g *HugotGLiNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
+func (g *HugotGLiNER) Recognize(ctx context.Context, texts []string) ([][]ner.Entity, error) {
 	return g.RecognizeWithLabels(ctx, texts, g.labels)
 }
 
 // RecognizeWithLabels extracts entities of the specified types (zero-shot NER).
 // This is the key feature of GLiNER - it can extract any entity type without retraining.
-func (g *HugotGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, labels []string) ([][]Entity, error) {
+func (g *HugotGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, labels []string) ([][]ner.Entity, error) {
 	if len(texts) == 0 {
-		return [][]Entity{}, nil
+		return [][]ner.Entity{}, nil
 	}
 
 	if len(labels) == 0 {
@@ -328,7 +336,7 @@ func (g *HugotGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, l
 	}
 
 	// Convert pipeline output to our Entity type
-	results := make([][]Entity, len(texts))
+	results := make([][]ner.Entity, len(texts))
 	for i, entities := range output.Entities {
 		results[i] = convertGLiNEREntities(entities)
 	}
@@ -341,10 +349,10 @@ func (g *HugotGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, l
 }
 
 // convertGLiNEREntities converts pipeline entities to our Entity type.
-func convertGLiNEREntities(pipelineEntities []pipelines.GLiNEREntity) []Entity {
-	entities := make([]Entity, len(pipelineEntities))
+func convertGLiNEREntities(pipelineEntities []pipelines.GLiNEREntity) []ner.Entity {
+	entities := make([]ner.Entity, len(pipelineEntities))
 	for i, e := range pipelineEntities {
-		entities[i] = Entity{
+		entities[i] = ner.Entity{
 			Text:  e.Text,
 			Label: e.Label,
 			Start: e.Start,
@@ -464,9 +472,9 @@ func (g *HugotGLiNER) ClearLabelEmbeddingCache() {
 
 // RecognizeWithCachedEmbeddings runs inference using cached label embeddings.
 // This is faster than RecognizeWithLabels when the same labels are used repeatedly.
-func (g *HugotGLiNER) RecognizeWithCachedEmbeddings(ctx context.Context, texts []string, labels []string) ([][]Entity, error) {
+func (g *HugotGLiNER) RecognizeWithCachedEmbeddings(ctx context.Context, texts []string, labels []string) ([][]ner.Entity, error) {
 	if len(texts) == 0 {
-		return [][]Entity{}, nil
+		return [][]ner.Entity{}, nil
 	}
 
 	select {
@@ -480,7 +488,7 @@ func (g *HugotGLiNER) RecognizeWithCachedEmbeddings(ctx context.Context, texts [
 		return nil, fmt.Errorf("running GLiNER with cached embeddings: %w", err)
 	}
 
-	results := make([][]Entity, len(texts))
+	results := make([][]ner.Entity, len(texts))
 	for i, entities := range output.Entities {
 		results[i] = convertGLiNEREntities(entities)
 	}
@@ -494,9 +502,9 @@ func (g *HugotGLiNER) RecognizeWithCachedEmbeddings(ctx context.Context, texts [
 
 // RecognizeWithPacking runs inference with sequence packing optimization.
 // This combines multiple short sequences into single transformer passes for better throughput.
-func (g *HugotGLiNER) RecognizeWithPacking(ctx context.Context, texts []string, labels []string) ([][]Entity, error) {
+func (g *HugotGLiNER) RecognizeWithPacking(ctx context.Context, texts []string, labels []string) ([][]ner.Entity, error) {
 	if len(texts) == 0 {
-		return [][]Entity{}, nil
+		return [][]ner.Entity{}, nil
 	}
 
 	select {
@@ -510,7 +518,7 @@ func (g *HugotGLiNER) RecognizeWithPacking(ctx context.Context, texts []string, 
 		return nil, fmt.Errorf("running GLiNER with packing: %w", err)
 	}
 
-	results := make([][]Entity, len(texts))
+	results := make([][]ner.Entity, len(texts))
 	for i, entities := range output.Entities {
 		results[i] = convertGLiNEREntities(entities)
 	}
@@ -522,11 +530,11 @@ func (g *HugotGLiNER) RecognizeWithPacking(ctx context.Context, texts []string, 
 // Relation Extraction
 // =============================================================================
 
-// RecognizeWithRelations extracts both entities and relationships between them.
+// ExtractRelations extracts both entities and relationships between them.
 // This requires a multitask GLiNER model that supports relation extraction.
-func (g *HugotGLiNER) RecognizeWithRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]Entity, [][]Relation, error) {
+func (g *HugotGLiNER) ExtractRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]ner.Entity, [][]ner.Relation, error) {
 	if len(texts) == 0 {
-		return [][]Entity{}, [][]Relation{}, nil
+		return [][]ner.Entity{}, [][]ner.Relation{}, nil
 	}
 
 	if len(entityLabels) == 0 {
@@ -554,13 +562,13 @@ func (g *HugotGLiNER) RecognizeWithRelations(ctx context.Context, texts []string
 	}
 
 	// Convert entities
-	entities := make([][]Entity, len(texts))
+	entities := make([][]ner.Entity, len(texts))
 	for i, ents := range output.Entities {
 		entities[i] = convertGLiNEREntities(ents)
 	}
 
 	// Convert relations
-	relations := make([][]Relation, len(texts))
+	relations := make([][]ner.Relation, len(texts))
 	for i, rels := range output.Relations {
 		relations[i] = convertGLiNERRelations(rels)
 	}
@@ -578,19 +586,106 @@ func (g *HugotGLiNER) SupportsRelationExtraction() bool {
 	return g.pipeline.SupportsRelationExtraction()
 }
 
+// =============================================================================
+// Question Answering
+// =============================================================================
+
+// ExtractAnswers performs extractive question answering.
+// Given questions and contexts, extracts answer spans from the contexts.
+// This requires a multitask GLiNER model that supports QA.
+//
+// Note: GLiNER multitask models treat QA as span extraction where the question
+// acts as the "label" to find in the context. We use RunPipelineWithLabels
+// with the question as the label and context as input.
+func (g *HugotGLiNER) ExtractAnswers(ctx context.Context, questions []string, contexts []string) ([]ner.Answer, error) {
+	if len(questions) == 0 || len(contexts) == 0 {
+		return []ner.Answer{}, nil
+	}
+
+	if len(questions) != len(contexts) {
+		return nil, fmt.Errorf("questions and contexts must have the same length: got %d questions and %d contexts", len(questions), len(contexts))
+	}
+
+	if !g.SupportsQA() {
+		return nil, errors.New("this GLiNER model does not support question answering; use a multitask model")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	g.logger.Debug("Starting GLiNER question answering",
+		zap.Int("num_questions", len(questions)))
+
+	// Process each question-context pair
+	// GLiNER multitask models treat QA as finding spans that answer the question
+	answers := make([]ner.Answer, len(questions))
+	for i, question := range questions {
+		context := contexts[i]
+
+		// Use the question as the "label" to extract from the context
+		// This leverages GLiNER's zero-shot capability to find answer spans
+		output, err := g.pipeline.RunPipelineWithLabels([]string{context}, []string{question})
+		if err != nil {
+			g.logger.Error("GLiNER QA failed",
+				zap.Int("index", i),
+				zap.String("question", question),
+				zap.Error(err))
+			return nil, fmt.Errorf("running GLiNER QA for question %d: %w", i, err)
+		}
+
+		// Take the highest-scoring entity as the answer
+		if len(output.Entities) > 0 && len(output.Entities[0]) > 0 {
+			// Find best entity by score
+			best := output.Entities[0][0]
+			for _, e := range output.Entities[0][1:] {
+				if e.Score > best.Score {
+					best = e
+				}
+			}
+			answers[i] = ner.Answer{
+				Text:  best.Text,
+				Start: best.Start,
+				End:   best.End,
+				Score: best.Score,
+			}
+		} else {
+			// No answer found
+			answers[i] = ner.Answer{
+				Text:  "",
+				Start: 0,
+				End:   0,
+				Score: 0,
+			}
+		}
+	}
+
+	g.logger.Debug("GLiNER QA completed",
+		zap.Int("num_answers", len(answers)))
+
+	return answers, nil
+}
+
+// SupportsQA returns true if the model supports question answering.
+func (g *HugotGLiNER) SupportsQA() bool {
+	return g.config.ModelType == GLiNERModelMultiTask
+}
+
 // convertGLiNERRelations converts pipeline relations to our Relation type.
-func convertGLiNERRelations(pipelineRelations []pipelines.GLiNERRelation) []Relation {
-	relations := make([]Relation, len(pipelineRelations))
+func convertGLiNERRelations(pipelineRelations []pipelines.GLiNERRelation) []ner.Relation {
+	relations := make([]ner.Relation, len(pipelineRelations))
 	for i, r := range pipelineRelations {
-		relations[i] = Relation{
-			HeadEntity: Entity{
+		relations[i] = ner.Relation{
+			HeadEntity: ner.Entity{
 				Text:  r.HeadEntity.Text,
 				Label: r.HeadEntity.Label,
 				Start: r.HeadEntity.Start,
 				End:   r.HeadEntity.End,
 				Score: r.HeadEntity.Score,
 			},
-			TailEntity: Entity{
+			TailEntity: ner.Entity{
 				Text:  r.TailEntity.Text,
 				Label: r.TailEntity.Label,
 				Start: r.TailEntity.Start,
@@ -604,8 +699,17 @@ func convertGLiNERRelations(pipelineRelations []pipelines.GLiNERRelation) []Rela
 	return relations
 }
 
+// countEntities counts the total number of entities across all texts.
+func countEntities(results [][]ner.Entity) int {
+	count := 0
+	for _, entities := range results {
+		count += len(entities)
+	}
+	return count
+}
+
 // countRelations counts the total number of relations across all texts.
-func countRelations(relations [][]Relation) int {
+func countRelations(relations [][]ner.Relation) int {
 	count := 0
 	for _, rels := range relations {
 		count += len(rels)

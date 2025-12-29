@@ -105,7 +105,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.nerRegistry != nil {
 		resp.Ner = t.node.nerRegistry.List()
-		resp.Gliner = t.node.nerRegistry.ListGLiNER()
+		resp.Gliner = t.node.nerRegistry.ListRecognizers()
 	}
 
 	if t.node.seq2seqRegistry != nil {
@@ -593,24 +593,24 @@ func (ln *TermiteNode) handleApiNER(w http.ResponseWriter, r *http.Request) {
 
 	var entities [][]ner.Entity
 
-	// Check if this is a GLiNER model with custom labels
-	if len(req.Labels) > 0 && ln.nerRegistry.IsGLiNER(req.Model) {
-		// Use GLiNER model with custom labels (zero-shot NER)
-		glinerModel, err := ln.nerRegistry.GetGLiNER(req.Model)
+	// Check if this is a zero-shot Recognizer with custom labels
+	if len(req.Labels) > 0 && ln.nerRegistry.IsRecognizer(req.Model) {
+		// Use Recognizer with custom labels (zero-shot NER)
+		recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
 		if err != nil {
-			http.Error(w, fmt.Sprintf("GLiNER model not found: %s", req.Model), http.StatusNotFound)
+			http.Error(w, fmt.Sprintf("Recognizer not found: %s", req.Model), http.StatusNotFound)
 			return
 		}
 
 		// Recognize with custom labels
-		entities, err = glinerModel.RecognizeWithLabels(r.Context(), req.Texts, req.Labels)
+		entities, err = recognizer.RecognizeWithLabels(r.Context(), req.Texts, req.Labels)
 		if err != nil {
-			ln.logger.Error("GLiNER recognition failed",
+			ln.logger.Error("Recognition failed",
 				zap.String("model", req.Model),
 				zap.Strings("labels", req.Labels),
 				zap.Int("num_texts", len(req.Texts)),
 				zap.Error(err))
-			http.Error(w, fmt.Sprintf("GLiNER failed: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Recognition failed: %v", err), http.StatusInternalServerError)
 			return
 		}
 	} else {

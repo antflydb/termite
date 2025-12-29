@@ -42,7 +42,7 @@ func NewHugotCLIPEmbedderWithSession(modelPath string, quantized bool, sharedSes
 }
 
 // NewHugotCLIPEmbedderWithSessionManager returns an error when CLIP support is disabled.
-func NewHugotCLIPEmbedderWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotCLIPEmbedder, hugot.BackendType, error) {
+func NewHugotCLIPEmbedderWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*HugotCLIPEmbedder, hugot.BackendType, error) {
 	return nil, "", errors.New("HugotCLIP embedder not available: build with -tags=\"onnx,ORT\" to enable")
 }
 

@@ -43,12 +43,12 @@ func skipIfNoModels(t testing.TB, modelsDir string) {
 
 // newNonQuantizedHugotModel creates a Hugot model that explicitly uses the non-quantized version
 func newNonQuantizedHugotModel(modelPath string, logger *zap.Logger) (reranking.Model, error) {
-	return termreranking.NewHugotReranker(modelPath, "model.onnx", logger)
+	return termreranking.NewPooledHugotReranker(modelPath, "model.onnx", 1, logger)
 }
 
 // newQuantizedHugotModel creates a Hugot model that explicitly uses the quantized version
 func newQuantizedHugotModel(modelPath string, logger *zap.Logger) (reranking.Model, error) {
-	return termreranking.NewHugotReranker(modelPath, "model_i8.onnx", logger)
+	return termreranking.NewPooledHugotReranker(modelPath, "model_i8.onnx", 1, logger)
 }
 
 func TestRerankerRegistryLoading(t *testing.T) {

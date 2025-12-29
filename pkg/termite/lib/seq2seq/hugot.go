@@ -133,9 +133,10 @@ func NewHugotSeq2SeqWithSession(modelPath string, sharedSession *khugot.Session,
 
 // NewHugotSeq2SeqWithSessionManager creates a new Seq2Seq model using a SessionManager.
 // The SessionManager handles backend selection based on priority and model compatibility.
-func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotSeq2Seq, error) {
+// modelBackends restricts which backends can be used (empty = all backends allowed).
+func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*HugotSeq2Seq, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required")
+		return nil, "", errors.New("model path is required")
 	}
 
 	if logger == nil {
@@ -144,7 +145,11 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 
 	if sessionManager == nil {
 		// Fall back to creating a new session
-		return NewHugotSeq2SeqWithSession(modelPath, nil, logger)
+		model, err := NewHugotSeq2SeqWithSession(modelPath, nil, logger)
+		if err != nil {
+			return nil, "", err
+		}
+		return model, hugot.BackendType(""), nil
 	}
 
 	logger.Info("Initializing Hugot Seq2Seq model with SessionManager",
@@ -166,11 +171,11 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 		}
 	}
 
-	// Get session from SessionManager
-	session, _, err := sessionManager.GetSessionForModel(nil)
+	// Get session from SessionManager with backend restrictions
+	session, backendUsed, err := sessionManager.GetSessionForModel(modelBackends)
 	if err != nil {
 		logger.Error("Failed to get session from SessionManager", zap.Error(err))
-		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+		return nil, "", fmt.Errorf("getting session from SessionManager: %w", err)
 	}
 
 	// Create Seq2Seq pipeline configuration
@@ -194,12 +199,13 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 	pipeline, err := khugot.NewPipeline(session, pipelineConfig)
 	if err != nil {
 		logger.Error("Failed to create Seq2Seq pipeline", zap.Error(err))
-		return nil, fmt.Errorf("creating Seq2Seq pipeline: %w", err)
+		return nil, "", fmt.Errorf("creating Seq2Seq pipeline: %w", err)
 	}
 
 	logger.Info("Seq2Seq model initialization complete",
 		zap.String("task", config.Task),
-		zap.Int("max_length", config.MaxLength))
+		zap.Int("max_length", config.MaxLength),
+		zap.String("backend", string(backendUsed)))
 
 	return &HugotSeq2Seq{
 		session:       session,
@@ -207,7 +213,7 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 		logger:        logger,
 		sessionShared: true, // SessionManager owns the session
 		config:        config,
-	}, nil
+	}, backendUsed, nil
 }
 
 // Generate runs the seq2seq model on the given inputs.
