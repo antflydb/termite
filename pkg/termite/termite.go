@@ -54,6 +54,7 @@ type TermiteNode struct {
 	rerankerRegistry      *RerankerRegistry
 	nerRegistry           *NERRegistry
 	seq2seqRegistry       *Seq2SeqRegistry
+	relRegistry           *RelationExtractorRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -289,6 +290,19 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		defer func() { _ = seq2seqRegistry.Close() }()
 	}
 
+	// Initialize relation extraction registry for REBEL models
+	var relModelsDir string
+	if config.ModelsDir != "" {
+		relModelsDir = filepath.Join(config.ModelsDir, "rel")
+	}
+	relRegistry, err := NewRelationExtractorRegistry(relModelsDir, sessionManager, zl.Named("rel"))
+	if err != nil {
+		zl.Fatal("Failed to initialize RelationExtractor registry", zap.Error(err))
+	}
+	if relRegistry != nil {
+		defer func() { _ = relRegistry.Close() }()
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -354,6 +368,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		rerankerRegistry:      rerankerRegistry,
 		nerRegistry:           nerRegistry,
 		seq2seqRegistry:       seq2seqRegistry,
+		relRegistry:           relRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,

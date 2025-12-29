@@ -27,11 +27,12 @@ import (
 type ModelType string
 
 const (
-	ModelTypeEmbedder     ModelType = "embedder"
-	ModelTypeChunker      ModelType = "chunker"
-	ModelTypeReranker     ModelType = "reranker"
-	ModelTypeRecognizer   ModelType = "recognizer"
-	ModelTypeQuestionator ModelType = "questionator"
+	ModelTypeEmbedder          ModelType = "embedder"
+	ModelTypeChunker           ModelType = "chunker"
+	ModelTypeReranker          ModelType = "reranker"
+	ModelTypeRecognizer        ModelType = "recognizer"
+	ModelTypeQuestionator      ModelType = "questionator"
+	ModelTypeRelationExtractor ModelType = "rel"
 )
 
 // Model capabilities
@@ -54,8 +55,10 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeRecognizer, nil
 	case "questionator", "questionators":
 		return ModelTypeQuestionator, nil
+	case "rel", "relation", "relations":
+		return ModelTypeRelationExtractor, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, recognizer, questionator)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, recognizer, questionator, rel)", s)
 	}
 }
 
@@ -77,6 +80,8 @@ func (t ModelType) DirName() string {
 		return "recognizers"
 	case ModelTypeQuestionator:
 		return "questionators"
+	case ModelTypeRelationExtractor:
+		return "rel"
 	default:
 		return string(t) + "s"
 	}

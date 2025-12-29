@@ -1,4 +1,5 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
+github.com/ajroetker/ortgenai v0.0.0-20251229052243-d2d8091589c4 h1:N+hWzT0wmUSZbI4i38hzy45jmaCj1CaW8LsY2Ue6OEE=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574 h1:ygke1F5fa0y0lozmoQCX+r21Jl0T1CazefEApCE3t8w=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574/go.mod h1:Cm2P05Au+crlgKA+S5URoIpyw1bjegC7AEjl5liBrDk=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
@@ -115,8 +116,6 @@ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzh
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/klauspost/crc32 v1.3.0 h1:sSmTt3gUt81RP655XGZPElI0PelVTZ6YwCRnPSupoFM=
 github.com/klauspost/crc32 v1.3.0/go.mod h1:D7kQaZhnkX/Y0tstFGf8VUzv2UofNGqCjnC3zdHB0Hw=
-github.com/knights-analytics/ortgenai v0.0.1 h1:AJdqqjWMtMRfXn9Lf6RQ+fJ6W6f8bBHuf1KXQGUgDAk=
-github.com/knights-analytics/ortgenai v0.0.1/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=

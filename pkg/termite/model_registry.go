@@ -898,3 +898,116 @@ func (r *Seq2SeqRegistry) Close() error {
 	}
 	return nil
 }
+
+// RelationExtractorRegistry manages REBEL and other relation extraction models
+type RelationExtractorRegistry struct {
+	models map[string]seq2seq.RelationExtractor // model name -> RelationExtractor instance
+	mu     sync.RWMutex
+	logger *zap.Logger
+}
+
+// NewRelationExtractorRegistry creates a registry and discovers REBEL models in the given directory
+// REBEL models have encoder.onnx, decoder-init.onnx, decoder.onnx, and rebel_config.json
+func NewRelationExtractorRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*RelationExtractorRegistry, error) {
+	registry := &RelationExtractorRegistry{
+		models: make(map[string]seq2seq.RelationExtractor),
+		logger: logger,
+	}
+
+	if modelsDir == "" {
+		logger.Info("No relation extraction models directory configured")
+		return registry, nil
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(modelsDir); os.IsNotExist(err) {
+		logger.Warn("Relation extraction models directory does not exist",
+			zap.String("dir", modelsDir))
+		return registry, nil
+	}
+
+	// Scan directory for model subdirectories
+	entries, err := os.ReadDir(modelsDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading relation extraction models directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		modelName := entry.Name()
+		modelPath := filepath.Join(modelsDir, modelName)
+
+		// Check if this is a REBEL model
+		if !seq2seq.IsREBELModel(modelPath) {
+			logger.Debug("Skipping directory - not a REBEL model",
+				zap.String("dir", modelName))
+			continue
+		}
+
+		logger.Info("Discovered REBEL model directory",
+			zap.String("name", modelName),
+			zap.String("path", modelPath))
+
+		// Load the REBEL model
+		model, err := seq2seq.NewHugotREBELWithSessionManager(modelPath, sessionManager, logger.Named(modelName))
+		if err != nil {
+			logger.Warn("Failed to load REBEL model",
+				zap.String("name", modelName),
+				zap.Error(err))
+		} else {
+			registry.models[modelName] = model
+			config := model.Config()
+			logger.Info("Successfully loaded REBEL model",
+				zap.String("name", modelName),
+				zap.String("model_id", config.ModelID),
+				zap.Int("max_length", config.MaxLength))
+		}
+	}
+
+	logger.Info("RelationExtractor registry initialized",
+		zap.Int("models_loaded", len(registry.models)))
+
+	return registry, nil
+}
+
+// Get returns a RelationExtractor model by name
+func (r *RelationExtractorRegistry) Get(modelName string) (seq2seq.RelationExtractor, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model, ok := r.models[modelName]
+	if !ok {
+		return nil, fmt.Errorf("relation extraction model not found: %s", modelName)
+	}
+	return model, nil
+}
+
+// List returns all available relation extraction model names
+func (r *RelationExtractorRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.models))
+	for name := range r.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Close closes all loaded relation extraction models
+func (r *RelationExtractorRegistry) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for name, model := range r.models {
+		if err := model.Close(); err != nil {
+			r.logger.Warn("Error closing relation extraction model",
+				zap.String("name", name),
+				zap.Error(err))
+		}
+	}
+	return nil
+}
