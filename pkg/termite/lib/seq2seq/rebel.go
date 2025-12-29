@@ -302,8 +302,12 @@ func (h *HugotREBEL) ExtractRelations(ctx context.Context, texts []string) (*Rel
 
 // parseREBELOutput parses REBEL's generated text into structured triplets.
 //
-// REBEL output format:
+// REBEL output format with special tokens:
 // <s><triplet> Subject <subj> Object <obj> relation <triplet> Subject2 <subj> Object2 <obj> relation2 </s>
+//
+// Fallback format (when tokenizer strips special tokens):
+// Subject  Object  relation  Subject2  Object2  relation2
+// (elements separated by double spaces)
 func (h *HugotREBEL) parseREBELOutput(text string) []RelationTriplet {
 	triplets := []RelationTriplet{}
 
@@ -313,19 +317,62 @@ func (h *HugotREBEL) parseREBELOutput(text string) []RelationTriplet {
 	text = strings.ReplaceAll(text, "<pad>", "")
 	text = strings.TrimSpace(text)
 
-	// Split by triplet token
-	parts := strings.Split(text, h.config.TripletToken)
+	// Check if special tokens are present
+	hasSpecialTokens := strings.Contains(text, h.config.TripletToken) ||
+		strings.Contains(text, h.config.SubjectToken) ||
+		strings.Contains(text, h.config.ObjectToken)
 
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+	if hasSpecialTokens {
+		// Parse using special tokens
+		parts := strings.Split(text, h.config.TripletToken)
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			triplet := h.parseTripletPart(part)
+			if triplet != nil {
+				triplets = append(triplets, *triplet)
+			}
 		}
+	} else {
+		// Fallback: parse by double-space separation
+		// Format: "Subject  Object  relation  Subject2  Object2  relation2..."
+		triplets = h.parseREBELOutputNoTokens(text)
+	}
 
-		// Parse: "Subject <subj> Object <obj> relation"
-		triplet := h.parseTripletPart(part)
-		if triplet != nil {
-			triplets = append(triplets, *triplet)
+	return triplets
+}
+
+// parseREBELOutputNoTokens parses REBEL output when special tokens are stripped.
+// The format is elements separated by double spaces: "Subject  Object  relation  ..."
+func (h *HugotREBEL) parseREBELOutputNoTokens(text string) []RelationTriplet {
+	var triplets []RelationTriplet
+
+	// Split by double space - this is how elements are separated when tokens are stripped
+	parts := strings.Split(text, "  ")
+
+	// Filter out empty parts
+	var elements []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			elements = append(elements, p)
+		}
+	}
+
+	// Each triplet consists of 3 elements: subject, object, relation
+	for i := 0; i+2 < len(elements); i += 3 {
+		subject := elements[i]
+		object := elements[i+1]
+		relation := elements[i+2]
+
+		if subject != "" && object != "" && relation != "" {
+			triplets = append(triplets, RelationTriplet{
+				Subject:  subject,
+				Object:   object,
+				Relation: relation,
+			})
 		}
 	}
 

@@ -933,12 +933,14 @@ func NewRelatorRegistry(modelsDir string, sessionManager *hugot.SessionManager, 
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
 		modelName := entry.Name()
 		modelPath := filepath.Join(modelsDir, modelName)
+
+		// Check if this is a directory (following symlinks)
+		info, err := os.Stat(modelPath)
+		if err != nil || !info.IsDir() {
+			continue
+		}
 
 		// Check if this is a REBEL model
 		if !seq2seq.IsREBELModel(modelPath) {

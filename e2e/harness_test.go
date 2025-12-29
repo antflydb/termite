@@ -241,3 +241,8 @@ func getRecognizerModelsDir() string {
 func getQuestionatorModelsDir() string {
 	return filepath.Join(testModelsDir, "questionators")
 }
+
+// getRelatorModelsDir returns the relators subdirectory
+func getRelatorModelsDir() string {
+	return filepath.Join(testModelsDir, "relators")
+}

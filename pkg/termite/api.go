@@ -80,6 +80,11 @@ func (t *TermiteAPI) GenerateQuestions(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiGenerate(w, r)
 }
 
+// ExtractRelations implements ServerInterface
+func (t *TermiteAPI) ExtractRelations(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiRelate(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -89,6 +94,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Recognizers:   []string{},
 		Extractors:    []string{},
 		Questionators: []string{},
+		Relators:      []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -110,6 +116,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.seq2seqRegistry != nil {
 		resp.Questionators = t.node.seq2seqRegistry.List()
+	}
+
+	if t.node.relatorRegistry != nil {
+		resp.Relators = t.node.relatorRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -755,6 +765,106 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	resp := QuestionGenerateResponse{
 		Model: req.Model,
 		Texts: output.Texts,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleApiRelate handles relation extraction requests using REBEL models
+func (ln *TermiteNode) handleApiRelate(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if relation extraction is available
+	if ln.relatorRegistry == nil || len(ln.relatorRegistry.List()) == 0 {
+		http.Error(w, "relation extraction not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request
+	var req RelateRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Texts) == 0 {
+		http.Error(w, "texts are required", http.StatusBadRequest)
+		return
+	}
+
+	// Get model from registry
+	model, err := ln.relatorRegistry.Get(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Extract relations
+	output, err := model.ExtractRelations(r.Context(), req.Texts)
+	if err != nil {
+		ln.logger.Error("relation extraction failed",
+			zap.String("model", req.Model),
+			zap.Int("num_texts", len(req.Texts)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("relation extraction failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert internal relation triplets to API response type
+	apiRelations := make([][]RelationTriplet, len(output.Triplets))
+	totalTriplets := 0
+	for i, textTriplets := range output.Triplets {
+		apiRelations[i] = make([]RelationTriplet, len(textTriplets))
+		for j, triplet := range textTriplets {
+			apiRelations[i][j] = RelationTriplet{
+				Subject:  triplet.Subject,
+				Relation: triplet.Relation,
+				Object:   triplet.Object,
+				Score:    triplet.Score,
+			}
+		}
+		totalTriplets += len(textTriplets)
+	}
+
+	ln.logger.Info("relation extraction request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_texts", len(req.Texts)),
+		zap.Int("total_triplets", totalTriplets))
+
+	// Send response
+	resp := RelateResponse{
+		Model:     req.Model,
+		Relations: apiRelations,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

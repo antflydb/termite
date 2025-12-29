@@ -427,6 +427,65 @@ components:
               type: string
           description: Generated texts (array of arrays, one per input, multiple per beam)
 
+    # Relator Types (REBEL relation extraction)
+    RelateRequest:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of relator model from models_dir/relators/
+          example: "rebel-large"
+        texts:
+          type: array
+          items:
+            type: string
+          description: Input texts to extract relations from
+          example: ["Steve Jobs founded Apple in Cupertino.", "Elon Musk is the CEO of Tesla."]
+
+    RelationTriplet:
+      type: object
+      required:
+        - subject
+        - relation
+        - object
+      properties:
+        subject:
+          type: string
+          description: Subject entity of the relation
+          example: "Steve Jobs"
+        relation:
+          type: string
+          description: Relationship type
+          example: "founded"
+        object:
+          type: string
+          description: Object entity of the relation
+          example: "Apple"
+        score:
+          type: number
+          format: float
+          description: Confidence score (0.0-1.0)
+
+    RelateResponse:
+      type: object
+      required:
+        - model
+        - relations
+      properties:
+        model:
+          type: string
+          description: Name of model used for relation extraction
+        relations:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: "#/components/schemas/RelationTriplet"
+          description: Array of relation arrays (one per input text)
+
     # Models Types
     ModelsResponse:
       type: object
@@ -436,6 +495,7 @@ components:
         - embedders
         - recognizers
         - questionators
+        - relators
       properties:
         chunkers:
           type: array
@@ -473,6 +533,12 @@ components:
             type: string
           description: Available Seq2Seq questionator models from models_dir/questionators/
           example: ["flan-t5-small", "lmqg-question-generation"]
+        relators:
+          type: array
+          items:
+            type: string
+          description: Available REBEL relator models from models_dir/relators/
+          example: ["rebel-large", "mrebel-large"]
 
     Config:
       type: object
@@ -991,6 +1057,94 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Generation service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /relate:
+    post:
+      summary: Extract relations from text
+      description: |
+        Extracts entity relations (subject-relation-object triplets) from text using REBEL models.
+
+        ## REBEL Models
+
+        REBEL (Relation Extraction By End-to-end Language generation) models use
+        seq2seq generation to extract structured relation triplets from text.
+
+        - Models are auto-discovered from `models_dir/relators/`
+        - REBEL models have encoder.onnx, decoder-init.onnx, decoder.onnx, and rebel_config.json
+        - Supports 200+ relation types out of the box
+        - Available models: `rebel-large`, `mrebel-large` (multilingual)
+
+        ## Output Format
+
+        Returns arrays of relation triplets for each input text:
+        - **subject**: The source entity (e.g., "Steve Jobs")
+        - **relation**: The relationship type (e.g., "founded")
+        - **object**: The target entity (e.g., "Apple")
+        - **score**: Confidence score (optional)
+
+        ## Example
+
+        ```json
+        {
+          "model": "rebel-large",
+          "texts": [
+            "Steve Jobs founded Apple in Cupertino.",
+            "Elon Musk is the CEO of Tesla and SpaceX."
+          ]
+        }
+        ```
+
+        Response:
+        ```json
+        {
+          "model": "rebel-large",
+          "relations": [
+            [{"subject": "Steve Jobs", "relation": "founded", "object": "Apple"}],
+            [
+              {"subject": "Elon Musk", "relation": "chief executive officer", "object": "Tesla"},
+              {"subject": "Elon Musk", "relation": "chief executive officer", "object": "SpaceX"}
+            ]
+          ]
+        }
+        ```
+      operationId: extractRelations
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RelateRequest"
+      responses:
+        "200":
+          description: Relations extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RelateResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Relator service unavailable (no models configured)
           content:
             application/json:
               schema:

@@ -324,6 +324,37 @@ func (c *TermiteClient) GenerateQuestions(ctx context.Context, model string, inp
 	return resp.JSON200, nil
 }
 
+// Relate extracts relation triplets from text using a REBEL relator model.
+func (c *TermiteClient) Relate(ctx context.Context, model string, texts []string) (*oapi.RelateResponse, error) {
+	req := oapi.RelateRequest{
+		Model: model,
+		Texts: texts,
+	}
+
+	resp, err := c.client.ExtractRelationsWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
 // deserializeFloatArrays reconstructs a 2D float32 array from binary format.
 // Format: uint64(numVectors) + uint64(dimension) + float32 values in little endian
 func deserializeFloatArrays(r io.Reader) ([][]float32, error) {
