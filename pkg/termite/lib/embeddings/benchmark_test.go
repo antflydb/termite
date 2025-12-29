@@ -97,7 +97,7 @@ func BenchmarkHugotEmbedder_ShortTexts(b *testing.B) {
 	}
 
 	logger := zap.NewNop()
-	embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 	require.NoError(b, err)
 	defer func() { _ = embedder.Close() }()
 
@@ -121,7 +121,7 @@ func BenchmarkHugotEmbedder_MediumTexts(b *testing.B) {
 	}
 
 	logger := zap.NewNop()
-	embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 	require.NoError(b, err)
 	defer func() { _ = embedder.Close() }()
 
@@ -145,7 +145,7 @@ func BenchmarkHugotEmbedder_LongTexts(b *testing.B) {
 	}
 
 	logger := zap.NewNop()
-	embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 	require.NoError(b, err)
 	defer func() { _ = embedder.Close() }()
 
@@ -173,7 +173,7 @@ func BenchmarkHugotEmbedder_Quantized(b *testing.B) {
 
 	b.Run("Standard", func(b *testing.B) {
 		logger := zap.NewNop()
-		embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 		require.NoError(b, err)
 		defer func() { _ = embedder.Close() }()
 
@@ -188,7 +188,7 @@ func BenchmarkHugotEmbedder_Quantized(b *testing.B) {
 
 	b.Run("Quantized", func(b *testing.B) {
 		logger := zap.NewNop()
-		embedder, err := NewHugotEmbedder(modelPath, "model_i8.onnx", logger)
+		embedder, err := NewPooledHugotEmbedder(modelPath, "model_i8.onnx", 1, logger)
 		if err != nil {
 			b.Skipf("Quantized model not available: %v", err)
 			return
@@ -217,7 +217,7 @@ func BenchmarkLatency_SingleText(b *testing.B) {
 
 	b.Run("Hugot", func(b *testing.B) {
 		logger := zap.NewNop()
-		embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 		require.NoError(b, err)
 		defer func() { _ = embedder.Close() }()
 
@@ -246,7 +246,7 @@ func BenchmarkThroughput_BatchSizes(b *testing.B) {
 
 		b.Run(fmt.Sprintf("Hugot/BatchSize_%d", batchSize), func(b *testing.B) {
 			logger := zap.NewNop()
-			embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+			embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 			require.NoError(b, err)
 			defer func() { _ = embedder.Close() }()
 
@@ -280,7 +280,7 @@ func BenchmarkWarmup(b *testing.B) {
 		for b.Loop() {
 			b.StopTimer()
 			logger := zap.NewNop()
-			embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+			embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 			require.NoError(b, err)
 			b.StartTimer()
 
@@ -297,7 +297,7 @@ func BenchmarkWarmup(b *testing.B) {
 
 	b.Run("WarmStart", func(b *testing.B) {
 		logger := zap.NewNop()
-		embedder, err := NewHugotEmbedder(modelPath, "model.onnx", logger)
+		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
 		require.NoError(b, err)
 		defer func() { _ = embedder.Close() }()
 

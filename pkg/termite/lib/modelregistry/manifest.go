@@ -19,6 +19,7 @@ package modelregistry
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -26,9 +27,11 @@ import (
 type ModelType string
 
 const (
-	ModelTypeEmbedder ModelType = "embedder"
-	ModelTypeChunker  ModelType = "chunker"
-	ModelTypeReranker ModelType = "reranker"
+	ModelTypeEmbedder     ModelType = "embedder"
+	ModelTypeChunker      ModelType = "chunker"
+	ModelTypeReranker     ModelType = "reranker"
+	ModelTypeRecognizer   ModelType = "recognizer"
+	ModelTypeQuestionator ModelType = "questionator"
 )
 
 // Model capabilities
@@ -47,8 +50,12 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeChunker, nil
 	case "reranker", "rerankers":
 		return ModelTypeReranker, nil
+	case "recognizer", "recognizers":
+		return ModelTypeRecognizer, nil
+	case "questionator", "questionators":
+		return ModelTypeQuestionator, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, recognizer, questionator)", s)
 	}
 }
 
@@ -66,6 +73,10 @@ func (t ModelType) DirName() string {
 		return "chunkers"
 	case ModelTypeReranker:
 		return "rerankers"
+	case ModelTypeRecognizer:
+		return "recognizers"
+	case ModelTypeQuestionator:
+		return "questionators"
 	default:
 		return string(t) + "s"
 	}
@@ -181,22 +192,12 @@ func (m *ModelManifest) SupportsBackend(backend string) bool {
 	if len(m.Backends) == 0 {
 		return true // All backends supported by default
 	}
-	for _, b := range m.Backends {
-		if b == backend {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Backends, backend)
 }
 
 // HasCapability returns true if the model has the specified capability.
 func (m *ModelManifest) HasCapability(capability string) bool {
-	for _, c := range m.Capabilities {
-		if c == capability {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.Capabilities, capability)
 }
 
 // IsMultimodal returns true if the model has the multimodal capability.
@@ -226,6 +227,8 @@ func (m *ModelManifest) Validate() error {
 	hasModelOnnx := false
 	hasVisualOnnx := false
 	hasTextOnnx := false
+	hasEncoderOnnx := false
+	hasDecoderOnnx := false
 	for _, f := range m.Files {
 		switch f.Name {
 		case "model.onnx":
@@ -234,6 +237,10 @@ func (m *ModelManifest) Validate() error {
 			hasVisualOnnx = true
 		case "text_model.onnx":
 			hasTextOnnx = true
+		case "encoder.onnx":
+			hasEncoderOnnx = true
+		case "decoder.onnx":
+			hasDecoderOnnx = true
 		}
 		if f.Name == "" {
 			return fmt.Errorf("file entry missing name")
@@ -246,7 +253,7 @@ func (m *ModelManifest) Validate() error {
 		}
 	}
 
-	// Check for required ONNX files based on capability
+	// Check for required ONNX files based on model type and capability
 	if m.IsMultimodal() {
 		// Multimodal embedders (CLIP) require visual_model.onnx + text_model.onnx
 		if !hasVisualOnnx || !hasTextOnnx {
@@ -255,6 +262,11 @@ func (m *ModelManifest) Validate() error {
 		// Multimodal models only support ONNX runtime
 		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
 			return fmt.Errorf("multimodal embedders only support ONNX backend")
+		}
+	} else if m.Type == ModelTypeQuestionator {
+		// Seq2seq models (questionators) require encoder.onnx + decoder.onnx
+		if !hasEncoderOnnx || !hasDecoderOnnx {
+			return fmt.Errorf("questionator model must include encoder.onnx and decoder.onnx")
 		}
 	} else {
 		// Standard models require model.onnx

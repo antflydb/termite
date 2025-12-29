@@ -29,9 +29,11 @@ var pullCmd = &cobra.Command{
 	Long: `Download one or more ONNX models from the Antfly model registry.
 
 Models are downloaded to the appropriate directory based on their type:
-  - Embedders: models/embedders/<model-name>/
-  - Chunkers:  models/chunkers/<model-name>/
-  - Rerankers: models/rerankers/<model-name>/
+  - Embedders:     models/embedders/<model-name>/
+  - Chunkers:      models/chunkers/<model-name>/
+  - Rerankers:     models/rerankers/<model-name>/
+  - Recognizers:   models/recognizers/<model-name>/
+  - Questionators: models/questionators/<model-name>/
 
 Variants:
   f32     - FP32 baseline (default, highest accuracy)
@@ -53,11 +55,23 @@ Examples:
   # Pull multiple models with same variant
   termite pull --variants i8 bge-small-en-v1.5 mxbai-rerank-base-v1
 
+  # Pull recognizer model
+  termite pull bert-base-ner
+
   # Pull to a custom directory
   termite pull --models-dir /opt/antfly/models bge-small-en-v1.5
 
   # Pull directly from HuggingFace
-  termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder`,
+  termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder
+
+  # Pull recognizer model from HuggingFace
+  termite pull hf:dslim/bert-base-NER --type recognizer
+
+  # Pull GLiNER model from HuggingFace
+  termite pull hf:onnx-community/gliner_small-v2.1 --type recognizer
+
+  # Pull questionator model from HuggingFace
+  termite pull hf:onnx-community/gemma-3-270m-it-ONNX --type questionator`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runPull,
 }
@@ -69,7 +83,7 @@ func init() {
 	pullCmd.Flags().StringSliceVar(&variants, "variants", nil,
 		"Variant IDs to download (f32,f16,i8,i8-st,i4). Defaults to f32 if not specified.")
 	pullCmd.Flags().String("type", "",
-		"Model type (embedder, chunker, reranker) - required for hf: pulls")
+		"Model type (embedder, chunker, reranker, recognizer, questionator) - required for hf: pulls")
 	pullCmd.Flags().String("hf-token", "",
 		"HuggingFace API token for gated models (or use HF_TOKEN env var)")
 	pullCmd.Flags().String("variant", "",

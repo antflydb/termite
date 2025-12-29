@@ -78,14 +78,19 @@ func NewHugotCLIPEmbedder(modelPath string, quantized bool, logger *zap.Logger) 
 
 // NewHugotCLIPEmbedderWithSessionManager creates a new CLIP embedder using a SessionManager.
 // The SessionManager handles backend selection and session reuse (required for ONNX Runtime which only allows one session).
+// modelBackends restricts which backends can be used (nil = ONNX only, which is required for CLIP).
 // Returns the embedder and the backend type that was used.
-func NewHugotCLIPEmbedderWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotCLIPEmbedder, hugot.BackendType, error) {
+func NewHugotCLIPEmbedderWithSessionManager(modelPath string, quantized bool, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*HugotCLIPEmbedder, hugot.BackendType, error) {
 	if sessionManager == nil {
 		return nil, "", errors.New("sessionManager is required for CLIP embedder (ONNX Runtime only allows one session)")
 	}
 
 	// CLIP requires ONNX Runtime backend (not pure Go or XLA)
-	session, backendUsed, err := sessionManager.GetSessionForModel([]string{"onnx"})
+	// If modelBackends is nil, default to ONNX only
+	if modelBackends == nil {
+		modelBackends = []string{"onnx"}
+	}
+	session, backendUsed, err := sessionManager.GetSessionForModel(modelBackends)
 	if err != nil {
 		return nil, "", fmt.Errorf("getting session from manager: %w", err)
 	}

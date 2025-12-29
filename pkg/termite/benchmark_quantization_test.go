@@ -41,9 +41,10 @@ func BenchmarkRerankerQuantization(b *testing.B) {
 	}
 
 	b.Run("NonQuantized", func(b *testing.B) {
-		reranker, err := termreranking.NewHugotReranker(
+		reranker, err := termreranking.NewPooledHugotReranker(
 			"../../models/rerankers/mxbai-rerank-base-v1",
 			"model.onnx",
+			1,
 			zap.NewNop(),
 		)
 		if err != nil {
@@ -61,9 +62,10 @@ func BenchmarkRerankerQuantization(b *testing.B) {
 	})
 
 	b.Run("DynamicQuantized", func(b *testing.B) {
-		reranker, err := termreranking.NewHugotReranker(
+		reranker, err := termreranking.NewPooledHugotReranker(
 			"../../models/rerankers/mxbai-rerank-base-v1",
 			"model_i8.onnx",
+			1,
 			zap.NewNop(),
 		)
 		if err != nil {
@@ -81,9 +83,10 @@ func BenchmarkRerankerQuantization(b *testing.B) {
 	})
 
 	b.Run("FP16", func(b *testing.B) {
-		reranker, err := termreranking.NewHugotReranker(
+		reranker, err := termreranking.NewPooledHugotReranker(
 			"../../models/rerankers/reranker_onnx_fp16",
 			"model_f16.onnx",
+			1,
 			zap.NewNop(),
 		)
 		if err != nil {

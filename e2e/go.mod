@@ -3,9 +3,10 @@ module github.com/antflydb/termite/e2e
 go 1.25.0
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251220211107-421ce9dc50af
+	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
+	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
 
@@ -16,8 +17,10 @@ require (
 	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/charmbracelet/colorprofile v0.3.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
@@ -57,6 +60,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 	github.com/pkoukk/tiktoken-go-loader v0.0.2 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.4 // indirect
@@ -68,7 +72,7 @@ require (
 	github.com/sugarme/tokenizer v0.3.0 // indirect
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	github.com/viant/afs v1.29.0 // indirect
+	github.com/viant/afs v1.30.0 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yalue/onnxruntime_go v1.25.0 // indirect
