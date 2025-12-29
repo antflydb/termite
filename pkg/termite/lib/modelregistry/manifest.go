@@ -227,6 +227,8 @@ func (m *ModelManifest) Validate() error {
 	hasModelOnnx := false
 	hasVisualOnnx := false
 	hasTextOnnx := false
+	hasEncoderOnnx := false
+	hasDecoderOnnx := false
 	for _, f := range m.Files {
 		switch f.Name {
 		case "model.onnx":
@@ -235,6 +237,10 @@ func (m *ModelManifest) Validate() error {
 			hasVisualOnnx = true
 		case "text_model.onnx":
 			hasTextOnnx = true
+		case "encoder.onnx":
+			hasEncoderOnnx = true
+		case "decoder.onnx":
+			hasDecoderOnnx = true
 		}
 		if f.Name == "" {
 			return fmt.Errorf("file entry missing name")
@@ -247,7 +253,7 @@ func (m *ModelManifest) Validate() error {
 		}
 	}
 
-	// Check for required ONNX files based on capability
+	// Check for required ONNX files based on model type and capability
 	if m.IsMultimodal() {
 		// Multimodal embedders (CLIP) require visual_model.onnx + text_model.onnx
 		if !hasVisualOnnx || !hasTextOnnx {
@@ -256,6 +262,11 @@ func (m *ModelManifest) Validate() error {
 		// Multimodal models only support ONNX runtime
 		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
 			return fmt.Errorf("multimodal embedders only support ONNX backend")
+		}
+	} else if m.Type == ModelTypeQuestionator {
+		// Seq2seq models (questionators) require encoder.onnx + decoder.onnx
+		if !hasEncoderOnnx || !hasDecoderOnnx {
+			return fmt.Errorf("questionator model must include encoder.onnx and decoder.onnx")
 		}
 	} else {
 		// Standard models require model.onnx

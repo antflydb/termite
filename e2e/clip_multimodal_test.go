@@ -24,7 +24,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -308,19 +307,6 @@ func createTestImage(t *testing.T, width, height int, c color.Color) []byte {
 	}
 
 	return buf.Bytes()
-}
-
-// findAvailablePort finds an available TCP port
-func findAvailablePort(t *testing.T) int {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatalf("Failed to find available port: %v", err)
-	}
-	defer listener.Close()
-
-	return listener.Addr().(*net.TCPAddr).Port
 }
 
 // cosineSimilarity computes cosine similarity between two vectors
