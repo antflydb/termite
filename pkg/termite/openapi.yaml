@@ -316,8 +316,8 @@ components:
             format: float
           description: Relevance scores (one per prompt, same order as input)
 
-    # NER Types
-    NEREntity:
+    # Recognizer Types
+    RecognizeEntity:
       type: object
       required:
         - text
@@ -348,7 +348,7 @@ components:
           description: Confidence score (0.0 to 1.0)
           example: 0.99
 
-    NERRequest:
+    RecognizeRequest:
       type: object
       required:
         - model
@@ -375,7 +375,7 @@ components:
             If not provided, the model's default labels are used.
           example: ["person", "company", "product", "date"]
 
-    NERResponse:
+    RecognizeResponse:
       type: object
       required:
         - model
@@ -389,11 +389,11 @@ components:
           items:
             type: array
             items:
-              $ref: "#/components/schemas/NEREntity"
+              $ref: "#/components/schemas/RecognizeEntity"
           description: Array of entity arrays (one per input text)
 
-    # Generate Types (Seq2Seq)
-    GenerateRequest:
+    # Questionator Types (Seq2Seq)
+    QuestionGenerateRequest:
       type: object
       required:
         - model
@@ -410,7 +410,7 @@ components:
           description: Input texts to generate from
           example: ["Translate to German: Hello, how are you?"]
 
-    GenerateResponse:
+    QuestionGenerateResponse:
       type: object
       required:
         - model
@@ -434,8 +434,8 @@ components:
         - chunkers
         - rerankers
         - embedders
-        - ner
-        - generators
+        - recognizers
+        - questionators
       properties:
         chunkers:
           type: array
@@ -455,19 +455,19 @@ components:
             type: string
           description: Available embedding models from models_dir/embedders/
           example: ["bge-small-en-v1.5", "bge-small-en-v1.5-i8-qt"]
-        ner:
+        recognizers:
           type: array
           items:
             type: string
           description: Available recognizer models from models_dir/recognizers/
           example: ["bert-base-ner", "distilbert-ner", "gliner-small"]
-        gliner:
+        extractors:
           type: array
           items:
             type: string
-          description: Available GLiNER models (zero-shot recognition with custom labels)
+          description: Available GLiNER extractor models (zero-shot recognition with custom labels)
           example: ["gliner-small", "gliner-multitask"]
-        generators:
+        questionators:
           type: array
           items:
             type: string
@@ -904,14 +904,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/NERRequest"
+              $ref: "#/components/schemas/RecognizeRequest"
       responses:
         "200":
           description: Entities extracted successfully
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/NERResponse"
+                $ref: "#/components/schemas/RecognizeResponse"
         "400":
           description: Invalid request
           content:
@@ -969,14 +969,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenerateRequest"
+              $ref: "#/components/schemas/QuestionGenerateRequest"
       responses:
         "200":
           description: Text generated successfully
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/GenerateResponse"
+                $ref: "#/components/schemas/QuestionGenerateResponse"
         "400":
           description: Invalid request
           content:
