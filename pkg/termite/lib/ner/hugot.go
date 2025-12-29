@@ -133,9 +133,10 @@ func NewHugotNERWithSession(modelPath string, onnxFilename string, sharedSession
 
 // NewHugotNERWithSessionManager creates a new NER model using a SessionManager.
 // The SessionManager handles backend selection based on priority and model compatibility.
-func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*HugotNER, error) {
+// modelBackends restricts which backends can be used (empty = all backends allowed).
+func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*HugotNER, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required")
+		return nil, "", errors.New("model path is required")
 	}
 
 	if onnxFilename == "" {
@@ -148,7 +149,11 @@ func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessio
 
 	if sessionManager == nil {
 		// Fall back to creating a new session
-		return NewHugotNERWithSession(modelPath, onnxFilename, nil, logger)
+		model, err := NewHugotNERWithSession(modelPath, onnxFilename, nil, logger)
+		if err != nil {
+			return nil, "", err
+		}
+		return model, hugot.BackendType(""), nil
 	}
 
 	// Load NER configuration (labels)
@@ -167,11 +172,11 @@ func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessio
 		zap.String("onnxFilename", onnxFilename),
 		zap.Int("numLabels", len(config.Labels)))
 
-	// Get session from SessionManager
-	session, _, err := sessionManager.GetSessionForModel(nil)
+	// Get session from SessionManager with backend restrictions
+	session, backendUsed, err := sessionManager.GetSessionForModel(modelBackends)
 	if err != nil {
 		logger.Error("Failed to get session from SessionManager", zap.Error(err))
-		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+		return nil, "", fmt.Errorf("getting session from SessionManager: %w", err)
 	}
 
 	// Create token classification pipeline
@@ -185,11 +190,12 @@ func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessio
 	pipeline, err := khugot.NewPipeline(session, pipelineConfig)
 	if err != nil {
 		logger.Error("Failed to create pipeline", zap.Error(err))
-		return nil, fmt.Errorf("creating token classification pipeline: %w", err)
+		return nil, "", fmt.Errorf("creating token classification pipeline: %w", err)
 	}
 
 	pipeline.AggregationStrategy = "SIMPLE"
-	logger.Info("Successfully created NER token classification pipeline")
+	logger.Info("Successfully created NER token classification pipeline",
+		zap.String("backend", string(backendUsed)))
 
 	return &HugotNER{
 		session:       session,
@@ -197,7 +203,7 @@ func NewHugotNERWithSessionManager(modelPath string, onnxFilename string, sessio
 		config:        config,
 		logger:        logger,
 		sessionShared: true, // SessionManager owns the session
-	}, nil
+	}, backendUsed, nil
 }
 
 // Recognize extracts named entities from the given texts.
@@ -418,9 +424,10 @@ func NewPooledHugotNERWithSession(modelPath string, onnxFilename string, poolSiz
 
 // NewPooledHugotNERWithSessionManager creates a new pooled NER model using a SessionManager.
 // The SessionManager handles backend selection based on priority and model compatibility.
-func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, poolSize int, sessionManager *hugot.SessionManager, logger *zap.Logger) (*PooledHugotNER, error) {
+// modelBackends restricts which backends can be used (empty = all backends allowed).
+func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, poolSize int, sessionManager *hugot.SessionManager, modelBackends []string, logger *zap.Logger) (*PooledHugotNER, hugot.BackendType, error) {
 	if modelPath == "" {
-		return nil, errors.New("model path is required")
+		return nil, "", errors.New("model path is required")
 	}
 
 	if onnxFilename == "" {
@@ -433,7 +440,11 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 
 	if sessionManager == nil {
 		// Fall back to creating a new session
-		return NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, nil, logger)
+		model, err := NewPooledHugotNERWithSession(modelPath, onnxFilename, poolSize, nil, logger)
+		if err != nil {
+			return nil, "", err
+		}
+		return model, hugot.BackendType(""), nil
 	}
 
 	if poolSize <= 0 {
@@ -457,11 +468,11 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 		zap.Int("poolSize", poolSize),
 		zap.Int("numLabels", len(config.Labels)))
 
-	// Get session from SessionManager
-	session, _, err := sessionManager.GetSessionForModel(nil)
+	// Get session from SessionManager with backend restrictions
+	session, backendUsed, err := sessionManager.GetSessionForModel(modelBackends)
 	if err != nil {
 		logger.Error("Failed to get session from SessionManager", zap.Error(err))
-		return nil, fmt.Errorf("getting session from SessionManager: %w", err)
+		return nil, "", fmt.Errorf("getting session from SessionManager: %w", err)
 	}
 
 	// Create N pipelines with unique names
@@ -479,7 +490,7 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 			logger.Error("Failed to create pipeline",
 				zap.Int("index", i),
 				zap.Error(err))
-			return nil, fmt.Errorf("creating token classification pipeline %d: %w", i, err)
+			return nil, "", fmt.Errorf("creating token classification pipeline %d: %w", i, err)
 		}
 
 		pipeline.AggregationStrategy = "SIMPLE"
@@ -487,7 +498,9 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
 	}
 
-	logger.Info("Successfully created pooled NER pipelines", zap.Int("count", poolSize))
+	logger.Info("Successfully created pooled NER pipelines",
+		zap.Int("count", poolSize),
+		zap.String("backend", string(backendUsed)))
 
 	return &PooledHugotNER{
 		session:       session,
@@ -497,7 +510,7 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 		logger:        logger,
 		sessionShared: true, // SessionManager owns the session
 		poolSize:      poolSize,
-	}, nil
+	}, backendUsed, nil
 }
 
 // Recognize extracts named entities from the given texts.

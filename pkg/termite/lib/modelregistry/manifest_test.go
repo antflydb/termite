@@ -31,8 +31,12 @@ func TestParseModelType(t *testing.T) {
 		{"chunkers", ModelTypeChunker, false},
 		{"reranker", ModelTypeReranker, false},
 		{"rerankers", ModelTypeReranker, false},
-		{"ner", ModelTypeNER, false},
-		{"NER", ModelTypeNER, false},
+		{"recognizer", ModelTypeRecognizer, false},
+		{"recognizers", ModelTypeRecognizer, false},
+		{"RECOGNIZER", ModelTypeRecognizer, false},
+		{"questionator", ModelTypeQuestionator, false},
+		{"questionators", ModelTypeQuestionator, false},
+		{"QUESTIONATOR", ModelTypeQuestionator, false},
 		{"unknown", "", true},
 		{"", "", true},
 	}
@@ -59,7 +63,8 @@ func TestModelTypeDirName(t *testing.T) {
 		{ModelTypeEmbedder, "embedders"},
 		{ModelTypeChunker, "chunkers"},
 		{ModelTypeReranker, "rerankers"},
-		{ModelTypeNER, "ner"},
+		{ModelTypeRecognizer, "recognizers"},
+		{ModelTypeQuestionator, "questionators"},
 	}
 
 	for _, tt := range tests {

@@ -71,8 +71,8 @@ func NewHugotModel(modelPath string, logger *zap.Logger) (reranking.Model, error
 		logger.Info("Found quantized model, will use it")
 	}
 
-	// Create Hugot reranker
-	hugot, err := termreranking.NewHugotReranker(modelPath, onnxFilename, logger)
+	// Create Hugot reranker (using pooled variant with poolSize=1)
+	hugot, err := termreranking.NewPooledHugotReranker(modelPath, onnxFilename, 1, logger)
 	if err != nil {
 		return nil, fmt.Errorf("creating hugot reranker: %w", err)
 	}
