@@ -54,7 +54,7 @@ type TermiteNode struct {
 	rerankerRegistry      *RerankerRegistry
 	nerRegistry           *NERRegistry
 	seq2seqRegistry       *Seq2SeqRegistry
-	relRegistry           *RelationExtractorRegistry
+	relatorRegistry       *RelatorRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -290,17 +290,17 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		defer func() { _ = seq2seqRegistry.Close() }()
 	}
 
-	// Initialize relation extraction registry for REBEL models
-	var relModelsDir string
+	// Initialize relator registry for REBEL models
+	var relatorModelsDir string
 	if config.ModelsDir != "" {
-		relModelsDir = filepath.Join(config.ModelsDir, "rel")
+		relatorModelsDir = filepath.Join(config.ModelsDir, "relators")
 	}
-	relRegistry, err := NewRelationExtractorRegistry(relModelsDir, sessionManager, zl.Named("rel"))
+	relatorRegistry, err := NewRelatorRegistry(relatorModelsDir, sessionManager, zl.Named("relator"))
 	if err != nil {
-		zl.Fatal("Failed to initialize RelationExtractor registry", zap.Error(err))
+		zl.Fatal("Failed to initialize Relator registry", zap.Error(err))
 	}
-	if relRegistry != nil {
-		defer func() { _ = relRegistry.Close() }()
+	if relatorRegistry != nil {
+		defer func() { _ = relatorRegistry.Close() }()
 	}
 
 	t := &http.Transport{
@@ -368,7 +368,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		rerankerRegistry:      rerankerRegistry,
 		nerRegistry:           nerRegistry,
 		seq2seqRegistry:       seq2seqRegistry,
-		relRegistry:           relRegistry,
+		relatorRegistry:       relatorRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,

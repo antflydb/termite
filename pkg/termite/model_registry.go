@@ -899,17 +899,17 @@ func (r *Seq2SeqRegistry) Close() error {
 	return nil
 }
 
-// RelationExtractorRegistry manages REBEL and other relation extraction models
-type RelationExtractorRegistry struct {
+// RelatorRegistry manages REBEL and other relation extraction models
+type RelatorRegistry struct {
 	models map[string]seq2seq.RelationExtractor // model name -> RelationExtractor instance
 	mu     sync.RWMutex
 	logger *zap.Logger
 }
 
-// NewRelationExtractorRegistry creates a registry and discovers REBEL models in the given directory
+// NewRelatorRegistry creates a registry and discovers REBEL models in the given directory
 // REBEL models have encoder.onnx, decoder-init.onnx, decoder.onnx, and rebel_config.json
-func NewRelationExtractorRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*RelationExtractorRegistry, error) {
-	registry := &RelationExtractorRegistry{
+func NewRelatorRegistry(modelsDir string, sessionManager *hugot.SessionManager, logger *zap.Logger) (*RelatorRegistry, error) {
+	registry := &RelatorRegistry{
 		models: make(map[string]seq2seq.RelationExtractor),
 		logger: logger,
 	}
@@ -967,14 +967,14 @@ func NewRelationExtractorRegistry(modelsDir string, sessionManager *hugot.Sessio
 		}
 	}
 
-	logger.Info("RelationExtractor registry initialized",
+	logger.Info("Relator registry initialized",
 		zap.Int("models_loaded", len(registry.models)))
 
 	return registry, nil
 }
 
 // Get returns a RelationExtractor model by name
-func (r *RelationExtractorRegistry) Get(modelName string) (seq2seq.RelationExtractor, error) {
+func (r *RelatorRegistry) Get(modelName string) (seq2seq.RelationExtractor, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -985,8 +985,8 @@ func (r *RelationExtractorRegistry) Get(modelName string) (seq2seq.RelationExtra
 	return model, nil
 }
 
-// List returns all available relation extraction model names
-func (r *RelationExtractorRegistry) List() []string {
+// List returns all available relator model names
+func (r *RelatorRegistry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -997,14 +997,14 @@ func (r *RelationExtractorRegistry) List() []string {
 	return names
 }
 
-// Close closes all loaded relation extraction models
-func (r *RelationExtractorRegistry) Close() error {
+// Close closes all loaded relator models
+func (r *RelatorRegistry) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	for name, model := range r.models {
 		if err := model.Close(); err != nil {
-			r.logger.Warn("Error closing relation extraction model",
+			r.logger.Warn("Error closing relator model",
 				zap.String("name", name),
 				zap.Error(err))
 		}
