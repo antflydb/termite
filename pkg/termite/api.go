@@ -83,12 +83,12 @@ func (t *TermiteAPI) GenerateQuestions(w http.ResponseWriter, r *http.Request) {
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
-		Chunkers:   []string{},
-		Rerankers:  []string{},
-		Embedders:  []string{},
-		Ner:        []string{},
-		Gliner:     []string{},
-		Generators: []string{},
+		Chunkers:      []string{},
+		Rerankers:     []string{},
+		Embedders:     []string{},
+		Recognizers:   []string{},
+		Extractors:    []string{},
+		Questionators: []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -104,12 +104,12 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.node.nerRegistry != nil {
-		resp.Ner = t.node.nerRegistry.List()
-		resp.Gliner = t.node.nerRegistry.ListRecognizers()
+		resp.Recognizers = t.node.nerRegistry.List()
+		resp.Extractors = t.node.nerRegistry.ListRecognizers()
 	}
 
 	if t.node.seq2seqRegistry != nil {
-		resp.Generators = t.node.seq2seqRegistry.List()
+		resp.Questionators = t.node.seq2seqRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -650,11 +650,11 @@ func (ln *TermiteNode) handleApiNER(w http.ResponseWriter, r *http.Request) {
 		zap.Int("total_entities", totalEntities))
 
 	// Convert internal Entity type to API response type
-	apiEntities := make([][]NEREntity, len(entities))
+	apiEntities := make([][]RecognizeEntity, len(entities))
 	for i, textEntities := range entities {
-		apiEntities[i] = make([]NEREntity, len(textEntities))
+		apiEntities[i] = make([]RecognizeEntity, len(textEntities))
 		for j, e := range textEntities {
-			apiEntities[i][j] = NEREntity{
+			apiEntities[i][j] = RecognizeEntity{
 				Text:  e.Text,
 				Label: e.Label,
 				Start: e.Start,
@@ -665,7 +665,7 @@ func (ln *TermiteNode) handleApiNER(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send response
-	nerResp := NERResponse{
+	nerResp := RecognizeResponse{
 		Model:    req.Model,
 		Entities: apiEntities,
 	}
@@ -752,7 +752,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		zap.Int("num_outputs", len(output.Texts)))
 
 	// Send response
-	resp := GenerateResponse{
+	resp := QuestionGenerateResponse{
 		Model: req.Model,
 		Texts: output.Texts,
 	}

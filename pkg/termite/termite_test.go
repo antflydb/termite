@@ -455,8 +455,8 @@ func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 
 	// Decode response
 	var resp struct {
-		Model    string          `json:"model"`
-		Entities [][]NEREntity `json:"entities"`
+		Model    string              `json:"model"`
+		Entities [][]RecognizeEntity `json:"entities"`
 	}
 	err = json.NewDecoder(w.Body).Decode(&resp)
 	require.NoError(t, err)

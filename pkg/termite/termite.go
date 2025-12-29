@@ -264,7 +264,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// If not set, NER endpoint will not be available
 	var nerModelsDir string
 	if config.ModelsDir != "" {
-		nerModelsDir = filepath.Join(config.ModelsDir, "ner")
+		nerModelsDir = filepath.Join(config.ModelsDir, "recognizers")
 	}
 	nerRegistry, err := NewNERRegistry(nerModelsDir, sessionManager, zl.Named("ner"))
 	if err != nil {
@@ -279,7 +279,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// If not set, generate endpoint will not be available
 	var generatorsModelsDir string
 	if config.ModelsDir != "" {
-		generatorsModelsDir = filepath.Join(config.ModelsDir, "generators")
+		generatorsModelsDir = filepath.Join(config.ModelsDir, "questionators")
 	}
 	seq2seqRegistry, err := NewSeq2SeqRegistry(generatorsModelsDir, sessionManager, zl.Named("seq2seq"))
 	if err != nil {
