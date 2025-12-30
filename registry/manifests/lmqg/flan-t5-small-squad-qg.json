@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "name": "flan-t5-small-squad-qg",
+  "type": "rewriter",
+  "description": "",
+  "source": "lmqg/flan-t5-small-squad-qg",
+  "files": [
+    {
+      "name": "encoder.onnx",
+      "digest": "sha256:3346c71f352e0fc73d79c6cc81a685e0ef3711eddab7c4826dc3e6844ec20977",
+      "size": 141405171
+    },
+    {
+      "name": "decoder-init.onnx",
+      "digest": "sha256:cd92855c0bcc06bb15a78dee3c07ec975ee17b2cdb497df5d4e29e814dea3c42",
+      "size": 232462553
+    },
+    {
+      "name": "decoder.onnx",
+      "digest": "sha256:de4529b8378d11f05d33234a74dfd5f31dafa1098fed981a19306dd536505185",
+      "size": 219856277
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:182d5a8947631f3c374ab05ec478bdbd84bc8cc1cc43901b67baf1edb4c1d3e3",
+      "size": 2422414
+    },
+    {
+      "name": "config.json",
+      "digest": "sha256:c6a18a2176571f532f0ba3e868139fd5bcc859ec05f60ff7e8d98fd95495dbc8",
+      "size": 2846
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:03b0b10b8409a59b135e549a1beeac20e8d35c8dae67d7a7f09c5420ab620c1d",
+      "size": 21012
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:ec629826f60c026b7843ff23e0ae6781caf4a33b6cd23aabfa36855e11349247",
+      "size": 2555
+    },
+    {
+      "name": "spiece.model",
+      "digest": "sha256:d60acb128cf7b7f2536e8f38a5b18a05535c9e14c7a355904270e15b0945ea86",
+      "size": 791656
+    },
+    {
+      "name": "seq2seq_config.json",
+      "digest": "sha256:4370d346f93c07ac71d06278c3b0cfc2fa86000f240655c086d158eebf2cb219",
+      "size": 216
+    }
+  ],
+  "owner": "lmqg",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/lmqg/flan-t5-small-squad-qg",
+    "downloadedAt": "2025-12-30T22:08:20.736695+00:00"
+  }
+}

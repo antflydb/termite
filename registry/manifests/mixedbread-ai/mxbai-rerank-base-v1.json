@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "mxbai-rerank-base-v1",
+  "owner": "mixedbread-ai",
   "type": "reranker",
   "description": "",
   "source": "mixedbread-ai/mxbai-rerank-base-v1",
@@ -33,14 +34,22 @@
   ],
   "variants": {
     "f16": {
-      "name": "model_f16.onnx",
-      "digest": "sha256:ff91d7dcaf8ca55a2852d355d6f357c8453319d22394e1fd0d42ca8bbfb3f073",
-      "size": 370099139
+      "files": [
+        {
+          "name": "model_f16.onnx",
+          "digest": "sha256:ff91d7dcaf8ca55a2852d355d6f357c8453319d22394e1fd0d42ca8bbfb3f073",
+          "size": 370099139
+        }
+      ]
     },
     "i8": {
-      "name": "model_i8.onnx",
-      "digest": "sha256:dab335dff0dfb65a84c2baf1fd54894574882f9d02c65e268e0074f99f241a23",
-      "size": 244066709
+      "files": [
+        {
+          "name": "model_i8.onnx",
+          "digest": "sha256:dab335dff0dfb65a84c2baf1fd54894574882f9d02c65e268e0074f99f241a23",
+          "size": 244066709
+        }
+      ]
     }
   }
 }

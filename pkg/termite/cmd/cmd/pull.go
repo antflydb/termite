@@ -24,19 +24,23 @@ import (
 var variants []string
 
 var pullCmd = &cobra.Command{
-	Use:   "pull <model-name> [model-name...]",
+	Use:   "pull <owner/model-name> [owner/model-name...]",
 	Short: "Pull ONNX model(s) from the registry",
-	Long: `Download one or more ONNX models from the Antfly model registry.
+	Long: `Download one or more ONNX models from the Antfly model registry or HuggingFace.
+
+Model names use owner/model format (like HuggingFace and Ollama):
+  - BAAI/bge-small-en-v1.5
+  - sentence-transformers/all-MiniLM-L6-v2
 
 Models are downloaded to the appropriate directory based on their type:
-  - Embedders:     models/embedders/<model-name>/
-  - Chunkers:      models/chunkers/<model-name>/
-  - Rerankers:     models/rerankers/<model-name>/
-  - Generators:    models/generators/<model-name>/
-  - Recognizers:   models/recognizers/<model-name>/
-  - Rewriters:     models/rewriters/<model-name>/
+  - Embedders:     models/embedders/<owner>/<model-name>/
+  - Chunkers:      models/chunkers/<owner>/<model-name>/
+  - Rerankers:     models/rerankers/<owner>/<model-name>/
+  - Generators:    models/generators/<owner>/<model-name>/
+  - Recognizers:   models/recognizers/<owner>/<model-name>/
+  - Rewriters:     models/rewriters/<owner>/<model-name>/
 
-Variants:
+Variants (append :variant to model name, e.g., BAAI/bge-small-en-v1.5:i8):
   f32     - FP32 baseline (default, highest accuracy)
   f16     - FP16 half precision (~50% smaller)
   i8      - INT8 dynamic quantization (smallest, fastest CPU)
@@ -45,28 +49,28 @@ Variants:
 
 Examples:
   # Pull default FP32 model
-  termite pull bge-small-en-v1.5
+  termite pull BAAI/bge-small-en-v1.5
 
   # Pull only INT8 variant (smaller download)
-  termite pull --variants i8 bge-small-en-v1.5
+  termite pull BAAI/bge-small-en-v1.5:i8
 
   # Pull multiple variants
-  termite pull --variants f16,i8 bge-small-en-v1.5
+  termite pull --variants f16,i8 BAAI/bge-small-en-v1.5
 
   # Pull multiple models with same variant
-  termite pull --variants i8 bge-small-en-v1.5 mxbai-rerank-base-v1
-
-  # Pull recognizer model
-  termite pull bert-base-ner
+  termite pull --variants i8 BAAI/bge-small-en-v1.5 mixedbread-ai/mxbai-rerank-base-v1
 
   # Pull to a custom directory
-  termite pull --models-dir /opt/antfly/models bge-small-en-v1.5
+  termite pull --models-dir /opt/antfly/models BAAI/bge-small-en-v1.5
 
-  # Pull directly from HuggingFace (auto-detects generator type)
-  termite pull hf:onnxruntime/Gemma-3-ONNX
+  # Pull directly from HuggingFace (auto-detects type)
+  termite pull hf:BAAI/bge-small-en-v1.5
 
   # Pull from HuggingFace with explicit type
   termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder
+
+  # Pull generator from HuggingFace
+  termite pull hf:onnxruntime/Gemma-3-ONNX
 
   # Pull recognizer model from HuggingFace
   termite pull hf:dslim/bert-base-NER --type recognizer

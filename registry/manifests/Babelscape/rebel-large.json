@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "rebel-large",
+  "owner": "Babelscape",
   "type": "recognizer",
   "description": "",
   "source": "Babelscape/rebel-large",

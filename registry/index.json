@@ -1,8 +1,9 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "models": [
     {
       "name": "bge-small-en-v1.5",
+      "owner": "BAAI",
       "type": "embedder",
       "description": "",
       "source": "BAAI/bge-small-en-v1.5",
@@ -13,7 +14,29 @@
       ]
     },
     {
+      "name": "rebel-large",
+      "owner": "Babelscape",
+      "type": "recognizer",
+      "description": "",
+      "source": "Babelscape/rebel-large",
+      "size": 3163580492,
+      "variants": [],
+      "capabilities": [
+        "relations"
+      ]
+    },
+    {
+      "name": "flan-t5-small-squad-qg",
+      "type": "rewriter",
+      "description": "",
+      "source": "lmqg/flan-t5-small-squad-qg",
+      "size": 596964700,
+      "variants": [],
+      "owner": "lmqg"
+    },
+    {
       "name": "chonky-mmbert-small-multilingual-1",
+      "owner": "mirth",
       "type": "chunker",
       "description": "",
       "source": "mirth/chonky_mmbert_small_multilingual_1",
@@ -24,7 +47,20 @@
       ]
     },
     {
+      "name": "mxbai-rerank-base-v1",
+      "owner": "mixedbread-ai",
+      "type": "reranker",
+      "description": "",
+      "source": "mixedbread-ai/mxbai-rerank-base-v1",
+      "size": 747254415,
+      "variants": [
+        "f16",
+        "i8"
+      ]
+    },
+    {
       "name": "clip-vit-base-patch32",
+      "owner": "openai",
       "type": "embedder",
       "description": "",
       "source": "openai/clip-vit-base-patch32",
@@ -38,36 +74,6 @@
       ],
       "backends": [
         "onnx"
-      ]
-    },
-    {
-      "name": "flan-t5-small-squad-qg",
-      "type": "rewriter",
-      "description": "",
-      "source": "lmqg/flan-t5-small-squad-qg",
-      "size": 596964706,
-      "variants": []
-    },
-    {
-      "name": "mxbai-rerank-base-v1",
-      "type": "reranker",
-      "description": "",
-      "source": "mixedbread-ai/mxbai-rerank-base-v1",
-      "size": 747254415,
-      "variants": [
-        "f16",
-        "i8"
-      ]
-    },
-    {
-      "name": "rebel-large",
-      "type": "recognizer",
-      "description": "",
-      "source": "Babelscape/rebel-large",
-      "size": 3163580492,
-      "variants": [],
-      "capabilities": [
-        "relations"
       ]
     }
   ]

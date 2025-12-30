@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "bge-small-en-v1.5",
+  "owner": "BAAI",
   "type": "embedder",
   "description": "",
   "source": "BAAI/bge-small-en-v1.5",
@@ -38,14 +39,22 @@
   ],
   "variants": {
     "f16": {
-      "name": "model_f16.onnx",
-      "digest": "sha256:4518acd91a073a30ca5f32e96bf8020034992cb9ffd52bd9ff6da89f1f5675ab",
-      "size": 66694927
+      "files": [
+        {
+          "name": "model_f16.onnx",
+          "digest": "sha256:4518acd91a073a30ca5f32e96bf8020034992cb9ffd52bd9ff6da89f1f5675ab",
+          "size": 66694927
+        }
+      ]
     },
     "i8": {
-      "name": "model_i8.onnx",
-      "digest": "sha256:871ab4e755d9ab0eb8a7f7a965136e24f08b1ac26303c6e55c122be3a2c04172",
-      "size": 33792561
+      "files": [
+        {
+          "name": "model_i8.onnx",
+          "digest": "sha256:871ab4e755d9ab0eb8a7f7a965136e24f08b1ac26303c6e55c122be3a2c04172",
+          "size": 33792561
+        }
+      ]
     }
   }
 }

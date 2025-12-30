@@ -1007,6 +1007,7 @@ def generate_manifest(
     model_dir: Path,
     description: str = "",
     source: str = "",
+    owner: str = "",
     capabilities: list[str] | None = None,
     backends: list[str] | None = None,
     recognizer_arch: str | None = None,
@@ -1019,6 +1020,7 @@ def generate_manifest(
         model_dir: Directory containing the exported model files
         description: Human-readable description
         source: Source model ID (e.g., HuggingFace model ID)
+        owner: Model owner/organization (e.g., "BAAI", "sentence-transformers")
         capabilities: List of capabilities (e.g., ["labels", "zeroshot", "relations"])
         backends: List of supported backends (e.g., ["onnx"])
         recognizer_arch: For recognizers, the architecture type: "gliner", "rebel", or "ner"
@@ -1149,12 +1151,23 @@ def generate_manifest(
                 variants[variant_id] = variant_files if len(variant_files) > 1 else variant_files[0]
 
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "name": model_name,
         "type": model_type,
         "description": description,
         "source": source,
         "files": files,
+    }
+
+    # Add owner if specified
+    if owner:
+        manifest["owner"] = owner
+
+    # Add provenance information
+    from datetime import datetime, timezone
+    manifest["provenance"] = {
+        "downloadedFrom": f"https://huggingface.co/{source}" if source else "",
+        "downloadedAt": datetime.now(timezone.utc).isoformat(),
     }
 
     # Add capabilities and backends if specified
@@ -1178,16 +1191,22 @@ def prepare_registry_files(
     Prepare files for registry upload.
 
     Creates:
-    - manifests/<name>.json
+    - manifests/<owner>/<name>.json (or manifests/<name>.json if no owner)
     - blobs/sha256:...
     """
     manifests_dir = output_dir / "manifests"
     blobs_dir = output_dir / "blobs"
-    manifests_dir.mkdir(parents=True, exist_ok=True)
     blobs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write manifest
-    manifest_path = manifests_dir / f"{manifest['name']}.json"
+    # Write manifest with owner structure if available
+    if manifest.get("owner"):
+        owner_dir = manifests_dir / manifest["owner"]
+        owner_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = owner_dir / f"{manifest['name']}.json"
+    else:
+        manifests_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifests_dir / f"{manifest['name']}.json"
+
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
     logger.info(f"Created manifest: {manifest_path}")
@@ -1231,10 +1250,12 @@ def upload_to_r2(
         aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
     )
 
-    # Upload manifests
+    # Upload manifests (including owner subdirectories)
     manifests_dir = output_dir / "manifests"
-    for manifest_file in manifests_dir.glob("*.json"):
-        key = f"{prefix}/manifests/{manifest_file.name}"
+    for manifest_file in manifests_dir.rglob("*.json"):
+        # Get relative path to preserve owner/name structure
+        rel_path = manifest_file.relative_to(manifests_dir)
+        key = f"{prefix}/manifests/{rel_path}"
         logger.info(f"Uploading {key}...")
         s3.upload_file(
             str(manifest_file),
@@ -1326,7 +1347,11 @@ def update_registry_index(
         with open(index_path) as f:
             index = json.load(f)
     else:
-        index = {"schemaVersion": 1, "models": []}
+        index = {"schemaVersion": 2, "models": []}
+
+    # Upgrade schema version if needed
+    if index.get("schemaVersion", 1) < 2:
+        index["schemaVersion"] = 2
 
     # Calculate total size (base files only, variants are optional downloads)
     total_size = sum(f["size"] for f in manifest["files"])
@@ -1335,6 +1360,10 @@ def update_registry_index(
     variant_ids = []
     if manifest.get("variants"):
         variant_ids = list(manifest["variants"].keys())
+
+    # Build full name for matching (owner/name if owner present)
+    owner = manifest.get("owner", "")
+    full_name = f"{owner}/{manifest['name']}" if owner else manifest["name"]
 
     # Create index entry
     entry = {
@@ -1346,15 +1375,24 @@ def update_registry_index(
         "variants": variant_ids,
     }
 
+    # Add owner if present
+    if owner:
+        entry["owner"] = owner
+
     # Add capabilities and backends if present
     if manifest.get("capabilities"):
         entry["capabilities"] = manifest["capabilities"]
     if manifest.get("backends"):
         entry["backends"] = manifest["backends"]
 
-    # Update or add entry
+    # Helper to get full name from entry
+    def get_full_name(m):
+        e_owner = m.get("owner", "")
+        return f"{e_owner}/{m['name']}" if e_owner else m["name"]
+
+    # Update or add entry (match by full owner/name)
     existing_idx = next(
-        (i for i, m in enumerate(index["models"]) if m["name"] == manifest["name"]),
+        (i for i, m in enumerate(index["models"]) if get_full_name(m) == full_name),
         None
     )
     if existing_idx is not None:
@@ -1362,8 +1400,8 @@ def update_registry_index(
     else:
         index["models"].append(entry)
 
-    # Sort by name
-    index["models"].sort(key=lambda m: m["name"])
+    # Sort by full name (owner/name)
+    index["models"].sort(key=get_full_name)
 
     # Write index
     with open(index_path, "w") as f:
@@ -2154,12 +2192,18 @@ def cmd_export(args):
         logger.info(f"Detected recognizer architecture: {recognizer_arch}")
         logger.info(f"Detected capabilities: {', '.join(detected_capabilities)}")
 
-    # Derive model name from model_id if not specified
-    model_name = args.name or model_id.split("/")[-1].replace("_", "-").lower()
+    # Parse owner and model name from model_id
+    parts = model_id.split("/")
+    if len(parts) == 2:
+        model_owner = parts[0]
+        model_name = args.name or parts[1].replace("_", "-").lower()
+    else:
+        model_owner = "unknown"
+        model_name = args.name or model_id.replace("_", "-").lower()
 
-    # Setup paths
+    # Setup paths with owner/model structure
     config = MODEL_TYPE_CONFIG[args.model_type]
-    model_dir = args.output_dir / "models" / config["dir_name"] / model_name
+    model_dir = args.output_dir / "models" / config["dir_name"] / model_owner / model_name
 
     logger.info("=" * 60)
     logger.info("Antfly Model Registry Export")
@@ -2167,7 +2211,8 @@ def cmd_export(args):
     logger.info(f"Type:        {args.model_type}")
     if recognizer_arch:
         logger.info(f"Architecture:{recognizer_arch}")
-    logger.info(f"Model:       {model_id}")
+    logger.info(f"Source:      {model_id}")
+    logger.info(f"Owner:       {model_owner}")
     logger.info(f"Name:        {model_name}")
     logger.info(f"Output:      {args.output_dir}")
     logger.info(f"Variants:    {', '.join(args.variants) if args.variants else 'none'}")
@@ -2205,10 +2250,17 @@ def cmd_export(args):
         model_dir,
         args.description,
         source=model_id,
+        owner=model_owner,
         capabilities=capabilities if capabilities else None,
         backends=args.backends if args.backends else None,
         recognizer_arch=recognizer_arch,
     )
+
+    # Save local manifest to model directory
+    local_manifest_path = model_dir / "model_manifest.json"
+    with open(local_manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    logger.info(f"Saved local manifest: {local_manifest_path}")
 
     # Prepare registry files
     prepare_registry_files(manifest, model_dir, args.output_dir)

@@ -84,6 +84,172 @@ func fileExistsRegistry(path string) bool {
 	return err == nil
 }
 
+// DiscoveredModel represents a model found during directory scanning
+type DiscoveredModel struct {
+	// Ref is the parsed model reference (owner/name)
+	Ref modelregistry.ModelRef
+	// Path is the absolute path to the model directory
+	Path string
+	// Manifest is the loaded manifest (nil if not found/generated)
+	Manifest *modelregistry.ModelManifest
+	// Variants maps variant ID to ONNX filename
+	Variants map[string]string
+}
+
+// RegistryName returns the short name for registry lookups
+func (d *DiscoveredModel) RegistryName() string {
+	return d.Ref.Name
+}
+
+// FullName returns the full owner/name
+func (d *DiscoveredModel) FullName() string {
+	return d.Ref.FullName()
+}
+
+// discoverModelsInDir scans a directory for models using the owner/model structure.
+// It supports both the new owner/model structure and the legacy flat structure.
+//
+// New structure: modelsDir/owner/model-name/model.onnx
+// Legacy structure: modelsDir/model-name/model.onnx
+func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, logger *zap.Logger) ([]DiscoveredModel, error) {
+	if modelsDir == "" {
+		return nil, nil
+	}
+
+	if _, err := os.Stat(modelsDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	var discovered []DiscoveredModel
+
+	// First level: could be owner directories or model directories (legacy)
+	entries, err := os.ReadDir(modelsDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading models directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		firstLevelPath := filepath.Join(modelsDir, entry.Name())
+
+		// Check if this is an owner directory (has subdirectories with models)
+		// or a model directory itself (legacy flat structure)
+		subEntries, err := os.ReadDir(firstLevelPath)
+		if err != nil {
+			logger.Debug("Failed to read directory", zap.String("path", firstLevelPath), zap.Error(err))
+			continue
+		}
+
+		// Check if this looks like a model directory (has model.onnx or manifest)
+		isModelDir := hasModelFiles(firstLevelPath)
+
+		if isModelDir {
+			// Legacy flat structure: modelsDir/model-name/
+			model := discoverSingleModel(firstLevelPath, "", entry.Name(), modelType, logger)
+			if model != nil {
+				discovered = append(discovered, *model)
+			}
+		} else {
+			// New owner structure: modelsDir/owner/model-name/
+			owner := entry.Name()
+			for _, subEntry := range subEntries {
+				if !subEntry.IsDir() {
+					continue
+				}
+				modelPath := filepath.Join(firstLevelPath, subEntry.Name())
+				model := discoverSingleModel(modelPath, owner, subEntry.Name(), modelType, logger)
+				if model != nil {
+					discovered = append(discovered, *model)
+				}
+			}
+		}
+	}
+
+	return discovered, nil
+}
+
+// hasModelFiles checks if a directory contains model files
+func hasModelFiles(path string) bool {
+	// Check for common model indicators
+	indicators := []string{
+		"model.onnx",
+		"model_manifest.json",
+		"visual_model.onnx", // CLIP
+		"encoder.onnx",      // seq2seq
+		"genai_config.json", // generator
+	}
+	for _, indicator := range indicators {
+		if fileExistsRegistry(filepath.Join(path, indicator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// discoverSingleModel discovers a model from a directory
+func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.ModelType, logger *zap.Logger) *DiscoveredModel {
+	// Try to load manifest first
+	manifest, err := modelregistry.LoadManifestFromDir(modelPath)
+	if err != nil {
+		// Manifest not found or invalid - discover from files
+		variants := discoverModelVariants(modelPath)
+		if len(variants) == 0 {
+			// Check for multimodal or seq2seq models
+			hasStd, hasQt := isMultimodalModel(modelPath)
+			if !hasStd && !hasQt && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
+				return nil // No model files found
+			}
+		}
+
+		// Create a basic manifest from discovery
+		manifest = &modelregistry.ModelManifest{
+			SchemaVersion: modelregistry.CurrentSchemaVersion,
+			Name:          name,
+			Owner:         owner,
+			Type:          modelType,
+		}
+		if owner != "" {
+			manifest.Source = owner + "/" + name
+		} else {
+			manifest.Source = name
+		}
+	} else {
+		// Override owner/name from directory structure if manifest is legacy
+		if manifest.Owner == "" && owner != "" {
+			manifest.Owner = owner
+			manifest.Source = owner + "/" + manifest.Name
+		}
+	}
+
+	variants := discoverModelVariants(modelPath)
+
+	return &DiscoveredModel{
+		Ref: modelregistry.ModelRef{
+			Owner: owner,
+			Name:  name,
+		},
+		Path:     modelPath,
+		Manifest: manifest,
+		Variants: variants,
+	}
+}
+
+// isSeq2SeqModelDir checks if a directory contains a seq2seq model
+func isSeq2SeqModelDir(path string) bool {
+	return fileExistsRegistry(filepath.Join(path, "encoder.onnx")) &&
+		fileExistsRegistry(filepath.Join(path, "decoder.onnx"))
+}
+
+// isGeneratorModelDir checks if a directory contains a generator model
+func isGeneratorModelDir(path string) bool {
+	return fileExistsRegistry(filepath.Join(path, "genai_config.json")) ||
+		(fileExistsRegistry(filepath.Join(path, "config.json")) &&
+			fileExistsRegistry(filepath.Join(path, "model.onnx")))
+}
+
 // ChunkerRegistry manages multiple chunker models loaded from a directory
 type ChunkerRegistry struct {
 	models map[string]chunking.Chunker // model name -> chunker instance

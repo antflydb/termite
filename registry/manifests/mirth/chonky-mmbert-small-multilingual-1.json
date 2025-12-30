@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "chonky-mmbert-small-multilingual-1",
+  "owner": "mirth",
   "type": "chunker",
   "description": "",
   "source": "mirth/chonky_mmbert_small_multilingual_1",
@@ -33,14 +34,22 @@
   ],
   "variants": {
     "f16": {
-      "name": "model_f16.onnx",
-      "digest": "sha256:9a57dca0637899b3c8f66ed5be5f97bbb4ae732a80f8e4c781a258579a250449",
-      "size": 281945800
+      "files": [
+        {
+          "name": "model_f16.onnx",
+          "digest": "sha256:9a57dca0637899b3c8f66ed5be5f97bbb4ae732a80f8e4c781a258579a250449",
+          "size": 281945800
+        }
+      ]
     },
     "i8": {
-      "name": "model_i8.onnx",
-      "digest": "sha256:de9fd6bbeff60d00b600def5c773db6fe8ef3f71fba2ea40a0765343ebf8bf18",
-      "size": 141554297
+      "files": [
+        {
+          "name": "model_i8.onnx",
+          "digest": "sha256:de9fd6bbeff60d00b600def5c773db6fe8ef3f71fba2ea40a0765343ebf8bf18",
+          "size": 141554297
+        }
+      ]
     }
   }
 }

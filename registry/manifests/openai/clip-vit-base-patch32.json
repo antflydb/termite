@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "clip-vit-base-patch32",
+  "owner": "openai",
   "type": "embedder",
   "description": "",
   "source": "openai/clip-vit-base-patch32",
@@ -84,29 +85,33 @@
     }
   ],
   "variants": {
-    "f16": [
-      {
-        "name": "visual_model_f16.onnx",
-        "digest": "sha256:2209bc8569962ad154d56941c517bd4d41c4077cae5d13a45337f80e062a3623",
-        "size": 176062080
-      },
-      {
-        "name": "text_model_f16.onnx",
-        "digest": "sha256:2174dbb3f9c20be0203f47c800967fe0746fee2d4b055f03fb506418c33f4664",
-        "size": 127527655
-      }
-    ],
-    "i8": [
-      {
-        "name": "visual_model_i8.onnx",
-        "digest": "sha256:bbbb27a15870e0e5faaf2cd05b7dd8faba036b49f6386c01bf0aaa0cba4a3e47",
-        "size": 88856463
-      },
-      {
-        "name": "text_model_i8.onnx",
-        "digest": "sha256:d976f193894c1836eed86ee3e69a20310d781501cf02ccf9931ea6f109c2b468",
-        "size": 64484563
-      }
-    ]
+    "f16": {
+      "files": [
+        {
+          "name": "visual_model_f16.onnx",
+          "digest": "sha256:2209bc8569962ad154d56941c517bd4d41c4077cae5d13a45337f80e062a3623",
+          "size": 176062080
+        },
+        {
+          "name": "text_model_f16.onnx",
+          "digest": "sha256:2174dbb3f9c20be0203f47c800967fe0746fee2d4b055f03fb506418c33f4664",
+          "size": 127527655
+        }
+      ]
+    },
+    "i8": {
+      "files": [
+        {
+          "name": "visual_model_i8.onnx",
+          "digest": "sha256:bbbb27a15870e0e5faaf2cd05b7dd8faba036b49f6386c01bf0aaa0cba4a3e47",
+          "size": 88856463
+        },
+        {
+          "name": "text_model_i8.onnx",
+          "digest": "sha256:d976f193894c1836eed86ee3e69a20310d781501cf02ccf9931ea6f109c2b468",
+          "size": 64484563
+        }
+      ]
+    }
   }
 }

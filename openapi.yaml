@@ -99,7 +99,7 @@ paths:
         Text embedding (Ollama-compatible):
         ```json
         {
-          "model": "bge-small-en-v1.5",
+          "model": "BAAI/bge-small-en-v1.5",
           "input": ["hello world", "machine learning"]
         }
         ```
@@ -107,7 +107,7 @@ paths:
         Multimodal embedding (OpenAI-compatible):
         ```json
         {
-          "model": "clip-vit-base-patch32",
+          "model": "openai/clip-vit-base-patch32",
           "input": [
             {"type": "text", "text": "a photo of a cat"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}}
@@ -237,7 +237,7 @@ paths:
 
         ```json
         {
-          "model": "bge-reranker-v2-m3",
+          "model": "BAAI/bge-reranker-v2-m3",
           "query": "machine learning applications",
           "prompts": [
             "Introduction to Machine Learning: This guide covers...",
@@ -309,7 +309,7 @@ paths:
         Uses OpenAI-compatible chat format with messages array:
         ```json
         {
-          "model": "gemma-3-1b-it",
+          "model": "google/gemma-3-1b-it",
           "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"}
@@ -325,7 +325,7 @@ paths:
         curl -X POST http://localhost:8080/api/generate \
           -H "Content-Type: application/json" \
           -d '{
-            "model": "gemma-3-1b-it",
+            "model": "google/gemma-3-1b-it",
             "messages": [{"role": "user", "content": "What is machine learning?"}],
             "max_tokens": 100
           }'
@@ -337,7 +337,7 @@ paths:
         curl -X POST http://localhost:8080/api/generate \
           -H "Content-Type: application/json" \
           -d '{
-            "model": "gemma-3-1b-it",
+            "model": "google/gemma-3-1b-it",
             "messages": [{"role": "user", "content": "Hello!"}],
             "stream": true
           }'
@@ -653,8 +653,10 @@ components:
       properties:
         model:
           type: string
-          description: Name of the embedder model from models_dir/embedders/
-          example: bge-small-en-v1.5
+          description: |
+            Name of the embedder model in owner/model format (e.g., "BAAI/bge-small-en-v1.5").
+            Models are loaded from models_dir/embedders/<owner>/<model>/
+          example: BAAI/bge-small-en-v1.5
         input:
           oneOf:
             - type: string
@@ -696,8 +698,8 @@ components:
       properties:
         model:
           type: string
-          description: Model used for embedding
-          example: bge-small-en-v1.5
+          description: Model used for embedding (owner/model format)
+          example: BAAI/bge-small-en-v1.5
         embeddings:
           type: array
           items:
@@ -821,8 +823,10 @@ components:
       properties:
         model:
           type: string
-          description: Name of reranking model from models_dir/rerankers/
-          example: bge-reranker-v2-m3
+          description: |
+            Name of reranking model in owner/model format (e.g., "BAAI/bge-reranker-v2-m3").
+            Models are loaded from models_dir/rerankers/<owner>/<model>/
+          example: BAAI/bge-reranker-v2-m3
         query:
           type: string
           description: Search query for relevance scoring
@@ -890,8 +894,10 @@ components:
       properties:
         model:
           type: string
-          description: Name of recognizer model from models_dir/recognizers/
-          example: bert-base-ner
+          description: |
+            Name of recognizer model in owner/model format (e.g., "dslim/bert-base-NER").
+            Models are loaded from models_dir/recognizers/<owner>/<model>/
+          example: dslim/bert-base-NER
         texts:
           type: array
           items:
@@ -982,8 +988,10 @@ components:
       properties:
         model:
           type: string
-          description: Name of Seq2Seq rewriter model from models_dir/rewriters/
-          example: flan-t5-small
+          description: |
+            Name of Seq2Seq rewriter model in owner/model format (e.g., "google/flan-t5-small").
+            Models are loaded from models_dir/rewriters/<owner>/<model>/
+          example: google/flan-t5-small
         inputs:
           type: array
           items:
@@ -1021,75 +1029,88 @@ components:
           type: array
           items:
             type: string
-          description: Available chunking models (always includes "fixed")
+          description: |
+            Available chunking models. Model names use owner/model format (e.g., "BAAI/bge-small-en-v1.5").
+            Always includes "fixed" for the built-in fixed-size chunker.
           example:
             - fixed
-            - chonky-mmbert-small-multilingual-1
+            - chonky/mmbert-small-multilingual-1
         rerankers:
           type: array
           items:
             type: string
-          description: Available reranking models
+          description: |
+            Available reranking models. Model names use owner/model format (e.g., "BAAI/bge-reranker-v2-m3").
           example:
-            - bge-reranker-v2-m3
+            - BAAI/bge-reranker-v2-m3
+            - mixedbread-ai/mxbai-rerank-base-v1
         embedders:
           type: array
           items:
             type: string
-          description: Available embedding models from models_dir/embedders/
+          description: |
+            Available embedding models from models_dir/embedders/<owner>/<model>/.
+            Model names use owner/model format (e.g., "BAAI/bge-small-en-v1.5").
           example:
-            - bge-small-en-v1.5
-            - bge-small-en-v1.5-i8-qt
+            - BAAI/bge-small-en-v1.5
+            - sentence-transformers/all-MiniLM-L6-v2
         generators:
           type: array
           items:
             type: string
-          description: Available generator/LLM models from models_dir/generators/
+          description: |
+            Available generator/LLM models from models_dir/generators/<owner>/<model>/.
+            Model names use owner/model format (e.g., "google/gemma-3-1b-it").
           example:
-            - gemma-3-1b-it
-            - tiny-random-gemma-3
+            - google/gemma-3-1b-it
+            - microsoft/phi-3-mini
         recognizers:
           type: array
           items:
             type: string
-          description: Available recognizer models from models_dir/recognizers/
+          description: |
+            Available recognizer models from models_dir/recognizers/<owner>/<model>/.
+            Model names use owner/model format (e.g., "dslim/bert-base-NER").
           example:
-            - bert-base-ner
-            - distilbert-ner
-            - gliner-small
+            - dslim/bert-base-NER
+            - onnx-community/gliner_small-v2.1
         extractors:
           type: array
           items:
             type: string
-          description: Available GLiNER extractor models (zero-shot recognition with custom labels)
+          description: |
+            Available GLiNER extractor models (zero-shot recognition with custom labels).
+            Model names use owner/model format.
           example:
-            - gliner-small
-            - gliner-multitask
+            - onnx-community/gliner_small-v2.1
+            - onnx-community/gliner-multitask-v1.0
         rewriters:
           type: array
           items:
             type: string
-          description: Available Seq2Seq rewriter models from models_dir/rewriters/
+          description: |
+            Available Seq2Seq rewriter models from models_dir/rewriters/<owner>/<model>/.
+            Model names use owner/model format.
           example:
-            - flan-t5-small
-            - lmqg-question-generation
+            - google/flan-t5-small
+            - lmqg/t5-small-squad-qg
         recognizer_info:
           type: object
           additionalProperties:
             $ref: '#/components/schemas/RecognizerModelInfo'
           description: |
             Detailed information about recognizer models including capabilities.
-            Map of model name to model info. Use this to determine what capabilities
-            each recognizer supports (labels, zeroshot, relations, answers).
+            Map of model name (in owner/model format) to model info. Use this to determine
+            what capabilities each recognizer supports (labels, zeroshot, relations, answers).
           example:
-            bert-base-ner:
+            dslim/bert-base-NER:
               capabilities:
                 - labels
-            gliner-small:
+            onnx-community/gliner_small-v2.1:
               capabilities:
                 - labels
                 - zeroshot
-            gliner-multitask:
+            onnx-community/gliner-multitask-v1.0:
               capabilities:
                 - labels
                 - zeroshot
@@ -1155,8 +1176,10 @@ components:
       properties:
         model:
           type: string
-          description: Name of the generator model from models_dir/generators/
-          example: gemma-3-1b-it
+          description: |
+            Name of the generator model in owner/model format (e.g., "google/gemma-3-1b-it").
+            Models are loaded from models_dir/generators/<owner>/<model>/
+          example: google/gemma-3-1b-it
         messages:
           type: array
           items:

@@ -17,10 +17,15 @@
 package modelregistry
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // ModelType represents the type of model (embedder, chunker, reranker)
@@ -115,6 +120,18 @@ type ModelFile struct {
 	Size int64 `json:"size"`
 }
 
+// ModelProvenance tracks model origin and download metadata
+type ModelProvenance struct {
+	// DownloadedFrom is the source: "registry", "huggingface", "local"
+	DownloadedFrom string `json:"downloadedFrom"`
+	// DownloadedAt is when the model was downloaded
+	DownloadedAt time.Time `json:"downloadedAt"`
+	// RegistryDigest is the manifest digest if from registry
+	RegistryDigest string `json:"registryDigest,omitempty"`
+	// HuggingFaceCommit is the HF commit hash if from HuggingFace
+	HuggingFaceCommit string `json:"huggingfaceCommit,omitempty"`
+}
+
 // Variant identifiers for quantized/precision model variants
 const (
 	// VariantF32 is the default FP32 model (model.onnx)
@@ -151,12 +168,19 @@ var FilenameToVariant = map[string]string{
 	"model_i4.onnx":    VariantI4,
 }
 
+// CurrentSchemaVersion is the current manifest schema version
+const CurrentSchemaVersion = 2
+
 // ModelManifest describes an ONNX model and its files
 type ModelManifest struct {
-	// SchemaVersion is the manifest format version
+	// SchemaVersion is the manifest format version (1 = legacy, 2 = with owner/source)
 	SchemaVersion int `json:"schemaVersion"`
 	// Name is the model identifier (e.g., "bge-small-en-v1.5")
 	Name string `json:"name"`
+	// Source is the full owner/model identifier from HuggingFace (e.g., "BAAI/bge-small-en-v1.5")
+	Source string `json:"source,omitempty"`
+	// Owner is the namespace/organization (e.g., "BAAI", "sentence-transformers")
+	Owner string `json:"owner,omitempty"`
 	// Type is the model type (embedder, chunker, reranker)
 	Type ModelType `json:"type"`
 	// Description is a human-readable description
@@ -175,6 +199,8 @@ type ModelManifest struct {
 	// Valid values: "onnx", "xla", "go"
 	// If empty, all backends are supported (default).
 	Backends []string `json:"backends,omitempty"`
+	// Provenance tracks where/when the model was obtained
+	Provenance *ModelProvenance `json:"provenance,omitempty"`
 }
 
 // VariantEntry can be either a single ModelFile or an array of ModelFiles.
@@ -243,10 +269,19 @@ func (m *ModelManifest) SupportsAnswers() bool {
 	return m.HasCapability(CapabilityAnswers)
 }
 
+// FullName returns the full owner/name format (e.g., "BAAI/bge-small-en-v1.5")
+// Falls back to just Name if Owner is empty (legacy manifests)
+func (m *ModelManifest) FullName() string {
+	if m.Owner != "" {
+		return m.Owner + "/" + m.Name
+	}
+	return m.Name
+}
+
 // Validate checks that the manifest is well-formed
 func (m *ModelManifest) Validate() error {
-	if m.SchemaVersion != 1 {
-		return fmt.Errorf("unsupported schema version: %d (expected 1)", m.SchemaVersion)
+	if m.SchemaVersion < 1 || m.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("unsupported schema version: %d (expected 1-%d)", m.SchemaVersion, CurrentSchemaVersion)
 	}
 	if m.Name == "" {
 		return fmt.Errorf("manifest missing required field: name")
@@ -362,6 +397,10 @@ type RegistryIndex struct {
 type ModelIndexEntry struct {
 	// Name is the model identifier
 	Name string `json:"name"`
+	// Source is the full owner/model identifier (e.g., "BAAI/bge-small-en-v1.5")
+	Source string `json:"source,omitempty"`
+	// Owner is the namespace/organization
+	Owner string `json:"owner,omitempty"`
 	// Type is the model type
 	Type ModelType `json:"type"`
 	// Description is a human-readable description
@@ -384,4 +423,140 @@ func ParseRegistryIndex(data []byte) (*RegistryIndex, error) {
 		return nil, fmt.Errorf("unsupported index schema version: %d", index.SchemaVersion)
 	}
 	return &index, nil
+}
+
+// ManifestFilename is the standard filename for model manifests
+const ManifestFilename = "model_manifest.json"
+
+// SaveTo writes the manifest to a file as JSON
+func (m *ModelManifest) SaveTo(path string) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling manifest: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+	return nil
+}
+
+// LoadManifestFromFile loads and validates a manifest from a file
+func LoadManifestFromFile(path string) (*ModelManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading manifest: %w", err)
+	}
+	return ParseManifest(data)
+}
+
+// LoadManifestFromDir loads a manifest from a model directory
+// Looks for ManifestFilename in the directory
+func LoadManifestFromDir(modelDir string) (*ModelManifest, error) {
+	return LoadManifestFromFile(filepath.Join(modelDir, ManifestFilename))
+}
+
+// ComputeFileDigest computes the SHA256 digest of a file in "sha256:..." format
+func ComputeFileDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("opening file: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", fmt.Errorf("reading file: %w", err)
+	}
+
+	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
+}
+
+// ScanModelFiles scans a directory and returns ModelFile entries for all files
+func ScanModelFiles(modelDir string) ([]ModelFile, error) {
+	entries, err := os.ReadDir(modelDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading directory: %w", err)
+	}
+
+	var files []ModelFile
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		// Skip the manifest itself
+		if entry.Name() == ManifestFilename {
+			continue
+		}
+
+		filePath := filepath.Join(modelDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		digest, err := ComputeFileDigest(filePath)
+		if err != nil {
+			continue
+		}
+
+		files = append(files, ModelFile{
+			Name:   entry.Name(),
+			Digest: digest,
+			Size:   info.Size(),
+		})
+	}
+
+	return files, nil
+}
+
+// GenerateManifestFromDir creates a new manifest by scanning a model directory
+func GenerateManifestFromDir(modelDir, owner, name string, modelType ModelType) (*ModelManifest, error) {
+	files, err := ScanModelFiles(modelDir)
+	if err != nil {
+		return nil, fmt.Errorf("scanning files: %w", err)
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no model files found in directory")
+	}
+
+	source := name
+	if owner != "" {
+		source = owner + "/" + name
+	}
+
+	manifest := &ModelManifest{
+		SchemaVersion: CurrentSchemaVersion,
+		Name:          name,
+		Source:        source,
+		Owner:         owner,
+		Type:          modelType,
+		Files:         files,
+		Provenance: &ModelProvenance{
+			DownloadedFrom: "local",
+			DownloadedAt:   time.Now(),
+		},
+	}
+
+	// Discover variants from ONNX files
+	manifest.Variants = discoverVariantsFromFiles(files)
+
+	return manifest, nil
+}
+
+// discoverVariantsFromFiles examines the file list to discover model variants
+func discoverVariantsFromFiles(files []ModelFile) map[string]VariantEntry {
+	variants := make(map[string]VariantEntry)
+
+	for _, f := range files {
+		if variantID, ok := FilenameToVariant[f.Name]; ok {
+			// Skip the default f32 variant (it's the base model)
+			if variantID == VariantF32 {
+				continue
+			}
+			variants[variantID] = VariantEntry{Files: []ModelFile{f}}
+		}
+	}
+
+	return variants
 }

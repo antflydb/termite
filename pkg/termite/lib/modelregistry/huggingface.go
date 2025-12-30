@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gomlx/go-huggingface/hub"
 )
@@ -56,6 +57,12 @@ func WithHFProgressHandler(h ProgressHandler) HFClientOption {
 
 // PullFromHuggingFace downloads ONNX model files from a HuggingFace repo.
 // variant can be: "", "fp16", "q4", "q4f16", "quantized"
+//
+// The model is stored in the owner/model directory structure:
+//
+//	destDir/modelType/owner/model-name/
+//
+// A model_manifest.json is generated and saved with the model files.
 func (c *HuggingFaceClient) PullFromHuggingFace(
 	ctx context.Context,
 	repoID string,
@@ -63,6 +70,21 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 	destDir string,
 	variant string,
 ) error {
+	// Parse repo ID to get owner and model name
+	ref, err := ParseModelRef(repoID)
+	if err != nil {
+		return fmt.Errorf("parsing repo ID: %w", err)
+	}
+
+	// If no owner in ref, try to extract from repoID directly (e.g., "BAAI/bge-small-en-v1.5")
+	if ref.Owner == "" {
+		parts := strings.SplitN(repoID, "/", 2)
+		if len(parts) == 2 {
+			ref.Owner = parts[0]
+			ref.Name = parts[1]
+		}
+	}
+
 	repo := hub.New(repoID)
 	if c.token != "" {
 		repo = repo.WithAuth(c.token)
@@ -95,9 +117,8 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 		return fmt.Errorf("no model files found in %s", repoID)
 	}
 
-	// Create destination directory
-	modelName := filepath.Base(repoID)
-	modelDir := filepath.Join(destDir, modelType.DirName(), modelName)
+	// Create destination directory with owner/model structure
+	modelDir := filepath.Join(destDir, modelType.DirName(), ref.DirPath())
 	if err := os.MkdirAll(modelDir, 0755); err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
@@ -131,7 +152,61 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 		}
 	}
 
+	// Generate and save local manifest
+	if err := c.generateAndSaveManifest(modelDir, repoID, ref, modelType); err != nil {
+		// Log warning but don't fail the download
+		fmt.Printf("Warning: failed to generate manifest: %v\n", err)
+	}
+
 	return nil
+}
+
+// generateAndSaveManifest creates a manifest for downloaded model files
+func (c *HuggingFaceClient) generateAndSaveManifest(
+	modelDir string,
+	repoID string,
+	ref ModelRef,
+	modelType ModelType,
+) error {
+	// Scan downloaded files
+	files, err := ScanModelFiles(modelDir)
+	if err != nil {
+		return fmt.Errorf("scanning files: %w", err)
+	}
+
+	if len(files) == 0 {
+		return fmt.Errorf("no files found in %s", modelDir)
+	}
+
+	// Create manifest
+	manifest := &ModelManifest{
+		SchemaVersion: CurrentSchemaVersion,
+		Name:          ref.Name,
+		Source:        repoID,
+		Owner:         ref.Owner,
+		Type:          modelType,
+		Files:         files,
+		Backends:      []string{"onnx"},
+		Provenance: &ModelProvenance{
+			DownloadedFrom: "huggingface",
+			DownloadedAt:   time.Now(),
+		},
+	}
+
+	// Discover variants from downloaded files
+	manifest.Variants = discoverVariantsFromFiles(files)
+
+	// Detect capabilities for multimodal models
+	for _, f := range files {
+		if f.Name == "visual_model.onnx" || f.Name == "text_model.onnx" {
+			manifest.Capabilities = append(manifest.Capabilities, CapabilityMultimodal)
+			break
+		}
+	}
+
+	// Save manifest
+	manifestPath := filepath.Join(modelDir, ManifestFilename)
+	return manifest.SaveTo(manifestPath)
 }
 
 // selectGeneratorFiles selects files needed for onnxruntime-genai models.
