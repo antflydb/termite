@@ -166,6 +166,7 @@ func selectGeneratorFiles(files []string, variant string) []string {
 		".txt",                  // Vocab files like vocab.txt, merges.txt
 		".spm",                  // SentencePiece model files
 		".tiktoken",             // Tiktoken encoding files
+		".jinja",                // Chat template files (e.g., chat_template.jinja)
 		"processor_config.json", // For multimodal models
 	}
 
