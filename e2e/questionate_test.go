@@ -109,16 +109,16 @@ func TestQuestionateE2E(t *testing.T) {
 	}
 }
 
-// testListModelsQuestionator verifies the Questionator model appears in the models list
+// testListModelsQuestionator verifies the question generation model appears in the rewriters list
 func testListModelsQuestionator(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	models, err := c.ListModels(ctx)
 	require.NoError(t, err, "ListModels failed")
 
-	// Check that Questionator model is in the questionators list
+	// Check that question generation model is in the rewriters list
 	foundQuestionator := false
-	for _, name := range models.Questionators {
+	for _, name := range models.Rewriters {
 		if name == questionatorModelName {
 			foundQuestionator = true
 			break
@@ -126,14 +126,14 @@ func testListModelsQuestionator(t *testing.T, ctx context.Context, c *client.Ter
 	}
 
 	if !foundQuestionator {
-		t.Errorf("Questionator model %s not found in questionators: %v",
-			questionatorModelName, models.Questionators)
+		t.Errorf("Question generation model %s not found in rewriters: %v",
+			questionatorModelName, models.Rewriters)
 	} else {
-		t.Logf("Found Questionator model in questionators: %v", models.Questionators)
+		t.Logf("Found question generation model in rewriters: %v", models.Rewriters)
 	}
 }
 
-// testGenerateQuestions tests question generation from context
+// testGenerateQuestions tests question generation from context using the rewriter API
 func testGenerateQuestions(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
@@ -143,8 +143,8 @@ func testGenerateQuestions(t *testing.T, ctx context.Context, c *client.TermiteC
 		"generate question: <hl> 1955 <hl> Steve Jobs was born in 1955 in San Francisco.",
 	}
 
-	resp, err := c.GenerateQuestions(ctx, questionatorModelName, inputs)
-	require.NoError(t, err, "GenerateQuestions failed")
+	resp, err := c.RewriteText(ctx, questionatorModelName, inputs)
+	require.NoError(t, err, "RewriteText failed")
 
 	assert.Equal(t, questionatorModelName, resp.Model)
 	assert.Len(t, resp.Texts, len(inputs), "Should have generated text for each input")
