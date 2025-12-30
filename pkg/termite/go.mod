@@ -18,6 +18,7 @@ require (
 	github.com/gomlx/go-huggingface v0.3.1
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/hugot v0.6.0
+	github.com/knights-analytics/ortgenai v0.0.1
 	github.com/oapi-codegen/runtime v1.1.2
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pkoukk/tiktoken-go-loader v0.0.2
@@ -62,7 +63,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
-	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
@@ -94,7 +94,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
-	github.com/tinylib/msgp v1.6.1 // indirect
+	github.com/tinylib/msgp v1.6.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/viant/afs v1.30.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
