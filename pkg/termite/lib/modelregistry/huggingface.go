@@ -80,7 +80,14 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 	// Filter and select files to download based on model type
 	var toDownload []string
 	if modelType == ModelTypeGenerator {
-		toDownload = selectGeneratorFiles(files)
+		// For generators, auto-detect smallest variant if not specified
+		if variant == "" {
+			variant = findSmallestGeneratorVariant(files)
+			if variant != "" {
+				fmt.Printf("Auto-selected variant: %s\n", variant)
+			}
+		}
+		toDownload = selectGeneratorFiles(files, variant)
 	} else {
 		toDownload = selectONNXFiles(files, variant)
 	}
@@ -129,7 +136,14 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 
 // selectGeneratorFiles selects files needed for onnxruntime-genai models.
 // This includes genai_config.json, all ONNX files, and tokenizer files.
-func selectGeneratorFiles(files []string) []string {
+// If variant is specified, only files from that subdirectory are selected.
+// If variant is empty, it auto-selects the smallest cpu variant.
+func selectGeneratorFiles(files []string, variant string) []string {
+	// If no variant specified, auto-select the smallest cpu variant
+	if variant == "" {
+		variant = findSmallestGeneratorVariant(files)
+	}
+
 	var result []string
 
 	// Files to include by exact basename match
@@ -147,15 +161,20 @@ func selectGeneratorFiles(files []string) []string {
 	// Files to include by suffix
 	includeSuffixes := []string{
 		".onnx",
-		".onnx.data",     // External data files
-		".onnx_data",     // Alternative naming
-		".txt",           // Vocab files like vocab.txt, merges.txt
-		".spm",           // SentencePiece model files
-		".tiktoken",      // Tiktoken encoding files
+		".onnx.data",            // External data files
+		".onnx_data",            // Alternative naming
+		".txt",                  // Vocab files like vocab.txt, merges.txt
+		".spm",                  // SentencePiece model files
+		".tiktoken",             // Tiktoken encoding files
 		"processor_config.json", // For multimodal models
 	}
 
 	for _, f := range files {
+		// Filter by variant subdirectory if specified
+		if variant != "" && !strings.HasPrefix(f, variant+"/") && f != variant {
+			continue
+		}
+
 		base := filepath.Base(f)
 
 		// Check exact matches
@@ -174,6 +193,115 @@ func selectGeneratorFiles(files []string) []string {
 	}
 
 	return result
+}
+
+// findSmallestGeneratorVariant finds the smallest generator variant path.
+// It looks for cpu-int4 variants first, then falls back to any cpu variant,
+// then any variant with genai_config.json.
+// It prefers smaller model sizes (e.g., 1b over 4b over 12b).
+func findSmallestGeneratorVariant(files []string) string {
+	// Find all directories containing genai_config.json
+	variantDirs := make(map[string]bool)
+	for _, f := range files {
+		if filepath.Base(f) == "genai_config.json" {
+			dir := filepath.Dir(f)
+			if dir != "." {
+				variantDirs[dir] = true
+			}
+		}
+	}
+
+	if len(variantDirs) == 0 {
+		return "" // No variants found, download everything
+	}
+
+	// Priority order for selecting variants:
+	// 1. cpu-int4 variants (smallest)
+	// 2. Any cpu variant
+	// 3. Any variant
+
+	var cpuInt4Variants []string
+	var cpuVariants []string
+	var allVariants []string
+
+	for dir := range variantDirs {
+		allVariants = append(allVariants, dir)
+		lowerDir := strings.ToLower(dir)
+		if strings.Contains(lowerDir, "cpu") {
+			cpuVariants = append(cpuVariants, dir)
+			if strings.Contains(lowerDir, "int4") {
+				cpuInt4Variants = append(cpuInt4Variants, dir)
+			}
+		}
+	}
+
+	// Sort by model size (prefer smaller: 1b < 4b < 12b < 27b)
+	sortByModelSize := func(variants []string) {
+		slices.SortFunc(variants, func(a, b string) int {
+			sizeA := extractModelSize(a)
+			sizeB := extractModelSize(b)
+			if sizeA != sizeB {
+				return sizeA - sizeB
+			}
+			// Fall back to alphabetical for same size
+			return strings.Compare(a, b)
+		})
+	}
+
+	sortByModelSize(cpuInt4Variants)
+	sortByModelSize(cpuVariants)
+	sortByModelSize(allVariants)
+
+	// Return the first match in priority order
+	if len(cpuInt4Variants) > 0 {
+		return cpuInt4Variants[0]
+	}
+	if len(cpuVariants) > 0 {
+		return cpuVariants[0]
+	}
+	return allVariants[0]
+}
+
+// extractModelSize extracts the numeric model size from a path like "gemma-3-4b-it/..."
+// Returns a large number if no size found so those sort last.
+func extractModelSize(path string) int {
+	// Look for patterns like "1b", "4b", "12b", "27b" in the path
+	lowerPath := strings.ToLower(path)
+
+	// Common size patterns
+	sizePatterns := []struct {
+		pattern string
+		size    int
+	}{
+		{"-1b", 1},
+		{"-2b", 2},
+		{"-3b", 3},
+		{"-4b", 4},
+		{"-7b", 7},
+		{"-8b", 8},
+		{"-12b", 12},
+		{"-13b", 13},
+		{"-27b", 27},
+		{"-70b", 70},
+		{"1b-", 1},
+		{"2b-", 2},
+		{"3b-", 3},
+		{"4b-", 4},
+		{"7b-", 7},
+		{"8b-", 8},
+		{"12b-", 12},
+		{"13b-", 13},
+		{"27b-", 27},
+		{"70b-", 70},
+	}
+
+	for _, sp := range sizePatterns {
+		if strings.Contains(lowerPath, sp.pattern) {
+			return sp.size
+		}
+	}
+
+	return 999 // No size found, sort last
 }
 
 // selectONNXFiles filters files based on variant preference.
@@ -323,6 +451,33 @@ func ParseHuggingFaceRef(ref string) (repoID string, isHF bool) {
 		return after, true
 	}
 	return "", false
+}
+
+// DetectGeneratorVariants returns available onnxruntime-genai variants in a repo.
+// These are subdirectories containing genai_config.json files.
+func (c *HuggingFaceClient) DetectGeneratorVariants(ctx context.Context, repoID string) ([]string, error) {
+	files, err := c.ListRepoFiles(ctx, repoID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find all directories containing genai_config.json
+	variantDirs := make(map[string]bool)
+	for _, f := range files {
+		if filepath.Base(f) == "genai_config.json" {
+			dir := filepath.Dir(f)
+			if dir != "." {
+				variantDirs[dir] = true
+			}
+		}
+	}
+
+	variants := make([]string, 0, len(variantDirs))
+	for dir := range variantDirs {
+		variants = append(variants, dir)
+	}
+	slices.Sort(variants)
+	return variants, nil
 }
 
 // DetectModelType attempts to detect the model type from repo contents.
