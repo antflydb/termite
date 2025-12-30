@@ -43,7 +43,7 @@ func init() {
 
 	// List command flags
 	listCmd.Flags().Bool("remote", false, "List models from remote registry")
-	listCmd.Flags().String("type", "", "Filter by model type (embedder, chunker, reranker)")
+	listCmd.Flags().String("type", "", "Filter by model type (embedder, chunker, reranker, generator, recognizer, questionator)")
 }
 
 func runList(cmd *cobra.Command, args []string) error {

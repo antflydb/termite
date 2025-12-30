@@ -77,10 +77,15 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 		files = append(files, fileName)
 	}
 
-	// Filter and select files to download
-	toDownload := selectONNXFiles(files, variant)
+	// Filter and select files to download based on model type
+	var toDownload []string
+	if modelType == ModelTypeGenerator {
+		toDownload = selectGeneratorFiles(files)
+	} else {
+		toDownload = selectONNXFiles(files, variant)
+	}
 	if len(toDownload) == 0 {
-		return fmt.Errorf("no ONNX files found in %s", repoID)
+		return fmt.Errorf("no model files found in %s", repoID)
 	}
 
 	// Create destination directory
@@ -120,6 +125,55 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 	}
 
 	return nil
+}
+
+// selectGeneratorFiles selects files needed for onnxruntime-genai models.
+// This includes genai_config.json, all ONNX files, and tokenizer files.
+func selectGeneratorFiles(files []string) []string {
+	var result []string
+
+	// Files to include by exact basename match
+	includeExact := map[string]bool{
+		"genai_config.json":       true,
+		"tokenizer.json":          true,
+		"tokenizer.model":         true,
+		"tokenizer_config.json":   true,
+		"config.json":             true,
+		"special_tokens_map.json": true,
+		"added_tokens.json":       true,
+		"generation_config.json":  true,
+	}
+
+	// Files to include by suffix
+	includeSuffixes := []string{
+		".onnx",
+		".onnx.data",     // External data files
+		".onnx_data",     // Alternative naming
+		".txt",           // Vocab files like vocab.txt, merges.txt
+		".spm",           // SentencePiece model files
+		".tiktoken",      // Tiktoken encoding files
+		"processor_config.json", // For multimodal models
+	}
+
+	for _, f := range files {
+		base := filepath.Base(f)
+
+		// Check exact matches
+		if includeExact[base] {
+			result = append(result, f)
+			continue
+		}
+
+		// Check suffix matches
+		for _, suffix := range includeSuffixes {
+			if strings.HasSuffix(base, suffix) {
+				result = append(result, f)
+				break
+			}
+		}
+	}
+
+	return result
 }
 
 // selectONNXFiles filters files based on variant preference.
@@ -269,4 +323,63 @@ func ParseHuggingFaceRef(ref string) (repoID string, isHF bool) {
 		return after, true
 	}
 	return "", false
+}
+
+// DetectModelType attempts to detect the model type from repo contents.
+// It checks for genai_config.json (generator), encoder/decoder (questionator),
+// visual/text models (multimodal embedder), or regular model.onnx.
+func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) (ModelType, error) {
+	files, err := c.ListRepoFiles(ctx, repoID)
+	if err != nil {
+		return "", fmt.Errorf("listing files: %w", err)
+	}
+
+	hasGenaiConfig := false
+	hasEncoder := false
+	hasDecoder := false
+	hasVisual := false
+	hasText := false
+	hasModelOnnx := false
+
+	for _, f := range files {
+		base := filepath.Base(f)
+		switch base {
+		case "genai_config.json":
+			hasGenaiConfig = true
+		case "encoder.onnx":
+			hasEncoder = true
+		case "decoder.onnx":
+			hasDecoder = true
+		case "visual_model.onnx":
+			hasVisual = true
+		case "text_model.onnx":
+			hasText = true
+		case "model.onnx":
+			hasModelOnnx = true
+		}
+	}
+
+	// Check for generator (onnxruntime-genai format)
+	if hasGenaiConfig {
+		return ModelTypeGenerator, nil
+	}
+
+	// Check for seq2seq (questionator)
+	if hasEncoder && hasDecoder {
+		return ModelTypeQuestionator, nil
+	}
+
+	// Check for multimodal (could be embedder with CLIP)
+	if hasVisual && hasText {
+		return ModelTypeEmbedder, nil
+	}
+
+	// Check for standard model
+	if hasModelOnnx {
+		// Could be embedder, chunker, or reranker - can't tell without more context
+		// Default to embedder as it's the most common
+		return "", fmt.Errorf("cannot auto-detect model type (found model.onnx but could be embedder, chunker, or reranker)")
+	}
+
+	return "", fmt.Errorf("no recognizable model files found in repository")
 }

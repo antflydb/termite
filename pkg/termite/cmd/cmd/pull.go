@@ -32,6 +32,7 @@ Models are downloaded to the appropriate directory based on their type:
   - Embedders:     models/embedders/<model-name>/
   - Chunkers:      models/chunkers/<model-name>/
   - Rerankers:     models/rerankers/<model-name>/
+  - Generators:    models/generators/<model-name>/
   - Recognizers:   models/recognizers/<model-name>/
   - Questionators: models/questionators/<model-name>/
 
@@ -61,7 +62,10 @@ Examples:
   # Pull to a custom directory
   termite pull --models-dir /opt/antfly/models bge-small-en-v1.5
 
-  # Pull directly from HuggingFace
+  # Pull directly from HuggingFace (auto-detects generator type)
+  termite pull hf:onnxruntime/Gemma-3-ONNX
+
+  # Pull from HuggingFace with explicit type
   termite pull hf:onnx-community/embeddinggemma-300m-ONNX --type embedder
 
   # Pull recognizer model from HuggingFace
@@ -83,7 +87,7 @@ func init() {
 	pullCmd.Flags().StringSliceVar(&variants, "variants", nil,
 		"Variant IDs to download (f32,f16,i8,i8-st,i4). Defaults to f32 if not specified.")
 	pullCmd.Flags().String("type", "",
-		"Model type (embedder, chunker, reranker, recognizer, questionator) - required for hf: pulls")
+		"Model type (embedder, chunker, reranker, generator, recognizer, questionator) - auto-detected for generators")
 	pullCmd.Flags().String("hf-token", "",
 		"HuggingFace API token for gated models (or use HF_TOKEN env var)")
 	pullCmd.Flags().String("variant", "",

@@ -162,13 +162,14 @@ func PullFromHuggingFace(repoID string, opts HuggingFaceOptions) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if opts.ModelType == "" {
-		return fmt.Errorf("--type flag is required for HuggingFace pulls (embedder, chunker, reranker, recognizer, questionator)")
-	}
-
-	modelType, err := modelregistry.ParseModelType(opts.ModelType)
-	if err != nil {
-		return err
+	// Model type can be auto-detected for generators, but required for others
+	var modelType modelregistry.ModelType
+	if opts.ModelType != "" {
+		var err error
+		modelType, err = modelregistry.ParseModelType(opts.ModelType)
+		if err != nil {
+			return err
+		}
 	}
 
 	if opts.Variant != "" && !modelregistry.IsValidVariant(opts.Variant) {
@@ -186,7 +187,20 @@ func PullFromHuggingFace(repoID string, opts HuggingFaceOptions) error {
 	)
 
 	fmt.Printf("Pulling from HuggingFace: %s\n", repoID)
-	fmt.Printf("Type: %s\n", modelType)
+
+	// Auto-detect model type if not specified
+	if modelType == "" {
+		fmt.Println("Detecting model type...")
+		detected, err := client.DetectModelType(ctx, repoID)
+		if err != nil {
+			return fmt.Errorf("failed to detect model type: %w\nUse --type flag to specify manually (embedder, chunker, reranker, generator, recognizer, questionator)", err)
+		}
+		modelType = detected
+		fmt.Printf("Detected type: %s\n", modelType)
+	} else {
+		fmt.Printf("Type: %s\n", modelType)
+	}
+
 	if opts.Variant != "" {
 		fmt.Printf("Variant: %s (%s)\n", opts.Variant, modelregistry.VariantDescription(opts.Variant))
 	} else {
@@ -270,6 +284,7 @@ func ListLocalModels(opts ListOptions) error {
 		modelregistry.ModelTypeEmbedder,
 		modelregistry.ModelTypeChunker,
 		modelregistry.ModelTypeReranker,
+		modelregistry.ModelTypeGenerator,
 		modelregistry.ModelTypeRecognizer,
 		modelregistry.ModelTypeQuestionator,
 	}
@@ -306,9 +321,11 @@ func ListLocalModels(opts ListOptions) error {
 
 			modelDir := filepath.Join(typeDir, entry.Name())
 			standardPath := filepath.Join(modelDir, "model.onnx")
+			genaiConfigPath := filepath.Join(modelDir, "genai_config.json")
 
 			hasStandard := false
 			hasMultimodal := false
+			hasGenerator := false
 			var totalSize int64
 			var variants []string
 			var capabilities []string
@@ -317,6 +334,12 @@ func ListLocalModels(opts ListOptions) error {
 			if info, err := os.Stat(standardPath); err == nil {
 				hasStandard = true
 				totalSize += info.Size()
+			}
+
+			// Check for generator model (genai_config.json)
+			if _, err := os.Stat(genaiConfigPath); err == nil {
+				hasGenerator = true
+				capabilities = append(capabilities, "genai")
 			}
 
 			// Check for multimodal (CLIP-style) model files
@@ -340,7 +363,7 @@ func ListLocalModels(opts ListOptions) error {
 				}
 			}
 
-			if !hasStandard && !hasMultimodal && len(variants) == 0 {
+			if !hasStandard && !hasMultimodal && !hasGenerator && len(variants) == 0 {
 				continue
 			}
 
