@@ -6,7 +6,7 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251220003714-ef99c764668a
+replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251229042211-73e5b84f666d
 
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20251229052243-d2d8091589c4
 
