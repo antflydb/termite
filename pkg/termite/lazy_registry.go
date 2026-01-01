@@ -188,6 +188,42 @@ func (r *LazyEmbedderRegistry) discoverModels() error {
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
+		// Check if this is a multimodal (CLIP-style) model
+		hasMultimodalStd, hasMultimodalQt := isMultimodalModel(modelPath)
+		if hasMultimodalStd || hasMultimodalQt {
+			r.logger.Info("Discovered multimodal embedder model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath),
+				zap.Bool("has_standard", hasMultimodalStd),
+				zap.Bool("has_quantized", hasMultimodalQt))
+
+			// Register standard precision multimodal model
+			if hasMultimodalStd {
+				r.discovered[registryFullName] = &ModelInfo{
+					Name:         registryFullName,
+					Path:         modelPath,
+					OnnxFilename: "", // CLIP uses multiple files, not a single ONNX
+					PoolSize:     poolSize,
+					ModelType:    "clip",
+					Variants:     []string{"default"},
+				}
+			}
+
+			// Register quantized multimodal model with suffix
+			if hasMultimodalQt {
+				quantizedName := registryFullName + "-i8-qt"
+				r.discovered[quantizedName] = &ModelInfo{
+					Name:         quantizedName,
+					Path:         modelPath,
+					OnnxFilename: "", // CLIP uses multiple files, not a single ONNX
+					PoolSize:     poolSize,
+					ModelType:    "clip-quantized",
+					Variants:     []string{"quantized"},
+				}
+			}
+			continue // Skip standard embedder handling
+		}
+
 		if len(variants) == 0 {
 			continue
 		}
@@ -278,20 +314,50 @@ func (r *LazyEmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, 
 	r.logger.Info("Loading embedder model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path),
+		zap.String("model_type", info.ModelType),
 		zap.String("onnx_filename", info.OnnxFilename),
 		zap.Int("pool_size", info.PoolSize))
 
-	embedder, backendUsed, err := termembeddings.NewPooledHugotEmbedderWithSessionManager(
-		info.Path,
-		info.OnnxFilename,
-		info.PoolSize,
-		r.sessionManager,
-		nil, // modelBackends - use default priority
-		r.logger.Named(info.Name),
-	)
+	var embedder embeddings.Embedder
+	var backendUsed hugot.BackendType
+	var err error
+
+	// Handle different model types
+	switch info.ModelType {
+	case "clip":
+		// Load standard precision CLIP multimodal model
+		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+			info.Path,
+			false, // not quantized
+			r.sessionManager,
+			nil, // modelBackends - use default priority
+			r.logger.Named(info.Name),
+		)
+	case "clip-quantized":
+		// Load quantized CLIP multimodal model
+		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+			info.Path,
+			true, // quantized
+			r.sessionManager,
+			nil, // modelBackends - use default priority
+			r.logger.Named(info.Name),
+		)
+	default:
+		// Standard pooled embedder
+		embedder, backendUsed, err = termembeddings.NewPooledHugotEmbedderWithSessionManager(
+			info.Path,
+			info.OnnxFilename,
+			info.PoolSize,
+			r.sessionManager,
+			nil, // modelBackends - use default priority
+			r.logger.Named(info.Name),
+		)
+	}
+
 	if err != nil {
 		r.logger.Error("Failed to load embedder model",
 			zap.String("model", info.Name),
+			zap.String("model_type", info.ModelType),
 			zap.Error(err))
 		return nil, fmt.Errorf("loading embedder model %s: %w", info.Name, err)
 	}
@@ -301,6 +367,7 @@ func (r *LazyEmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, 
 
 	r.logger.Info("Successfully loaded embedder model",
 		zap.String("model", info.Name),
+		zap.String("model_type", info.ModelType),
 		zap.String("backend", string(backendUsed)),
 		zap.Duration("keep_alive", r.keepAlive))
 
