@@ -784,12 +784,51 @@ func generateCompletionID() string {
 	return "chatcmpl-" + hex.EncodeToString(b)
 }
 
+// convertChatMessage converts an API ChatMessage to a generation.Message.
+// Supports both simple string content and OpenAI-format array of content parts.
+func convertChatMessage(msg ChatMessage) generation.Message {
+	result := generation.Message{
+		Role: string(msg.Role),
+	}
+
+	// Try as simple string first (most common case)
+	if str, err := msg.Content.AsChatMessageContent0(); err == nil && str != "" {
+		result.Content = str
+		return result
+	}
+
+	// Try as array of content parts (OpenAI multimodal format)
+	if parts, err := msg.Content.AsChatMessageContent1(); err == nil {
+		for _, part := range parts {
+			// Try as text content part
+			if textPart, err := part.AsTextContentPart(); err == nil {
+				result.Parts = append(result.Parts, generation.TextPart(textPart.Text))
+				// Also set Content for backward compatibility with text-only generators
+				if result.Content == "" {
+					result.Content = textPart.Text
+				}
+			}
+			// Try as image content part
+			if imgPart, err := part.AsImageURLContentPart(); err == nil {
+				result.Parts = append(result.Parts, generation.ImagePart(imgPart.ImageUrl.Url))
+			}
+		}
+	}
+
+	return result
+}
+
 // handleApiGenerate handles text generation requests using LLM models (OpenAI-compatible)
 func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
+	ln.logger.Info("Generate request received",
+		zap.String("path", r.URL.Path),
+		zap.String("content-type", r.Header.Get("Content-Type")))
+
 	// Check if generation is available
 	if ln.generatorRegistry == nil || len(ln.generatorRegistry.List()) == 0 {
+		ln.logger.Warn("Generation not available: no models configured")
 		http.Error(w, "generation not available: no models configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -817,16 +856,24 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	// Decode request
 	var req GenerateRequest
 	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		ln.logger.Error("Failed to decode generate request",
+			zap.Error(err))
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
 
+	ln.logger.Info("Generate request decoded",
+		zap.String("model", req.Model),
+		zap.Int("num_messages", len(req.Messages)))
+
 	// Validate request
 	if req.Model == "" {
+		ln.logger.Warn("Generate request missing model")
 		http.Error(w, "model is required", http.StatusBadRequest)
 		return
 	}
 	if len(req.Messages) == 0 {
+		ln.logger.Warn("Generate request missing messages")
 		http.Error(w, "messages are required", http.StatusBadRequest)
 		return
 	}
@@ -841,10 +888,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	// Convert messages to internal format
 	messages := make([]generation.Message, len(req.Messages))
 	for i, m := range req.Messages {
-		messages[i] = generation.Message{
-			Role:    string(m.Role),
-			Content: m.Content,
-		}
+		messages[i] = convertChatMessage(m)
 	}
 
 	// Set options from request, using defaults for zero values
@@ -909,8 +953,8 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	// Estimate prompt tokens (rough estimate based on message content length)
 	// TODO: Use actual tokenizer for accurate count
 	promptTokens := 0
-	for _, m := range req.Messages {
-		promptTokens += len(m.Content) / 4 // Rough estimate: ~4 chars per token
+	for _, m := range messages {
+		promptTokens += len(m.GetTextContent()) / 4 // Rough estimate: ~4 chars per token
 	}
 
 	// Build OpenAI-compatible response

@@ -275,10 +275,17 @@ func (r *TermitePoolReconciler) generateCompleteConfig(pool *antflyaiv1alpha1.Te
 	}
 
 	// Set loading strategy config
+	// Note: Termite defaults to lazy loading (5m keep_alive) like Ollama.
+	// Eager loading must be explicitly set with keep_alive="0".
 	if pool.Spec.Models.LoadingStrategy != "" {
 		switch pool.Spec.Models.LoadingStrategy {
+		case antflyaiv1alpha1.LoadingStrategyEager:
+			// Eager loading: explicitly set keep_alive=0 to load all models at startup
+			if _, exists := config["keep_alive"]; !exists {
+				config["keep_alive"] = "0"
+			}
 		case antflyaiv1alpha1.LoadingStrategyLazy:
-			// Lazy loading: set keep_alive if not specified
+			// Lazy loading: set keep_alive if not specified (matches Termite default)
 			if _, exists := config["keep_alive"]; !exists {
 				if pool.Spec.Models.KeepAlive != nil {
 					config["keep_alive"] = pool.Spec.Models.KeepAlive.Duration.String()
@@ -302,7 +309,6 @@ func (r *TermitePoolReconciler) generateCompleteConfig(pool *antflyaiv1alpha1.Te
 				}
 			}
 		}
-		// Eager loading (default): models loaded at startup and never unloaded
 	}
 
 	// Marshal to JSON

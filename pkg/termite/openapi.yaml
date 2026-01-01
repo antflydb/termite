@@ -128,7 +128,7 @@ components:
         model:
           type: string
           description: Name of the embedder model from models_dir/embedders/
-          example: "bge-small-en-v1.5"
+          example: "BAAI/bge-small-en-v1.5"
         input:
           oneOf:
             - type: string
@@ -156,7 +156,7 @@ components:
       type: object
       example:
         {
-          "model": "bge-small-en-v1.5",
+          "model": "BAAI/bge-small-en-v1.5",
           "embeddings": [[0.0123, -0.0456, 0.0789], [0.0234, -0.0567, 0.0890]],
         }
       required:
@@ -166,7 +166,7 @@ components:
         model:
           type: string
           description: Model used for embedding
-          example: "bge-small-en-v1.5"
+          example: "BAAI/bge-small-en-v1.5"
         embeddings:
           type: array
           items:
@@ -282,7 +282,7 @@ components:
         model:
           type: string
           description: Name of reranking model from models_dir/rerankers/
-          example: "bge-reranker-v2-m3"
+          example: "BAAI/bge-reranker-v2-m3"
         query:
           type: string
           description: Search query for relevance scoring
@@ -357,7 +357,7 @@ components:
         model:
           type: string
           description: Name of recognizer model from models_dir/recognizers/
-          example: "bert-base-ner"
+          example: "dslim/bert-base-NER"
         texts:
           type: array
           items:
@@ -444,7 +444,7 @@ components:
         model:
           type: string
           description: Name of Seq2Seq rewriter model from models_dir/rewriters/
-          example: "flan-t5-small"
+          example: "lmqg/flan-t5-small-squad-qg"
         inputs:
           type: array
           items:
@@ -485,43 +485,43 @@ components:
           items:
             type: string
           description: Available chunking models (always includes "fixed")
-          example: ["fixed", "chonky-mmbert-small-multilingual-1"]
+          example: ["fixed", "mirth/chonky-mmbert-small-multilingual-1"]
         rerankers:
           type: array
           items:
             type: string
           description: Available reranking models
-          example: ["bge-reranker-v2-m3"]
+          example: ["BAAI/bge-reranker-v2-m3"]
         embedders:
           type: array
           items:
             type: string
           description: Available embedding models from models_dir/embedders/
-          example: ["bge-small-en-v1.5", "bge-small-en-v1.5-i8-qt"]
+          example: ["BAAI/bge-small-en-v1.5", "BAAI/bge-small-en-v1.5:i8"]
         generators:
           type: array
           items:
             type: string
           description: Available generator/LLM models from models_dir/generators/
-          example: ["gemma-3-1b-it", "tiny-random-gemma-3"]
+          example: ["google/gemma-3-1b-it", "onnxruntime/Gemma-3-ONNX"]
         recognizers:
           type: array
           items:
             type: string
           description: Available recognizer models from models_dir/recognizers/
-          example: ["bert-base-ner", "distilbert-ner", "gliner-small"]
+          example: ["dslim/bert-base-NER", "dslim/bert-large-NER", "onnx-community/gliner_small-v2.1"]
         extractors:
           type: array
           items:
             type: string
           description: Available GLiNER extractor models (zero-shot recognition with custom labels)
-          example: ["gliner-small", "gliner-multitask"]
+          example: ["onnx-community/gliner_small-v2.1", "onnx-community/gliner-multitask"]
         rewriters:
           type: array
           items:
             type: string
           description: Available Seq2Seq rewriter models from models_dir/rewriters/
-          example: ["flan-t5-small", "lmqg-question-generation"]
+          example: ["lmqg/flan-t5-small-squad-qg", "lmqg/flan-t5-base-squad-qg"]
         recognizer_info:
           type: object
           additionalProperties:
@@ -531,11 +531,11 @@ components:
             Map of model name to model info. Use this to determine what capabilities
             each recognizer supports (labels, zeroshot, relations, answers).
           example:
-            bert-base-ner:
+            dslim/bert-base-NER:
               capabilities: ["labels"]
-            gliner-small:
+            onnx-community/gliner_small-v2.1:
               capabilities: ["labels", "zeroshot"]
-            gliner-multitask:
+            onnx-community/gliner-multitask:
               capabilities: ["labels", "zeroshot", "relations", "answers"]
 
     RecognizerCapability:
@@ -579,6 +579,19 @@ components:
         - function_call
       description: Reason why generation stopped
 
+    ChatMessageContent:
+      description: |
+        Message content. Supports two formats:
+        - Simple string: "Hello, how are you?"
+        - Array of content parts (OpenAI multimodal format): [{"type": "text", "text": "Hello"}]
+      oneOf:
+        - type: string
+          description: Simple text content
+        - type: array
+          description: Array of content parts (OpenAI multimodal format)
+          items:
+            $ref: "#/components/schemas/ContentPart"
+
     ChatMessage:
       type: object
       required:
@@ -588,8 +601,7 @@ components:
         role:
           $ref: "#/components/schemas/Role"
         content:
-          type: string
-          description: The message content
+          $ref: "#/components/schemas/ChatMessageContent"
 
     GenerateRequest:
       type: object
@@ -600,7 +612,7 @@ components:
         model:
           type: string
           description: Name of the generator model from models_dir/generators/
-          example: "gemma-3-1b-it"
+          example: "google/gemma-3-1b-it"
         messages:
           type: array
           items:
@@ -794,9 +806,10 @@ components:
           description: |
             How long to keep models loaded in memory after last use (Ollama-compatible).
             Models are automatically unloaded after this duration of inactivity.
-            Use Go duration format: "5m" (5 minutes), "1h" (1 hour), "0" (never unload, eager loading).
-            When set to "0" or omitted, models are loaded eagerly at startup and never unloaded (legacy behavior).
-          default: "0"
+            Use Go duration format: "5m" (5 minutes), "1h" (1 hour), "0" (eager loading).
+            Defaults to "5m" (lazy loading) like Ollama. Set to "0" to explicitly enable eager loading
+            where all models are loaded at startup and never unloaded.
+          default: "5m"
           example: "5m"
         max_loaded_models:
           type: integer
@@ -866,9 +879,9 @@ components:
           description: |
             List of model names to preload at startup (Ollama-compatible).
             These models are loaded immediately when Termite starts, avoiding first-request latency.
-            Model names should match those in models_dir/embedders/ (e.g., "bge-small-en-v1.5").
+            Model names should match those in models_dir/embedders/ (e.g., "BAAI/bge-small-en-v1.5").
             Only effective when keep_alive is non-zero (lazy loading mode).
-          example: ["bge-small-en-v1.5", "clip-vit-base-patch32"]
+          example: ["BAAI/bge-small-en-v1.5", "openai/clip-vit-base-patch32"]
         max_memory_mb:
           type: integer
           description: |
@@ -887,8 +900,8 @@ components:
           description: |
             Per-model loading strategy overrides. Maps model names to their loading strategy.
             Models not in this map use the default strategy based on keep_alive:
-            - If keep_alive="0" (default): eager loading (load at startup, never unload)
-            - If keep_alive>0: lazy loading (load on demand, unload after idle)
+            - If keep_alive>0 (default "5m"): lazy loading (load on demand, unload after idle)
+            - If keep_alive="0": eager loading (load at startup, never unload)
 
             When a model has strategy "eager" in this map:
             - It is loaded at startup (as part of preload)
@@ -896,8 +909,8 @@ components:
 
             This allows mixing eager and lazy models in the same pool.
           example:
-            bge-small-en-v1.5: eager
-            chonky: lazy
+            BAAI/bge-small-en-v1.5: eager
+            mirth/chonky-mmbert-small-multilingual-1: lazy
         log:
           $ref: "../../../antfly-go/libaf/logging/openapi.yaml#/components/schemas/Config"
 
@@ -940,7 +953,7 @@ paths:
         Models are auto-discovered from `models_dir/embedders/` at startup.
         Use the `/api/models` endpoint to list available models.
 
-        - **Text-only models** (e.g., bge-small-en-v1.5): Accept text strings
+        - **Text-only models** (e.g., BAAI/bge-small-en-v1.5): Accept text strings
         - **Multimodal models** (e.g., CLIP): Accept text and images via data URIs
 
         ## Input Formats
@@ -966,7 +979,7 @@ paths:
         Text embedding (Ollama-compatible):
         ```json
         {
-          "model": "bge-small-en-v1.5",
+          "model": "BAAI/bge-small-en-v1.5",
           "input": ["hello world", "machine learning"]
         }
         ```
@@ -974,7 +987,7 @@ paths:
         Multimodal embedding (OpenAI-compatible):
         ```json
         {
-          "model": "clip-vit-base-patch32",
+          "model": "openai/clip-vit-base-patch32",
           "input": [
             {"type": "text", "text": "a photo of a cat"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}}
@@ -1106,7 +1119,7 @@ paths:
 
         ```json
         {
-          "model": "bge-reranker-v2-m3",
+          "model": "BAAI/bge-reranker-v2-m3",
           "query": "machine learning applications",
           "prompts": [
             "Introduction to Machine Learning: This guide covers...",
@@ -1179,7 +1192,7 @@ paths:
         Uses OpenAI-compatible chat format with messages array:
         ```json
         {
-          "model": "gemma-3-1b-it",
+          "model": "google/gemma-3-1b-it",
           "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello!"}
@@ -1195,7 +1208,7 @@ paths:
         curl -X POST http://localhost:8080/api/generate \
           -H "Content-Type: application/json" \
           -d '{
-            "model": "gemma-3-1b-it",
+            "model": "google/gemma-3-1b-it",
             "messages": [{"role": "user", "content": "What is machine learning?"}],
             "max_tokens": 100
           }'
@@ -1207,7 +1220,7 @@ paths:
         curl -X POST http://localhost:8080/api/generate \
           -H "Content-Type: application/json" \
           -d '{
-            "model": "gemma-3-1b-it",
+            "model": "google/gemma-3-1b-it",
             "messages": [{"role": "user", "content": "Hello!"}],
             "stream": true
           }'
@@ -1281,7 +1294,7 @@ paths:
 
         ```json
         {
-          "model": "bert-base-ner",
+          "model": "dslim/bert-base-NER",
           "texts": ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
         }
         ```
@@ -1348,7 +1361,7 @@ paths:
         For question generation with LMQG models:
         ```json
         {
-          "model": "flan-t5-small-squad-qg",
+          "model": "lmqg/flan-t5-small-squad-qg",
           "inputs": ["generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."]
         }
         ```

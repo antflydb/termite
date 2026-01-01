@@ -169,7 +169,8 @@ func (c *Client) FetchManifest(ctx context.Context, modelName string) (*ModelMan
 // If variants is empty, defaults to downloading only "f32".
 func (c *Client) PullModel(ctx context.Context, manifest *ModelManifest, modelsDir string, variants []string) error {
 	// Determine output directory based on model type (includes owner if present)
-	modelDir := filepath.Join(modelsDir, manifest.Type.DirName(), manifest.FullName())
+	// Use DirPath() instead of FullName() to ensure cross-platform path separators
+	modelDir := filepath.Join(modelsDir, manifest.Type.DirName(), manifest.DirPath())
 
 	// Default to f32 if no variants specified
 	if len(variants) == 0 {

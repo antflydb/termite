@@ -32,6 +32,29 @@ import (
 	"github.com/antflydb/termite/pkg/client/oapi"
 )
 
+// NewChatMessage creates a ChatMessage with string content.
+// This is a convenience helper for the common case of text-only messages.
+func NewChatMessage(role oapi.Role, content string) oapi.ChatMessage {
+	msg := oapi.ChatMessage{Role: role}
+	_ = msg.Content.FromChatMessageContent0(content)
+	return msg
+}
+
+// NewUserMessage creates a user ChatMessage with string content.
+func NewUserMessage(content string) oapi.ChatMessage {
+	return NewChatMessage(oapi.RoleUser, content)
+}
+
+// NewSystemMessage creates a system ChatMessage with string content.
+func NewSystemMessage(content string) oapi.ChatMessage {
+	return NewChatMessage(oapi.RoleSystem, content)
+}
+
+// NewAssistantMessage creates an assistant ChatMessage with string content.
+func NewAssistantMessage(content string) oapi.ChatMessage {
+	return NewChatMessage(oapi.RoleAssistant, content)
+}
+
 // TermiteClient is a client for interacting with the Termite API.
 type TermiteClient struct {
 	client  *oapi.ClientWithResponses

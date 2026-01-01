@@ -13,7 +13,7 @@ import (
 func DefaultModelsDir() string {
 	home := userHomeDir()
 	if home == "" {
-		return "./models" // fallback to legacy behavior
+		return filepath.FromSlash("./models") // fallback to legacy behavior
 	}
 	return filepath.Join(home, ".termite", "models")
 }
@@ -21,13 +21,10 @@ func DefaultModelsDir() string {
 // userHomeDir returns the user's home directory in a cross-platform manner.
 // On Unix: $HOME
 // On Windows: %USERPROFILE% (preferred) or %HOMEDRIVE%%HOMEPATH%
+// Note: On Windows, we check USERPROFILE first because $HOME from Git Bash/MSYS2
+// may contain Unix-style paths (e.g., /c/Users/...) that don't work with Windows APIs.
 func userHomeDir() string {
-	// Try HOME first (works on all Unix-like systems and some Windows setups)
-	if home := os.Getenv("HOME"); home != "" {
-		return home
-	}
-
-	// Windows-specific fallbacks
+	// Windows-specific: check USERPROFILE first to avoid Unix-style $HOME from Git Bash
 	if runtime.GOOS == "windows" {
 		// USERPROFILE is the most reliable on Windows
 		if home := os.Getenv("USERPROFILE"); home != "" {
@@ -37,6 +34,11 @@ func userHomeDir() string {
 		if drive, path := os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH"); drive != "" && path != "" {
 			return filepath.Join(drive, path)
 		}
+	}
+
+	// Unix: use $HOME
+	if home := os.Getenv("HOME"); home != "" {
+		return home
 	}
 
 	// Use Go's built-in (Go 1.12+) as last resort

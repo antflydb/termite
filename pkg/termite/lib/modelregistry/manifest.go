@@ -283,9 +283,19 @@ func (m *ModelManifest) SupportsAnswers() bool {
 
 // FullName returns the full owner/name format (e.g., "BAAI/bge-small-en-v1.5")
 // Falls back to just Name if Owner is empty (legacy manifests)
+// NOTE: Use DirPath() for filesystem operations to ensure cross-platform compatibility.
 func (m *ModelManifest) FullName() string {
 	if m.Owner != "" {
 		return m.Owner + "/" + m.Name
+	}
+	return m.Name
+}
+
+// DirPath returns the directory path for this model using platform-appropriate separators.
+// Use this instead of FullName() when constructing filesystem paths.
+func (m *ModelManifest) DirPath() string {
+	if m.Owner != "" {
+		return filepath.Join(m.Owner, m.Name)
 	}
 	return m.Name
 }

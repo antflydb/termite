@@ -17,10 +17,56 @@ package generation
 
 import "context"
 
+// ContentPart represents a part of a message content.
+// It can be either text or an image URL.
+type ContentPart struct {
+	Type     string `json:"type"`                // "text" or "image_url"
+	Text     string `json:"text,omitempty"`      // Text content (when type is "text")
+	ImageURL string `json:"image_url,omitempty"` // Image URL or data URI (when type is "image_url")
+}
+
+// TextPart creates a text content part.
+func TextPart(text string) ContentPart {
+	return ContentPart{Type: "text", Text: text}
+}
+
+// ImagePart creates an image content part from a URL or data URI.
+func ImagePart(url string) ContentPart {
+	return ContentPart{Type: "image_url", ImageURL: url}
+}
+
 // Message represents a chat message in OpenAI-compatible format.
+// Content can be either a simple string or an array of content parts for multimodal messages.
 type Message struct {
-	Role    string `json:"role"`    // "system", "user", or "assistant"
-	Content string `json:"content"` // The message content
+	Role    string        `json:"role"`    // "system", "user", or "assistant"
+	Content string        `json:"content"` // Simple text content (for backward compatibility)
+	Parts   []ContentPart `json:"parts"`   // Multimodal content parts (optional, takes precedence if set)
+}
+
+// GetTextContent returns the text content of a message.
+// If Parts is set, returns concatenated text from text parts.
+// Otherwise returns the Content string.
+func (m Message) GetTextContent() string {
+	if len(m.Parts) > 0 {
+		var text string
+		for _, part := range m.Parts {
+			if part.Type == "text" {
+				text += part.Text
+			}
+		}
+		return text
+	}
+	return m.Content
+}
+
+// HasImages returns true if the message contains any image content parts.
+func (m Message) HasImages() bool {
+	for _, part := range m.Parts {
+		if part.Type == "image_url" {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateOptions configures text generation parameters.

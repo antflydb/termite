@@ -166,10 +166,7 @@ func testGenerate(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	messages := []oapi.ChatMessage{
-		{
-			Role:    oapi.RoleUser,
-			Content: "What is 2+2? Reply with just the number.",
-		},
+		client.NewUserMessage("What is 2+2? Reply with just the number."),
 	}
 
 	config := &client.GenerateConfig{

@@ -131,8 +131,15 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		zap.String("device", gpuInfo.DeviceName))
 
 	// Parse keep_alive duration
+	// Default to 5 minutes like Ollama - lazy loading is the default behavior.
+	// Set keep_alive to "0" to explicitly enable eager loading (all models loaded at startup).
+	const defaultKeepAlive = 5 * time.Minute
 	var keepAlive time.Duration
-	if config.KeepAlive != "" && config.KeepAlive != "0" {
+	if config.KeepAlive == "0" {
+		// Explicit eager loading
+		keepAlive = 0
+		zl.Info("Eager loading mode (all models loaded at startup)")
+	} else if config.KeepAlive != "" {
 		keepAlive, err = time.ParseDuration(config.KeepAlive)
 		if err != nil {
 			zl.Fatal("Invalid keep_alive duration", zap.String("keep_alive", config.KeepAlive), zap.Error(err))
@@ -141,7 +148,11 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			zap.Duration("keep_alive", keepAlive),
 			zap.Int("max_loaded_models", config.MaxLoadedModels))
 	} else {
-		zl.Info("Eager loading mode (all models loaded at startup)")
+		// Default to lazy loading with 5 minute keep_alive (Ollama-compatible)
+		keepAlive = defaultKeepAlive
+		zl.Info("Lazy loading enabled (default)",
+			zap.Duration("keep_alive", keepAlive),
+			zap.Int("max_loaded_models", config.MaxLoadedModels))
 	}
 
 	// Compute model subdirectory paths from models_dir
@@ -393,6 +404,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// Mount the OpenAPI-generated API handler (includes /api/version)
 	rootMux.Handle("/api/", apiHandler)
+
+	// OpenAI-compatible API at /openai/v1/* for standard SDK compatibility
+	node.RegisterOpenAIRoutes(rootMux)
 
 	// Serve the embedded dashboard at root (SPA with fallback to index.html)
 	addDashboardRoutes(rootMux)

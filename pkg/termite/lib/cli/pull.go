@@ -153,7 +153,8 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 	}
 
 	// Build destination path with owner if present
-	destDir := filepath.Join(opts.ModelsDir, manifest.Type.DirName(), manifest.FullName())
+	// Use DirPath() for cross-platform path separators
+	destDir := filepath.Join(opts.ModelsDir, manifest.Type.DirName(), manifest.DirPath())
 	fmt.Printf("\n✓ Model pulled successfully to %s\n", destDir)
 	return nil
 }
