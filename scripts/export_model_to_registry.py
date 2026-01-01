@@ -879,13 +879,39 @@ def export_seq2seq_model(
         json.dump(config_dict, f, indent=2)
 
     # Create seq2seq_config.json for Termite
+    # Detect task type based on model ID
+    model_id_lower = model_id.lower()
+    if "qg" in model_id_lower or "squad-qg" in model_id_lower:
+        task = "question_generation"
+        input_format = "generate question: <hl> {answer} <hl> {context}"
+        max_length = 64
+        num_beams = 1
+        num_return_sequences = 1
+        temperature = 1.0
+    elif "paraphrase" in model_id_lower or "pegasus_paraphrase" in model_id_lower:
+        task = "paraphrase"
+        input_format = "{text}"
+        max_length = 60
+        num_beams = 10
+        num_return_sequences = 10
+        temperature = 1.5
+    else:
+        task = "query_generation"
+        input_format = "{document}"
+        max_length = 64
+        num_beams = 1
+        num_return_sequences = 1
+        temperature = 1.0
+
     seq2seq_config = {
         "model_id": model_id,
-        "task": "question_generation" if "qg" in model_id.lower() else "query_generation",
-        "max_length": 64,
-        "num_beams": 1,
-        "num_return_sequences": 1,
-        "input_format": "generate question: <hl> {answer} <hl> {context}" if "qg" in model_id.lower() else "{document}",
+        "task": task,
+        "max_length": max_length,
+        "num_beams": num_beams,
+        "num_return_sequences": num_return_sequences,
+        "do_sample": False,
+        "temperature": temperature,
+        "input_format": input_format,
     }
     seq2seq_config_path = output_dir / "seq2seq_config.json"
     with open(seq2seq_config_path, "w") as f:

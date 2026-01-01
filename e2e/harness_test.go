@@ -34,6 +34,7 @@ var testModels = []string{
 	"openai/clip-vit-base-patch32",
 	"lmqg/flan-t5-small-squad-qg",
 	"Babelscape/rebel-large",
+	"tuner007/pegasus_paraphrase",
 	// Uncomment when needed - these are larger models
 	// "mirth/chonky-mmbert-small-multilingual-1",
 	// "mixedbread-ai/mxbai-rerank-base-v1",
@@ -123,7 +124,7 @@ func downloadTestModels() error {
 			modelPath = filepath.Join(testModelsDir, "rerankers", modelName)
 		case "mirth/chonky-mmbert-small-multilingual-1":
 			modelPath = filepath.Join(testModelsDir, "chunkers", modelName)
-		case "lmqg/flan-t5-small-squad-qg":
+		case "lmqg/flan-t5-small-squad-qg", "tuner007/pegasus_paraphrase":
 			modelPath = filepath.Join(testModelsDir, "rewriters", modelName)
 		case "Babelscape/rebel-large":
 			modelPath = filepath.Join(testModelsDir, "recognizers", modelName)

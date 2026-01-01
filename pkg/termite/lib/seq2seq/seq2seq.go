@@ -17,6 +17,9 @@ package seq2seq
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 )
 
 // GeneratedOutput represents the output from a seq2seq model.
@@ -47,6 +50,16 @@ type QuestionGenerator interface {
 	// GenerateQuestions generates questions given answer-context pairs.
 	// The model will generate questions where the answer is the correct response.
 	GenerateQuestions(ctx context.Context, pairs []AnswerContextPair) (*GeneratedOutput, error)
+}
+
+// Paraphraser extends Model with paraphrasing capabilities.
+// This is for models like PEGASUS fine-tuned for paraphrasing tasks.
+type Paraphraser interface {
+	Model
+
+	// Paraphrase generates paraphrases of the input texts.
+	// Returns multiple paraphrase variants for each input based on model configuration.
+	Paraphrase(ctx context.Context, texts []string) (*GeneratedOutput, error)
 }
 
 // AnswerContextPair holds an answer and its context for question generation.
@@ -98,4 +111,44 @@ func FormatLMQGInputBatch(pairs []AnswerContextPair) []string {
 		inputs[i] = FormatLMQGInput(pair.Answer, pair.Context)
 	}
 	return inputs
+}
+
+// IsParaphraseModel checks if the model is configured for paraphrasing.
+// Returns true if the model's seq2seq_config.json indicates a paraphrase task
+// or if the model name contains paraphrase-related keywords.
+func IsParaphraseModel(modelPath string) bool {
+	if !IsSeq2SeqModel(modelPath) {
+		return false
+	}
+
+	// Check config for task type
+	configPath := modelPath + "/seq2seq_config.json"
+	data, err := readFile(configPath)
+	if err != nil {
+		// Check model name for hints
+		modelName := baseName(modelPath)
+		return containsAny(modelName, "paraphrase", "pegasus_paraphrase")
+	}
+
+	var config Config
+	if err := parseJSON(data, &config); err != nil {
+		return false
+	}
+
+	return config.Task == "paraphrase"
+}
+
+// readFile reads a file and returns its contents.
+func readFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
+// baseName returns the base name of a path.
+func baseName(path string) string {
+	return filepath.Base(path)
+}
+
+// parseJSON parses JSON data into a Config struct.
+func parseJSON(data []byte, config *Config) error {
+	return json.Unmarshal(data, config)
 }
