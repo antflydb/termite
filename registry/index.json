@@ -26,6 +26,15 @@
       ]
     },
     {
+      "name": "functiongemma-270m-it",
+      "type": "generator",
+      "description": "",
+      "source": "google/functiongemma-270m-it",
+      "size": 1174265658,
+      "variants": [],
+      "owner": "google"
+    },
+    {
       "name": "flan-t5-small-squad-qg",
       "type": "rewriter",
       "description": "",

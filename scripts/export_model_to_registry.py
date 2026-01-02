@@ -919,7 +919,7 @@ def export_generator_model(
     """
     import subprocess
 
-    variants = variants or ["f16"]
+    variants = variants or ["f32"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Exporting generator model: {model_id}")
@@ -928,6 +928,7 @@ def export_generator_model(
 
     # Map variant names to builder arguments
     VARIANT_CONFIG = {
+        "f32": {"precision": "fp32", "execution_provider": "cpu"},
         "f16": {"precision": "fp16", "execution_provider": "cpu"},
         "i4": {"precision": "int4", "execution_provider": "cpu"},
         "i4-cuda": {"precision": "int4", "execution_provider": "cuda"},
@@ -945,8 +946,8 @@ def export_generator_model(
         exec_provider = config["execution_provider"]
 
         # Determine output path for this variant
-        if variant == "f16":
-            # Base variant goes directly in output_dir
+        if variant in ("f32", "f16"):
+            # Base variants go directly in output_dir
             variant_dir = output_dir
         else:
             # Other variants go in subdirectories named by variant
@@ -2230,7 +2231,6 @@ def test_generator_model(model_dir: Path) -> bool:
             for _ in range(5):
                 if generator.is_done():
                     break
-                generator.compute_logits()
                 generator.generate_next_token()
                 new_token = generator.get_next_tokens()[0]
                 generated_tokens.append(new_token)

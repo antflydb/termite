@@ -125,6 +125,18 @@ build-termite: ## Build termite binary.
 	@echo "Building termite..."
 	go build -o bin/termite ./pkg/termite/cmd
 
+.PHONY: build-omni
+build-omni: download-omni-deps ## Build termite with ONNX + XLA backends (omni).
+	@echo "Building termite with ONNX + XLA backends (omni)..."
+	@echo "Platform: $(PLATFORM)"
+	export ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) && \
+	export PJRT_ROOT=$(PJRT_ROOT) && \
+	export CGO_ENABLED=1 && \
+	export LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LIBRARY_PATH && \
+	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
+	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
+	go build -tags="onnx,ORT,xla,XLA" -o termite ./pkg/termite/cmd
+
 .PHONY: run-operator
 run-operator: generate fmt vet ## Run the operator locally.
 	go run ./pkg/operator/cmd/termite-operator
@@ -333,12 +345,33 @@ examples: ## Show example usage.
 ONNXRUNTIME_ROOT ?= $(CURDIR)/onnxruntime
 PJRT_ROOT ?= $(CURDIR)/pjrt
 
+# Version stamps to track when dependencies need updating
+ONNXRUNTIME_VERSION ?= 1.23.2
+GENAI_VERSION ?= 0.11.4
+PJRT_VERSION ?= 0.83.1
+
+ONNXRUNTIME_STAMP := $(ONNXRUNTIME_ROOT)/.version-$(ONNXRUNTIME_VERSION)-$(GENAI_VERSION)
+PJRT_STAMP := $(PJRT_ROOT)/.version-$(PJRT_VERSION)
+
+$(ONNXRUNTIME_STAMP): scripts/download-onnxruntime.sh
+	@echo "Downloading ONNX Runtime (version changed or first run)..."
+	@rm -f $(ONNXRUNTIME_ROOT)/.version-*
+	ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) ./scripts/download-onnxruntime.sh $(ONNXRUNTIME_VERSION) $(GENAI_VERSION)
+	@touch $@
+
+$(PJRT_STAMP): scripts/download-pjrt.sh
+	@echo "Downloading PJRT (version changed or first run)..."
+	@rm -f $(PJRT_ROOT)/.version-*
+	PJRT_ROOT=$(PJRT_ROOT) ./scripts/download-pjrt.sh $(PJRT_VERSION)
+	@touch $@
+
 .PHONY: download-omni-deps
-download-omni-deps: ## Download ONNX Runtime and PJRT for omni builds.
-	@echo "Downloading ONNX Runtime..."
-	ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) ./scripts/download-onnxruntime.sh
-	@echo "Downloading PJRT..."
-	PJRT_ROOT=$(PJRT_ROOT) ./scripts/download-pjrt.sh
+download-omni-deps: $(ONNXRUNTIME_STAMP) $(PJRT_STAMP) ## Download ONNX Runtime and PJRT for omni builds (skips if up-to-date).
+
+.PHONY: force-download-omni-deps
+force-download-omni-deps: ## Force re-download of ONNX Runtime and PJRT.
+	@rm -f $(ONNXRUNTIME_ROOT)/.version-* $(PJRT_ROOT)/.version-*
+	$(MAKE) download-omni-deps
 
 ##@ E2E Testing
 

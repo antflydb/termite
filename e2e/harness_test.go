@@ -34,6 +34,7 @@ var testModels = []string{
 	"openai/clip-vit-base-patch32",
 	"lmqg/flan-t5-small-squad-qg",
 	"Babelscape/rebel-large",
+	"google/functiongemma-270m-it",
 	// Uncomment when needed - these are larger models
 	// "mirth/chonky-mmbert-small-multilingual-1",
 	// "mixedbread-ai/mxbai-rerank-base-v1",
@@ -127,6 +128,8 @@ func downloadTestModels() error {
 			modelPath = filepath.Join(testModelsDir, "rewriters", modelName)
 		case "Babelscape/rebel-large":
 			modelPath = filepath.Join(testModelsDir, "recognizers", modelName)
+		case "google/functiongemma-270m-it":
+			modelPath = filepath.Join(testModelsDir, "generators", modelName)
 		default:
 			modelPath = filepath.Join(testModelsDir, "embedders", modelName)
 		}

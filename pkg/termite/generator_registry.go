@@ -32,8 +32,9 @@ import (
 // GeneratorModelInfo holds metadata about a discovered generator model (not loaded yet)
 type GeneratorModelInfo struct {
 	Name      string
-	Path      string
+	Path      string            // Path to base variant
 	ModelType string
+	Variants  map[string]string // variant name -> path (e.g., "i4" -> "/path/to/model/i4")
 }
 
 // GeneratorRegistry manages generator models with lazy loading and TTL-based unloading
@@ -164,6 +165,9 @@ func (r *GeneratorRegistry) discoverModels() error {
 		return fmt.Errorf("discovering generator models: %w", err)
 	}
 
+	// Known variant subdirectory names for generators
+	knownVariants := []string{"i4", "i4-cuda", "i4-dml"}
+
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -181,13 +185,28 @@ func (r *GeneratorRegistry) discoverModels() error {
 			}
 		}
 
+		// Discover available variant subdirectories
+		variants := make(map[string]string)
+		for _, variantName := range knownVariants {
+			variantPath := filepath.Join(dm.Path, variantName)
+			if isValidGeneratorModel(variantPath) {
+				variants[variantName] = variantPath
+				r.logger.Debug("Found generator variant",
+					zap.String("model", registryFullName),
+					zap.String("variant", variantName),
+					zap.String("path", variantPath))
+			}
+		}
+
 		r.logger.Info("Discovered generator model (not loaded)",
 			zap.String("name", registryFullName),
-			zap.String("path", modelPath))
+			zap.String("path", modelPath),
+			zap.Int("variants", len(variants)))
 
 		r.discovered[registryFullName] = &GeneratorModelInfo{
-			Name: registryFullName,
-			Path: modelPath,
+			Name:     registryFullName,
+			Path:     modelPath,
+			Variants: variants,
 		}
 	}
 
@@ -220,16 +239,21 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 	return r.loadModel(info)
 }
 
-// loadModel loads a generator model from disk
+// loadModel loads a generator model from disk (base variant)
 func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Generator, error) {
+	return r.loadModelFromPath(info.Name, info.Path)
+}
+
+// loadModelFromPath loads a generator model from a specific path
+func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (generation.Generator, error) {
 	r.logger.Info("Loading generator model on demand",
-		zap.String("model", info.Name),
-		zap.String("path", info.Path))
+		zap.String("cacheKey", cacheKey),
+		zap.String("path", modelPath))
 
 	// Try to generate genai_config.json if needed
-	if err := generateGenaiConfig(info.Path, r.logger); err != nil {
+	if err := generateGenaiConfig(modelPath, r.logger); err != nil {
 		r.logger.Warn("Failed to generate genai_config.json",
-			zap.String("name", info.Name),
+			zap.String("cacheKey", cacheKey),
 			zap.Error(err))
 	}
 
@@ -240,24 +264,80 @@ func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Gene
 
 	if r.sessionManager != nil {
 		model, backendUsed, loadErr = generation.NewHugotGeneratorWithSessionManager(
-			info.Path, r.sessionManager, nil, r.logger.Named(info.Name))
+			modelPath, r.sessionManager, nil, r.logger.Named(cacheKey))
 	} else {
 		model, loadErr = generation.NewHugotGeneratorWithSession(
-			info.Path, nil, r.logger.Named(info.Name))
+			modelPath, nil, r.logger.Named(cacheKey))
 	}
 
 	if loadErr != nil {
-		return nil, fmt.Errorf("loading generator model %s: %w", info.Name, loadErr)
+		return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, loadErr)
 	}
 
 	r.logger.Info("Successfully loaded generator model",
-		zap.String("name", info.Name),
+		zap.String("cacheKey", cacheKey),
 		zap.String("backend", string(backendUsed)))
 
 	// Add to cache
-	r.cache.Set(info.Name, model, r.keepAlive)
+	r.cache.Set(cacheKey, model, r.keepAlive)
 
 	return model, nil
+}
+
+// GetWithVariant returns a generator by name with a specific variant, loading it if necessary.
+// If variant is empty, the base model is loaded.
+func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generation.Generator, error) {
+	// Build cache key including variant
+	cacheKey := modelName
+	if variant != "" {
+		cacheKey = modelName + ":" + variant
+	}
+
+	// Check cache first
+	if item := r.cache.Get(cacheKey); item != nil {
+		r.logger.Debug("Generator cache hit", zap.String("model", cacheKey))
+		return item.Value(), nil
+	}
+
+	// Check if model is discovered
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("generator model not found: %s", modelName)
+	}
+
+	// Determine path based on variant
+	modelPath := info.Path
+	if variant != "" {
+		variantPath, ok := info.Variants[variant]
+		if !ok {
+			return nil, fmt.Errorf("variant %q not found for model %s (available: %v)",
+				variant, modelName, r.ListVariants(modelName))
+		}
+		modelPath = variantPath
+	}
+
+	// Load the model with the specific path
+	return r.loadModelFromPath(cacheKey, modelPath)
+}
+
+// ListVariants returns the available variant names for a model
+func (r *GeneratorRegistry) ListVariants(modelName string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	info, ok := r.discovered[modelName]
+	if !ok {
+		return nil
+	}
+
+	variants := make([]string, 0, len(info.Variants))
+	for name := range info.Variants {
+		variants = append(variants, name)
+	}
+	return variants
 }
 
 // List returns all available generator model names (discovered, not necessarily loaded)
