@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/knights-analytics/hugot/backends"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -106,6 +107,144 @@ func TestMockGenerator_Generate(t *testing.T) {
 	assert.Equal(t, "Mock response", result.Text)
 	assert.Equal(t, 10, result.TokensUsed)
 	assert.Equal(t, "stop", result.FinishReason)
+}
+
+func TestToHugotMessages(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      []Message
+		imageToken string // image placeholder token from model config
+		expected   int    // expected number of messages
+		checkFn    func(t *testing.T, result []backends.Message)
+	}{
+		{
+			name: "simple text message",
+			input: []Message{
+				{
+					Role:    "user",
+					Content: "Hello, world!",
+				},
+			},
+			imageToken: "",
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				assert.Equal(t, "Hello, world!", result[0].Content)
+				assert.Empty(t, result[0].ImageURLs)
+			},
+		},
+		{
+			name: "message with text parts",
+			input: []Message{
+				{
+					Role: "user",
+					Parts: []ContentPart{
+						TextPart("Hello, "),
+						TextPart("world!"),
+					},
+				},
+			},
+			imageToken: "",
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				assert.Equal(t, "Hello, world!", result[0].Content)
+				assert.Empty(t, result[0].ImageURLs)
+			},
+		},
+		{
+			name: "message with image - uses model's image token",
+			input: []Message{
+				{
+					Role: "user",
+					Parts: []ContentPart{
+						TextPart("What's in this image?"),
+						ImagePart("data:image/png;base64,iVBORw0KGgo..."),
+					},
+				},
+			},
+			imageToken: "<start_of_image>", // Gemma 3 uses this token from special_tokens_map.json
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				// Image token is read from model's special_tokens_map.json
+				assert.Equal(t, "<start_of_image>What's in this image?", result[0].Content)
+				assert.Len(t, result[0].ImageURLs, 1)
+				assert.Equal(t, "data:image/png;base64,iVBORw0KGgo...", result[0].ImageURLs[0])
+			},
+		},
+		{
+			name: "message with multiple images",
+			input: []Message{
+				{
+					Role: "user",
+					Parts: []ContentPart{
+						TextPart("Compare these images:"),
+						ImagePart("/path/to/image1.png"),
+						ImagePart("/path/to/image2.png"),
+					},
+				},
+			},
+			imageToken: "<start_of_image>",
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				// One image token per image, read from model config
+				assert.Equal(t, "<start_of_image><start_of_image>Compare these images:", result[0].Content)
+				assert.Len(t, result[0].ImageURLs, 2)
+				assert.Equal(t, "/path/to/image1.png", result[0].ImageURLs[0])
+				assert.Equal(t, "/path/to/image2.png", result[0].ImageURLs[1])
+			},
+		},
+		{
+			name: "message with image - no image token configured",
+			input: []Message{
+				{
+					Role: "user",
+					Parts: []ContentPart{
+						TextPart("What's in this image?"),
+						ImagePart("data:image/png;base64,iVBORw0KGgo..."),
+					},
+				},
+			},
+			imageToken: "", // No image token configured (non-multimodal model)
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				// No image token prepended when not configured
+				assert.Equal(t, "What's in this image?", result[0].Content)
+				assert.Len(t, result[0].ImageURLs, 1)
+				assert.Equal(t, "data:image/png;base64,iVBORw0KGgo...", result[0].ImageURLs[0])
+			},
+		},
+		{
+			name: "backward compatibility - empty Parts uses Content",
+			input: []Message{
+				{
+					Role:    "user",
+					Content: "Direct content",
+					Parts:   []ContentPart{}, // Empty parts
+				},
+			},
+			imageToken: "",
+			expected:   1,
+			checkFn: func(t *testing.T, result []backends.Message) {
+				assert.Equal(t, "user", result[0].Role)
+				assert.Equal(t, "Direct content", result[0].Content)
+				assert.Empty(t, result[0].ImageURLs)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := toHugotMessages(tt.input, tt.imageToken)
+			assert.Len(t, result, tt.expected)
+			if tt.checkFn != nil {
+				tt.checkFn(t, result)
+			}
+		})
+	}
 }
 
 // Integration test - skipped unless model is available

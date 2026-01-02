@@ -62,8 +62,8 @@ func (ln *TermiteNode) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Count available models (discovered, not necessarily loaded)
-	if ln.embedderProvider != nil {
-		resp.Models.Embedders = len(ln.embedderProvider.List())
+	if ln.embedderRegistry != nil {
+		resp.Models.Embedders = len(ln.embedderRegistry.List())
 	}
 	if ln.cachedChunker != nil {
 		resp.Models.Chunkers = len(ln.cachedChunker.ListModels())

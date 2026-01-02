@@ -6,9 +6,9 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/timkaye11/hugot v0.0.0-20251229042211-73e5b84f666d
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260101005223-9b602a8e2c35
 
-replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20251229052243-d2d8091589c4
+replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670
 
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
@@ -17,7 +17,7 @@ require (
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/gomlx/go-huggingface v0.3.1
 	github.com/jellydator/ttlcache/v3 v3.4.0
-	github.com/knights-analytics/hugot v0.6.0
+	github.com/knights-analytics/hugot v0.6.1
 	github.com/knights-analytics/ortgenai v0.0.1
 	github.com/oapi-codegen/runtime v1.1.2
 	github.com/pkoukk/tiktoken-go v0.1.8

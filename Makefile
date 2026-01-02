@@ -37,6 +37,10 @@ all: build
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "E2E Testing Options:"
+	@echo "  E2E_TEST=TestName    Run specific test (e.g., make e2e E2E_TEST=TestEmbedE2E)"
+	@echo "  E2E_TIMEOUT=30m      Set test timeout (default: 15m)"
 
 ##@ Development
 
@@ -120,6 +124,18 @@ build-proxy: ## Build proxy binary.
 build-termite: ## Build termite binary.
 	@echo "Building termite..."
 	go build -o bin/termite ./pkg/termite/cmd
+
+.PHONY: build-omni
+build-omni: download-omni-deps ## Build termite with ONNX + XLA backends (omni).
+	@echo "Building termite with ONNX + XLA backends (omni)..."
+	@echo "Platform: $(PLATFORM)"
+	export ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) && \
+	export PJRT_ROOT=$(PJRT_ROOT) && \
+	export CGO_ENABLED=1 && \
+	export LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LIBRARY_PATH && \
+	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
+	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
+	go build -tags="onnx,ORT,xla,XLA" -o termite ./pkg/termite/cmd
 
 .PHONY: run-operator
 run-operator: generate fmt vet ## Run the operator locally.
@@ -322,6 +338,41 @@ examples: ## Show example usage.
 	@echo "4. View pool details:"
 	@echo "   kubectl describe termitepool read-heavy-embedders -n termite-operator-namespace"
 
+##@ Omni Dependencies
+
+# Paths for omni build dependencies (can be overridden)
+# Use absolute paths so they work from subdirectories (e.g., e2e/)
+ONNXRUNTIME_ROOT ?= $(CURDIR)/onnxruntime
+PJRT_ROOT ?= $(CURDIR)/pjrt
+
+# Version stamps to track when dependencies need updating
+ONNXRUNTIME_VERSION ?= 1.23.2
+GENAI_VERSION ?= 0.11.4
+PJRT_VERSION ?= 0.83.1
+
+ONNXRUNTIME_STAMP := $(ONNXRUNTIME_ROOT)/.version-$(ONNXRUNTIME_VERSION)-$(GENAI_VERSION)
+PJRT_STAMP := $(PJRT_ROOT)/.version-$(PJRT_VERSION)
+
+$(ONNXRUNTIME_STAMP): scripts/download-onnxruntime.sh
+	@echo "Downloading ONNX Runtime (version changed or first run)..."
+	@rm -f $(ONNXRUNTIME_ROOT)/.version-*
+	ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) ./scripts/download-onnxruntime.sh $(ONNXRUNTIME_VERSION) $(GENAI_VERSION)
+	@touch $@
+
+$(PJRT_STAMP): scripts/download-pjrt.sh
+	@echo "Downloading PJRT (version changed or first run)..."
+	@rm -f $(PJRT_ROOT)/.version-*
+	PJRT_ROOT=$(PJRT_ROOT) ./scripts/download-pjrt.sh $(PJRT_VERSION)
+	@touch $@
+
+.PHONY: download-omni-deps
+download-omni-deps: $(ONNXRUNTIME_STAMP) $(PJRT_STAMP) ## Download ONNX Runtime and PJRT for omni builds (skips if up-to-date).
+
+.PHONY: force-download-omni-deps
+force-download-omni-deps: ## Force re-download of ONNX Runtime and PJRT.
+	@rm -f $(ONNXRUNTIME_ROOT)/.version-* $(PJRT_ROOT)/.version-*
+	$(MAKE) download-omni-deps
+
 ##@ E2E Testing
 
 # Detect OS and architecture for library paths
@@ -341,36 +392,28 @@ else
     endif
 endif
 
-.PHONY: e2e-deps
-e2e-deps: ## Download ONNX Runtime and PJRT for omni builds.
-	@echo "Downloading ONNX Runtime..."
-	./scripts/download-onnxruntime.sh
-	@echo "Downloading PJRT..."
-	./scripts/download-pjrt.sh
+# E2E test configuration
+E2E_TEST ?=
+E2E_TIMEOUT ?= 15m
 
-.PHONY: e2e
+.PHONY: e2e e2e-deps
+
+e2e-deps: download-omni-deps ## Download dependencies for E2E tests.
+
 e2e: e2e-deps ## Run E2E tests with omni build (ONNX + XLA).
 	@echo "Running E2E tests with omni build..."
-	@echo "This will download the CLIP model (~500MB) on first run."
+	@echo "This will download models on first run."
 	@echo "Platform: $(PLATFORM)"
-	export ONNXRUNTIME_ROOT=$$(pwd)/onnxruntime && \
-	export PJRT_ROOT=$$(pwd)/pjrt && \
+ifdef E2E_TEST
+	@echo "Test: $(E2E_TEST)"
+endif
+	@echo "Timeout: $(E2E_TIMEOUT)"
+	export ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) && \
+	export PJRT_ROOT=$(PJRT_ROOT) && \
 	export CGO_ENABLED=1 && \
-	export LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LIBRARY_PATH && \
-	export LD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
-	export DYLD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
+	export LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LIBRARY_PATH && \
+	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
+	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
 	cd e2e && go mod tidy && \
-	go test -v -tags="onnx,ORT,xla,XLA" -timeout 15m ./...
+	go test -v -tags="onnx,ORT,xla,XLA" -timeout $(E2E_TIMEOUT) $(if $(E2E_TEST),-run $(E2E_TEST)) ./...
 
-.PHONY: e2e-onnx
-e2e-onnx: ## Run E2E tests with ONNX only (no XLA).
-	@echo "Running E2E tests with ONNX build..."
-	@echo "Platform: $(PLATFORM)"
-	./scripts/download-onnxruntime.sh
-	export ONNXRUNTIME_ROOT=$$(pwd)/onnxruntime && \
-	export CGO_ENABLED=1 && \
-	export LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LIBRARY_PATH && \
-	export LD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
-	export DYLD_LIBRARY_PATH=$$(pwd)/onnxruntime/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
-	cd e2e && go mod tidy && \
-	go test -v -tags="onnx,ORT" -timeout 15m ./...

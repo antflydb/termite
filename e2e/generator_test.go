@@ -17,8 +17,13 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -125,6 +130,10 @@ func TestGeneratorE2E(t *testing.T) {
 		testGenerate(t, ctx, termiteClient)
 	})
 
+	t.Run("GenerateWithImage", func(t *testing.T) {
+		testGenerateWithImage(t, ctx, termiteClient)
+	})
+
 	// Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -196,4 +205,70 @@ func testGenerate(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 
 	// Should have reasonable token count
 	assert.Greater(t, completionTokens, 0, "Should have used some tokens")
+}
+
+// testGenerateWithImage tests multimodal generation with an image
+func testGenerateWithImage(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	// Create a simple test image (100x100 red square)
+	imageData := createGeneratorTestImage(t, 100, 100, color.RGBA{255, 0, 0, 255})
+	base64Image := base64.StdEncoding.EncodeToString(imageData)
+	dataURI := "data:image/png;base64," + base64Image
+
+	// Create multimodal message with text and image
+	multimodalMsg, err := client.NewMultimodalUserMessage(
+		"What color is this image? Reply with just the color name.",
+		dataURI,
+	)
+	require.NoError(t, err, "Failed to create multimodal message")
+
+	messages := []oapi.ChatMessage{multimodalMsg}
+
+	config := &client.GenerateConfig{
+		MaxTokens:   50,
+		Temperature: 0.1, // Low temperature for more deterministic output
+	}
+
+	resp, err := c.Generate(ctx, generatorModelName, messages, config)
+	require.NoError(t, err, "Generate with image failed")
+
+	assert.Equal(t, generatorModelName, resp.Model)
+
+	// OpenAI-compatible response has Choices array
+	require.NotEmpty(t, resp.Choices, "Response should have at least one choice")
+
+	generatedText := resp.Choices[0].Message.Content
+	finishReason := resp.Choices[0].FinishReason
+	completionTokens := resp.Usage.CompletionTokens
+
+	// Log the generated text
+	t.Logf("Generated text (multimodal): %q", generatedText)
+	t.Logf("Tokens used: %d", completionTokens)
+	t.Logf("Finish reason: %s", finishReason)
+
+	// Should have non-empty generated text
+	assert.NotEmpty(t, generatedText, "Generated text should not be empty")
+
+	// Should have reasonable token count
+	assert.Greater(t, completionTokens, 0, "Should have used some tokens")
+}
+
+// createGeneratorTestImage creates a PNG image with the specified dimensions and color
+func createGeneratorTestImage(t *testing.T, width, height int, c color.Color) []byte {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, c)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("Failed to encode PNG: %v", err)
+	}
+
+	return buf.Bytes()
 }

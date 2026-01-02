@@ -100,10 +100,20 @@ func NewBertWordPieceTokenizer() (*BertWordPieceTokenizer, error) {
 }
 
 // CountTokens returns the number of tokens in the text.
-func (t *BertWordPieceTokenizer) CountTokens(text string) int {
+// Uses a recover wrapper to handle panics from the underlying tokenizer library
+// (github.com/sugarme/tokenizer has a bounds check bug in BertNormalizer.TransformRange).
+func (t *BertWordPieceTokenizer) CountTokens(text string) (count int) {
 	if text == "" {
 		return 0
 	}
+
+	// Recover from panics in the underlying tokenizer library
+	defer func() {
+		if r := recover(); r != nil {
+			// Fallback: rough approximation (1 token ≈ 4 chars for English)
+			count = len(text) / 4
+		}
+	}()
 
 	enc, err := t.tokenizer.EncodeSingle(text)
 	if err != nil {

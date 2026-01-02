@@ -105,8 +105,8 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		resp.Chunkers = t.node.cachedChunker.ListModels()
 	}
 
-	if t.node.embedderProvider != nil {
-		resp.Embedders = t.node.embedderProvider.List()
+	if t.node.embedderRegistry != nil {
+		resp.Embedders = t.node.embedderRegistry.List()
 	}
 
 	if t.node.rerankerRegistry != nil {
@@ -172,7 +172,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
 	// Check if embedder provider is available
-	if ln.embedderProvider == nil {
+	if ln.embedderRegistry == nil {
 		http.Error(w, "embedding not available: no models configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -212,7 +212,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get embedder from provider (lazy loads if needed)
-	embedder, err := ln.embedderProvider.Get(req.Model)
+	embedder, err := ln.embedderRegistry.Get(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
@@ -784,6 +784,22 @@ func generateCompletionID() string {
 	return "chatcmpl-" + hex.EncodeToString(b)
 }
 
+// stringValue returns the string value of a pointer, or empty string if nil.
+func stringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// boolValue returns the bool value of a pointer, or false if nil.
+func boolValue(b *bool) bool {
+	if b == nil {
+		return false
+	}
+	return *b
+}
+
 // convertChatMessage converts an API ChatMessage to a generation.Message.
 // Supports both simple string content and OpenAI-format array of content parts.
 func convertChatMessage(msg ChatMessage) generation.Message {
@@ -885,6 +901,17 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Check for tool support if tools are requested
+	var toolParser generation.ToolParser
+	if len(req.Tools) > 0 {
+		ts, ok := generator.(generation.ToolSupporter)
+		if !ok || !ts.SupportsTools() {
+			http.Error(w, fmt.Sprintf("model %s does not support tool calling", req.Model), http.StatusBadRequest)
+			return
+		}
+		toolParser = ts.ToolParser()
+	}
+
 	// Convert messages to internal format
 	messages := make([]generation.Message, len(req.Messages))
 	for i, m := range req.Messages {
@@ -909,6 +936,67 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	}
 	if req.TopK > 0 {
 		opts.TopK = req.TopK
+	}
+	// Try to extract tool choice from union type
+	// First try string variant (auto, none, required)
+	if tc, err := req.ToolChoice.AsToolChoice0(); err == nil && tc != "" {
+		opts.ToolChoice = string(tc)
+	} else if tc, err := req.ToolChoice.AsToolChoice1(); err == nil && tc.Function.Name != "" {
+		// Function-specific variant: force calling a specific function
+		opts.ToolChoice = "required"
+		opts.ForcedFunctionName = tc.Function.Name
+	}
+
+	// If tools are provided, format tool declarations and prepend to system message
+	if toolParser != nil && len(req.Tools) > 0 {
+		// Convert API tools to internal format
+		tools := make([]generation.ToolDefinition, len(req.Tools))
+		for i, t := range req.Tools {
+			tools[i] = generation.ToolDefinition{
+				Type: string(t.Type),
+				Function: generation.FunctionDefinition{
+					Name:        t.Function.Name,
+					Description: t.Function.Description,
+					Parameters:  t.Function.Parameters,
+					Strict:      t.Function.Strict,
+				},
+			}
+		}
+
+		// If a specific function is forced, filter tools to only that function
+		if opts.ForcedFunctionName != "" {
+			filteredTools := make([]generation.ToolDefinition, 0, 1)
+			for _, tool := range tools {
+				if tool.Function.Name == opts.ForcedFunctionName {
+					filteredTools = append(filteredTools, tool)
+					break
+				}
+			}
+			if len(filteredTools) == 0 {
+				http.Error(w, fmt.Sprintf("forced function %q not found in tools", opts.ForcedFunctionName), http.StatusBadRequest)
+				return
+			}
+			tools = filteredTools
+		}
+
+		// Format tools prompt
+		toolsPrompt := toolParser.FormatToolsPrompt(tools)
+
+		// If a specific function is forced, add a directive to call it
+		if opts.ForcedFunctionName != "" {
+			toolsPrompt += fmt.Sprintf("\nYou MUST call the %s function. Do not respond with text, only call the function.\n", opts.ForcedFunctionName)
+		}
+
+		// Prepend to system message or create new one
+		if len(messages) > 0 && messages[0].Role == "system" {
+			messages[0].Content = toolsPrompt + "\n\n" + messages[0].Content
+		} else {
+			systemMsg := generation.Message{
+				Role:    "system",
+				Content: toolsPrompt,
+			}
+			messages = append([]generation.Message{systemMsg}, messages...)
+		}
 	}
 
 	// Generate completion ID and timestamp
@@ -936,15 +1024,35 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	RecordGeneratorRequest(req.Model)
 	RecordTokenGeneration(req.Model, result.TokensUsed)
 
+	// Parse tool calls from output if tools were requested
+	var toolCalls []generation.ToolCall
+	var responseText string
+	if toolParser != nil && len(req.Tools) > 0 {
+		// Feed the entire response to the parser
+		toolParser.Reset()
+		toolParser.Feed(result.Text)
+		toolCalls, responseText = toolParser.Finish()
+
+		ln.logger.Info("tool call parsing completed",
+			zap.String("model", req.Model),
+			zap.Int("tool_calls", len(toolCalls)),
+			zap.Int("remaining_text_len", len(responseText)))
+	} else {
+		responseText = result.Text
+	}
+
 	ln.logger.Info("generation request completed",
 		zap.String("model", req.Model),
 		zap.Int("num_messages", len(req.Messages)),
-		zap.Int("tokens_generated", result.TokensUsed))
+		zap.Int("tokens_generated", result.TokensUsed),
+		zap.Int("tool_calls", len(toolCalls)))
 
 	// Map finish reason
 	var finishReason FinishReason
-	switch result.FinishReason {
-	case "length":
+	switch {
+	case len(toolCalls) > 0:
+		finishReason = FinishReasonToolCalls
+	case result.FinishReason == "length":
 		finishReason = FinishReasonLength
 	default:
 		finishReason = FinishReasonStop
@@ -958,6 +1066,33 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Build OpenAI-compatible response
+	respMessage := GenerateMessage{
+		Role: RoleAssistant,
+	}
+
+	// Set content or nil based on whether there are tool calls
+	if len(toolCalls) > 0 {
+		// When tool calls are present, content can be null or empty
+		if responseText != "" {
+			respMessage.Content = responseText
+		}
+		// Convert internal tool calls to API format
+		apiToolCalls := make([]ToolCall, len(toolCalls))
+		for i, tc := range toolCalls {
+			apiToolCalls[i] = ToolCall{
+				Id:   tc.ID,
+				Type: ToolCallType(tc.Type),
+				Function: ToolCallFunction{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			}
+		}
+		respMessage.ToolCalls = apiToolCalls
+	} else {
+		respMessage.Content = responseText
+	}
+
 	resp := GenerateResponse{
 		Id:      completionID,
 		Object:  GenerateResponseObjectChatCompletion,
@@ -965,11 +1100,8 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		Model:   req.Model,
 		Choices: []GenerateChoice{
 			{
-				Index: 0,
-				Message: GenerateMessage{
-					Role:    RoleAssistant,
-					Content: result.Text,
-				},
+				Index:        0,
+				Message:      respMessage,
 				FinishReason: finishReason,
 				Logprobs:     nil,
 			},

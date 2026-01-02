@@ -40,6 +40,14 @@ go test -tags="onnx,ORT" ./...          # With ONNX backend
 make test                               # Full test suite
 ```
 
+**E2E tests** with ONNX+XLA (downloads deps and models on first run):
+
+```bash
+make e2e                            # Run all E2E tests
+make e2e E2E_TEST=TestName          # Run specific test
+make e2e E2E_TIMEOUT=15m            # Custom timeout (default: 15m)
+```
+
 ## Code Generation
 
 ```bash

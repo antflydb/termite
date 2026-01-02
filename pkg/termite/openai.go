@@ -96,8 +96,8 @@ func (ln *TermiteNode) handleOpenAIModels(w http.ResponseWriter, r *http.Request
 	}
 
 	// Add embedders (for potential /v1/embeddings compatibility)
-	if ln.embedderProvider != nil {
-		for _, name := range ln.embedderProvider.List() {
+	if ln.embedderRegistry != nil {
+		for _, name := range ln.embedderRegistry.List() {
 			resp.Data = append(resp.Data, openAIModel{
 				ID:      name,
 				Object:  "model",

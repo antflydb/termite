@@ -85,8 +85,8 @@ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzh
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/klauspost/crc32 v1.3.0 h1:sSmTt3gUt81RP655XGZPElI0PelVTZ6YwCRnPSupoFM=
 github.com/klauspost/crc32 v1.3.0/go.mod h1:D7kQaZhnkX/Y0tstFGf8VUzv2UofNGqCjnC3zdHB0Hw=
-github.com/knights-analytics/hugot v0.6.0 h1:ofEmbSea+3xhTRjz0P38RMXx3ihY5qUWUNVbZSh72SI=
-github.com/knights-analytics/hugot v0.6.0/go.mod h1:SZei6UfspsKpiJM7gKq69OPWS58zCUuvAD/1FmroPpQ=
+github.com/knights-analytics/hugot v0.6.1 h1:fno7SwVbrOpQO9zcJXvNo9Yqns8GmWwAYH56tsyPxkM=
+github.com/knights-analytics/hugot v0.6.1/go.mod h1:friObWE4ClAm3T2in9m8w9QGowZJV93dGPW8nn0Fq0E=
 github.com/knights-analytics/ortgenai v0.0.1 h1:AJdqqjWMtMRfXn9Lf6RQ+fJ6W6f8bBHuf1KXQGUgDAk=
 github.com/knights-analytics/ortgenai v0.0.1/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=

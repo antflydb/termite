@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -158,6 +159,30 @@ func (m *MockModel) Close() error {
 	return nil
 }
 
+// MockRerankerRegistry implements RerankerRegistryInterface for testing
+type MockRerankerRegistry struct {
+	models map[string]reranking.Model
+}
+
+func (m *MockRerankerRegistry) Get(modelName string) (reranking.Model, error) {
+	if model, ok := m.models[modelName]; ok {
+		return model, nil
+	}
+	return nil, fmt.Errorf("model not found: %s", modelName)
+}
+
+func (m *MockRerankerRegistry) List() []string {
+	names := make([]string, 0, len(m.models))
+	for name := range m.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (m *MockRerankerRegistry) Close() error {
+	return nil
+}
+
 func TestTermiteNode_HandleApiRerank_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
@@ -174,11 +199,10 @@ func TestTermiteNode_HandleApiRerank_Success(t *testing.T) {
 	}
 
 	// Create mock registry with the mock model
-	mockRegistry := &RerankerRegistry{
+	mockRegistry := &MockRerankerRegistry{
 		models: map[string]reranking.Model{
 			"test_model": mockModel,
 		},
-		logger: logger,
 	}
 
 	// Create Termite node with reranker registry
@@ -279,11 +303,10 @@ func TestTermiteNode_HandleApiRerank_InvalidRequest(t *testing.T) {
 
 	// Create mock model (won't be called due to validation errors)
 	mockModel := &MockModel{}
-	mockRegistry := &RerankerRegistry{
+	mockRegistry := &MockRerankerRegistry{
 		models: map[string]reranking.Model{
 			"test_model": mockModel,
 		},
-		logger: logger,
 	}
 
 	node := &TermiteNode{
@@ -393,6 +416,88 @@ func (m *MockNER) GetCallCount() int32 {
 	return m.callCount.Load()
 }
 
+// MockNERRegistry implements NERRegistryInterface for testing
+type MockNERRegistry struct {
+	models       map[string]ner.Model
+	recognizers  map[string]ner.Recognizer
+	capabilities map[string][]string
+}
+
+func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
+	if model, ok := m.models[modelName]; ok {
+		return model, nil
+	}
+	return nil, fmt.Errorf("model not found: %s", modelName)
+}
+
+func (m *MockNERRegistry) GetRecognizer(modelName string) (ner.Recognizer, error) {
+	if m.recognizers == nil {
+		return nil, fmt.Errorf("recognizer not found: %s", modelName)
+	}
+	if rec, ok := m.recognizers[modelName]; ok {
+		return rec, nil
+	}
+	return nil, fmt.Errorf("recognizer not found: %s", modelName)
+}
+
+func (m *MockNERRegistry) List() []string {
+	names := make([]string, 0, len(m.models))
+	for name := range m.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (m *MockNERRegistry) ListRecognizers() []string {
+	if m.recognizers == nil {
+		return nil
+	}
+	names := make([]string, 0, len(m.recognizers))
+	for name := range m.recognizers {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (m *MockNERRegistry) ListWithCapabilities() map[string][]string {
+	if m.capabilities != nil {
+		return m.capabilities
+	}
+	result := make(map[string][]string)
+	for name := range m.models {
+		result[name] = []string{}
+	}
+	return result
+}
+
+func (m *MockNERRegistry) HasCapability(modelName, capability string) bool {
+	if m.capabilities == nil {
+		return false
+	}
+	caps, ok := m.capabilities[modelName]
+	if !ok {
+		return false
+	}
+	for _, c := range caps {
+		if c == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MockNERRegistry) IsRecognizer(modelName string) bool {
+	if m.recognizers == nil {
+		return false
+	}
+	_, ok := m.recognizers[modelName]
+	return ok
+}
+
+func (m *MockNERRegistry) Close() error {
+	return nil
+}
+
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
@@ -411,11 +516,10 @@ func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	}
 
 	// Create mock registry with the mock NER model
-	mockRegistry := &NERRegistry{
+	mockRegistry := &MockNERRegistry{
 		models: map[string]ner.Model{
 			"bert-base-ner": mockNER,
 		},
-		logger: logger,
 	}
 
 	// Create Termite node with NER registry
@@ -511,11 +615,10 @@ func TestTermiteNode_HandleApiNER_InvalidRequest(t *testing.T) {
 
 	// Create mock NER model
 	mockNER := &MockNER{}
-	mockRegistry := &NERRegistry{
+	mockRegistry := &MockNERRegistry{
 		models: map[string]ner.Model{
 			"bert-base-ner": mockNER,
 		},
-		logger: logger,
 	}
 
 	node := &TermiteNode{

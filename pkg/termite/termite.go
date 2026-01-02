@@ -22,38 +22,24 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"go.uber.org/zap"
 )
 
-// EmbedderProvider abstracts over eager and lazy embedder registries
-type EmbedderProvider interface {
-	Get(modelName string) (embeddings.Embedder, error)
-	List() []string
-	Close() error
-}
-
 type TermiteNode struct {
 	logger *zap.Logger
 
 	client *http.Client
 
-	// Embedder registry (eager or lazy loading)
-	embedderProvider EmbedderProvider
-
-	// Legacy eager registry (kept for backwards compatibility)
+	// Embedder registry (lazy loading with TTL-based unloading)
 	embedderRegistry *EmbedderRegistry
 
-	// Lazy registry (when keep_alive is configured)
-	lazyEmbedderRegistry *LazyEmbedderRegistry
-
 	cachedChunker         *CachedChunker
-	rerankerRegistry      *RerankerRegistry
+	rerankerRegistry      RerankerRegistryInterface
 	generatorRegistry     *GeneratorRegistry
-	nerRegistry           *NERRegistry
+	nerRegistry           NERRegistryInterface
 	seq2seqRegistry       *Seq2SeqRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
@@ -198,119 +184,161 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 	defer func() { _ = cachedChunker.Close() }()
 
-	// Initialize embedder registry (eager or lazy based on keep_alive config)
-	var embedderProvider EmbedderProvider
-	var embedderRegistry *EmbedderRegistry
-	var lazyEmbedderRegistry *LazyEmbedderRegistry
+	// Initialize embedder registry (lazy loading with TTL-based unloading)
+	embedderRegistry, err := NewEmbedderRegistry(
+		EmbedderConfig{
+			ModelsDir:       embedderModelsDir,
+			KeepAlive:       keepAlive,
+			MaxLoadedModels: uint64(config.MaxLoadedModels),
+		},
+		sessionManager,
+		zl.Named("embedder"),
+	)
+	if err != nil {
+		zl.Fatal("Failed to initialize embedder registry", zap.Error(err))
+	}
+	defer func() { _ = embedderRegistry.Close() }()
 
-	if keepAlive > 0 {
-		// Lazy loading mode: models loaded on demand, unloaded after keep_alive
-		lazyEmbedderRegistry, err = NewLazyEmbedderRegistry(
-			LazyEmbedderConfig{
-				ModelsDir:       embedderModelsDir,
+	// Apply per-model loading strategies
+	// Models with "eager" strategy are pinned (never evicted)
+	if len(config.ModelStrategies) > 0 {
+		var eagerModels []string
+		for modelName, strategy := range config.ModelStrategies {
+			if strategy == ConfigModelStrategiesEager {
+				eagerModels = append(eagerModels, modelName)
+			}
+		}
+		if len(eagerModels) > 0 {
+			zl.Info("Pinning eager models (will not be evicted)",
+				zap.Strings("models", eagerModels))
+			for _, modelName := range eagerModels {
+				if err := embedderRegistry.Pin(modelName); err != nil {
+					zl.Warn("Failed to pin model",
+						zap.String("model", modelName),
+						zap.Error(err))
+				}
+			}
+		}
+	}
+
+	// Preload specified models at startup (Ollama-compatible)
+	// Note: This preloads models that aren't already pinned
+	if len(config.Preload) > 0 {
+		if err := embedderRegistry.Preload(config.Preload); err != nil {
+			zl.Warn("Some models failed to preload", zap.Error(err))
+		}
+	}
+
+	// Initialize reranker registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var rerankerRegistry *RerankerRegistry
+	if rerankerModelsDir != "" {
+		rerankerRegistry, err = NewRerankerRegistry(
+			RerankerConfig{
+				ModelsDir:       rerankerModelsDir,
 				KeepAlive:       keepAlive,
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
 			},
 			sessionManager,
-			zl.Named("embedder"),
+			zl.Named("reranker"),
 		)
 		if err != nil {
-			zl.Fatal("Failed to initialize lazy embedder registry", zap.Error(err))
+			zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
 		}
-		defer func() { _ = lazyEmbedderRegistry.Close() }()
-		embedderProvider = lazyEmbedderRegistry
-
-		// Apply per-model loading strategies
-		// Models with "eager" strategy are pinned (never evicted)
-		if len(config.ModelStrategies) > 0 {
-			var eagerModels []string
-			for modelName, strategy := range config.ModelStrategies {
-				if strategy == ConfigModelStrategiesEager {
-					eagerModels = append(eagerModels, modelName)
-				}
-			}
-			if len(eagerModels) > 0 {
-				zl.Info("Pinning eager models (will not be evicted)",
-					zap.Strings("models", eagerModels))
-				for _, modelName := range eagerModels {
-					if err := lazyEmbedderRegistry.Pin(modelName); err != nil {
-						zl.Warn("Failed to pin model",
-							zap.String("model", modelName),
-							zap.Error(err))
-					}
-				}
-			}
-		}
-
-		// Preload specified models at startup (Ollama-compatible)
-		// Note: This preloads models that aren't already pinned
-		if len(config.Preload) > 0 {
-			if err := lazyEmbedderRegistry.Preload(config.Preload); err != nil {
-				zl.Warn("Some models failed to preload", zap.Error(err))
-			}
-		}
-	} else {
-		// Eager loading mode: all models loaded at startup (legacy behavior)
-		embedderRegistry, err = NewEmbedderRegistry(embedderModelsDir, sessionManager, zl.Named("embedder"))
-		if err != nil {
-			zl.Fatal("Failed to initialize embedder registry", zap.Error(err))
-		}
-		if embedderRegistry != nil {
-			defer func() { _ = embedderRegistry.Close() }()
-		}
-		embedderProvider = embedderRegistry
-	}
-
-	// Initialize reranker registry with optional model directory support
-	// If models_dir is set in config, Termite will discover and load reranker models
-	// If not set, reranking endpoint will not be available
-	rerankerRegistry, err := NewRerankerRegistry(rerankerModelsDir, sessionManager, zl.Named("reranker"))
-	if err != nil {
-		zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
-	}
-	if rerankerRegistry != nil {
 		defer func() { _ = rerankerRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := rerankerRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some reranker models", zap.Error(err))
+			}
+		}
 	}
 
-	// Initialize generator registry with optional model directory support
-	// If models_dir is set in config, Termite will discover and load generator (LLM) models
-	// If not set, generation endpoint will not be available
-	generatorRegistry, err := NewGeneratorRegistry(generatorModelsDir, sessionManager, zl.Named("generator"))
-	if err != nil {
-		zl.Fatal("Failed to initialize generator registry", zap.Error(err))
-	}
-	if generatorRegistry != nil {
+	// Initialize generator registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var generatorRegistry *GeneratorRegistry
+	if generatorModelsDir != "" {
+		generatorRegistry, err = NewGeneratorRegistry(
+			GeneratorConfig{
+				ModelsDir:       generatorModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+			},
+			sessionManager,
+			zl.Named("generator"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize generator registry", zap.Error(err))
+		}
 		defer func() { _ = generatorRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := generatorRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some generator models", zap.Error(err))
+			}
+		}
 	}
 
-	// Initialize NER registry with optional model directory support
-	// If models_dir is set in config, Termite will discover and load NER models
-	// If not set, NER endpoint will not be available
+	// Initialize NER registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var nerRegistry *NERRegistry
 	var nerModelsDir string
 	if config.ModelsDir != "" {
 		nerModelsDir = filepath.Join(config.ModelsDir, "recognizers")
 	}
-	nerRegistry, err := NewNERRegistry(nerModelsDir, sessionManager, zl.Named("ner"))
-	if err != nil {
-		zl.Fatal("Failed to initialize NER registry", zap.Error(err))
-	}
-	if nerRegistry != nil {
+	if nerModelsDir != "" {
+		nerRegistry, err = NewNERRegistry(
+			NERConfig{
+				ModelsDir:       nerModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+			},
+			sessionManager,
+			zl.Named("ner"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize NER registry", zap.Error(err))
+		}
 		defer func() { _ = nerRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := nerRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some NER models", zap.Error(err))
+			}
+		}
 	}
 
-	// Initialize Seq2Seq registry with optional model directory support
-	// If models_dir is set in config, Termite will discover and load Seq2Seq models
-	// If not set, generate endpoint will not be available
-	var generatorsModelsDir string
+	// Initialize Seq2Seq registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var seq2seqRegistry *Seq2SeqRegistry
+	var seq2seqModelsDir string
 	if config.ModelsDir != "" {
-		generatorsModelsDir = filepath.Join(config.ModelsDir, "rewriters")
+		seq2seqModelsDir = filepath.Join(config.ModelsDir, "rewriters")
 	}
-	seq2seqRegistry, err := NewSeq2SeqRegistry(generatorsModelsDir, sessionManager, zl.Named("seq2seq"))
-	if err != nil {
-		zl.Fatal("Failed to initialize Seq2Seq registry", zap.Error(err))
-	}
-	if seq2seqRegistry != nil {
+	if seq2seqModelsDir != "" {
+		seq2seqRegistry, err = NewSeq2SeqRegistry(
+			Seq2SeqConfig{
+				ModelsDir:       seq2seqModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+			},
+			sessionManager,
+			zl.Named("seq2seq"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize Seq2Seq registry", zap.Error(err))
+		}
 		defer func() { _ = seq2seqRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := seq2seqRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some Seq2Seq models", zap.Error(err))
+			}
+		}
 	}
 
 	t := &http.Transport{
@@ -371,9 +399,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	node := &TermiteNode{
 		logger: zl,
 
-		embedderProvider:      embedderProvider,
 		embedderRegistry:      embedderRegistry,
-		lazyEmbedderRegistry:  lazyEmbedderRegistry,
 		cachedChunker:         cachedChunker,
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,

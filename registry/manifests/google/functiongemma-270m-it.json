@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "name": "functiongemma-270m-it",
+  "type": "generator",
+  "description": "",
+  "source": "google/functiongemma-270m-it",
+  "files": [
+    {
+      "name": "genai_config.json",
+      "digest": "sha256:382622f6cb1ea9051990d7275e1202909b2d67b7e5d5988db90f36a1b18cc8a8",
+      "size": 1299
+    },
+    {
+      "name": "model.onnx",
+      "digest": "sha256:457244036a596be667c90f3d2da64a20712ec69ac668b97b256302fa904e3a47",
+      "size": 183072
+    },
+    {
+      "name": "model.onnx.data",
+      "digest": "sha256:4373d39ce0f5ccfc5ed4ed748c1a3a26a72b1038f326632dddbcfc0a7a75f6d9",
+      "size": 1139539968
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:b6b09a0b4a803ad453063ca4bb49a784540e8120004e2450e025df2b27d41fb2",
+      "size": 33384899
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:c33878647bdc69ce85d4b9aeef953815afd8405f8d85001ab0bbb89aa14d2554",
+      "size": 1155714
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:d39df6f8ddb132a622394f05a603b166ba5f22d485483e30d06c1821ef4ac9b4",
+      "size": 706
+    }
+  ],
+  "owner": "google",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/google/functiongemma-270m-it",
+    "downloadedAt": "2026-01-02T03:20:27.246205+00:00"
+  }
+}

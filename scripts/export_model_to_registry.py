@@ -899,6 +899,7 @@ def export_generator_model(
     model_id: str,
     output_dir: Path,
     variants: list[str] | None = None,
+    hf_token: str | None = None,
 ) -> Path:
     """
     Export a generative LLM to ONNX format using ONNX Runtime GenAI model builder.
@@ -914,10 +915,11 @@ def export_generator_model(
             - "i4": INT4 quantized for CPU
             - "i4-cuda": INT4 quantized for CUDA
             - "i4-dml": INT4 quantized for DirectML (Windows)
+        hf_token: HuggingFace API token for gated models
     """
     import subprocess
 
-    variants = variants or ["f16"]
+    variants = variants or ["f32"]
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Exporting generator model: {model_id}")
@@ -926,6 +928,7 @@ def export_generator_model(
 
     # Map variant names to builder arguments
     VARIANT_CONFIG = {
+        "f32": {"precision": "fp32", "execution_provider": "cpu"},
         "f16": {"precision": "fp16", "execution_provider": "cpu"},
         "i4": {"precision": "int4", "execution_provider": "cpu"},
         "i4-cuda": {"precision": "int4", "execution_provider": "cuda"},
@@ -943,8 +946,8 @@ def export_generator_model(
         exec_provider = config["execution_provider"]
 
         # Determine output path for this variant
-        if variant == "f16":
-            # Base variant goes directly in output_dir
+        if variant in ("f32", "f16"):
+            # Base variants go directly in output_dir
             variant_dir = output_dir
         else:
             # Other variants go in subdirectories named by variant
@@ -968,11 +971,17 @@ def export_generator_model(
         logger.info(f"  Running: {' '.join(cmd)}")
 
         try:
+            # Prepare environment with HF_TOKEN if provided
+            env = os.environ.copy()
+            if hf_token:
+                env["HF_TOKEN"] = hf_token
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 check=True,
+                env=env,
             )
             if result.stdout:
                 for line in result.stdout.strip().split('\n'):
@@ -998,7 +1007,84 @@ def export_generator_model(
             rel_path = f.relative_to(output_dir)
             logger.info(f"  {rel_path}: {size_mb:.2f} MB")
 
+    # Detect and add tool calling format to genai_config.json
+    detect_and_add_tool_call_format(output_dir)
+
     return output_dir
+
+
+def detect_tool_call_format(model_dir: Path) -> str | None:
+    """Detect the tool calling format based on tokenizer config files.
+
+    Checks special_tokens_map.json and tokenizer_config.json for known
+    tool calling token patterns.
+
+    Returns:
+        Tool call format name (e.g., "functiongemma") or None if not detected.
+    """
+    # Check for FunctionGemma tokens
+    functiongemma_tokens = [
+        "start_function_declaration",
+        "end_function_declaration",
+        "start_function_call",
+        "end_function_call",
+    ]
+
+    # Check special_tokens_map.json
+    special_tokens_path = model_dir / "special_tokens_map.json"
+    if special_tokens_path.exists():
+        try:
+            with open(special_tokens_path) as f:
+                special_tokens = json.load(f)
+                content = json.dumps(special_tokens).lower()
+                if all(token in content for token in functiongemma_tokens):
+                    return "functiongemma"
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    # Check tokenizer_config.json
+    tokenizer_config_path = model_dir / "tokenizer_config.json"
+    if tokenizer_config_path.exists():
+        try:
+            with open(tokenizer_config_path) as f:
+                tokenizer_config = json.load(f)
+                content = json.dumps(tokenizer_config).lower()
+                if all(token in content for token in functiongemma_tokens):
+                    return "functiongemma"
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    return None
+
+
+def detect_and_add_tool_call_format(model_dir: Path) -> None:
+    """Detect tool calling format and add it to genai_config.json.
+
+    This modifies the genai_config.json in place to add the tool_call_format
+    field if a known tool calling format is detected.
+    """
+    tool_format = detect_tool_call_format(model_dir)
+    if not tool_format:
+        return
+
+    genai_config_path = model_dir / "genai_config.json"
+    if not genai_config_path.exists():
+        logger.warning(f"genai_config.json not found in {model_dir}, skipping tool format detection")
+        return
+
+    try:
+        with open(genai_config_path) as f:
+            config = json.load(f)
+
+        # Add tool_call_format field
+        config["tool_call_format"] = tool_format
+
+        with open(genai_config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+        logger.info(f"Added tool_call_format: {tool_format} to genai_config.json")
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Failed to update genai_config.json: {e}")
 
 
 def generate_manifest(
@@ -2130,16 +2216,21 @@ def test_generator_model(model_dir: Path) -> bool:
             tokens = tokenizer.encode(test_prompt)
             params = og.GeneratorParams(model)
             params.set_search_options(max_length=20, do_sample=False)
-            params.input_ids = tokens
 
+            # Try newer API first (append_tokens), fall back to legacy input_ids
             generator = og.Generator(model, params)
+            try:
+                generator.append_tokens(tokens)
+            except (AttributeError, TypeError):
+                # Legacy API: set input_ids on params before creating generator
+                params.input_ids = tokens
+                generator = og.Generator(model, params)
 
             # Generate a few tokens
             generated_tokens = []
             for _ in range(5):
                 if generator.is_done():
                     break
-                generator.compute_logits()
                 generator.generate_next_token()
                 new_token = generator.get_next_tokens()[0]
                 generated_tokens.append(new_token)
@@ -2222,10 +2313,11 @@ def cmd_export(args):
 
     # Export model using appropriate function
     logger.info("\n[1/4] Exporting model to ONNX...")
+    hf_token = getattr(args, "hf_token", None)
     if args.model_type == "rewriter":
         export_seq2seq_model(model_id, model_dir, args.variants)
     elif args.model_type == "generator":
-        export_generator_model(model_id, model_dir, args.variants)
+        export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
     elif recognizer_arch == "gliner":
         export_gliner_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "rebel":
@@ -2364,9 +2456,10 @@ Variant Types:
   i4-cuda   INT4 quantization for CUDA (generators only)
   i4-dml    INT4 quantization for DirectML/Windows (generators only)
 
-Environment Variables (for --upload and gc):
-  AWS_ACCESS_KEY_ID      Access key (standard AWS env var, works with R2)
-  AWS_SECRET_ACCESS_KEY  Secret key (standard AWS env var, works with R2)
+Environment Variables:
+  HF_TOKEN               HuggingFace API token for gated models (or use --hf-token)
+  AWS_ACCESS_KEY_ID      Access key (for --upload and gc, standard AWS env var, works with R2)
+  AWS_SECRET_ACCESS_KEY  Secret key (for --upload and gc, standard AWS env var, works with R2)
   AWS_ENDPOINT_URL       S3-compatible endpoint (e.g., https://<account>.r2.cloudflarestorage.com)
         """,
     )
@@ -2472,6 +2565,10 @@ Environment Variables (for --upload and gc):
         export_parser.add_argument(
             "--r2-endpoint",
             help="S3-compatible endpoint URL (or set AWS_ENDPOINT_URL env var)",
+        )
+        export_parser.add_argument(
+            "--hf-token",
+            help="HuggingFace API token for gated models (or set HF_TOKEN env var)",
         )
         # Store the model type for later
         export_parser.set_defaults(model_type=model_type)

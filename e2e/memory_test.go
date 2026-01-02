@@ -54,8 +54,8 @@ func TestMemoryGrowthWithVaryingShapes(t *testing.T) {
 	defer sm.Close()
 
 	// Create embedder registry
-	registry, err := termite.NewLazyEmbedderRegistry(
-		termite.LazyEmbedderConfig{
+	registry, err := termite.NewEmbedderRegistry(
+		termite.EmbedderConfig{
 			ModelsDir:       embedderModelsDir,
 			KeepAlive:       5 * time.Minute,
 			MaxLoadedModels: 1,
@@ -143,8 +143,8 @@ func TestMemoryWithRepeatedShapes(t *testing.T) {
 	sm := hugot.NewSessionManager()
 	defer sm.Close()
 
-	registry, err := termite.NewLazyEmbedderRegistry(
-		termite.LazyEmbedderConfig{
+	registry, err := termite.NewEmbedderRegistry(
+		termite.EmbedderConfig{
 			ModelsDir:       embedderModelsDir,
 			KeepAlive:       5 * time.Minute,
 			MaxLoadedModels: 1,
@@ -238,8 +238,8 @@ func BenchmarkMemoryPerShape(b *testing.B) {
 	sm := hugot.NewSessionManager()
 	defer sm.Close()
 
-	registry, err := termite.NewLazyEmbedderRegistry(
-		termite.LazyEmbedderConfig{
+	registry, err := termite.NewEmbedderRegistry(
+		termite.EmbedderConfig{
 			ModelsDir:       embedderModelsDir,
 			KeepAlive:       5 * time.Minute,
 			MaxLoadedModels: 1,

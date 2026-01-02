@@ -69,19 +69,50 @@ func (m Message) HasImages() bool {
 	return false
 }
 
+// ToolDefinition represents a tool (function) the model can call.
+type ToolDefinition struct {
+	Type     string             `json:"type"`     // Always "function"
+	Function FunctionDefinition `json:"function"` // The function definition
+}
+
+// FunctionDefinition describes a callable function.
+type FunctionDefinition struct {
+	Name        string                 `json:"name"`                  // Function name
+	Description string                 `json:"description,omitempty"` // What the function does
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`  // JSON Schema for parameters
+	Strict      bool                   `json:"strict,omitempty"`      // Enforce strict validation
+}
+
+// ToolCall represents a function call made by the model.
+type ToolCall struct {
+	ID       string           `json:"id"`       // Unique identifier
+	Type     string           `json:"type"`     // Always "function"
+	Function ToolCallFunction `json:"function"` // The function being called
+}
+
+// ToolCallFunction contains the function name and arguments.
+type ToolCallFunction struct {
+	Name      string `json:"name"`      // Function name
+	Arguments string `json:"arguments"` // JSON-encoded arguments
+}
+
 // GenerateOptions configures text generation parameters.
 type GenerateOptions struct {
-	MaxTokens   int     `json:"max_tokens,omitempty"`   // Maximum tokens to generate
-	Temperature float32 `json:"temperature,omitempty"` // Sampling temperature (0.0 = deterministic)
-	TopP        float32 `json:"top_p,omitempty"`       // Nucleus sampling probability
-	TopK        int     `json:"top_k,omitempty"`       // Top-k sampling
+	MaxTokens          int              `json:"max_tokens,omitempty"`           // Maximum tokens to generate
+	Temperature        float32          `json:"temperature,omitempty"`          // Sampling temperature (0.0 = deterministic)
+	TopP               float32          `json:"top_p,omitempty"`                // Nucleus sampling probability
+	TopK               int              `json:"top_k,omitempty"`                // Top-k sampling
+	Tools              []ToolDefinition `json:"tools,omitempty"`                // Tools the model can call
+	ToolChoice         string           `json:"tool_choice,omitempty"`          // "auto", "none", or "required"
+	ForcedFunctionName string           `json:"forced_function_name,omitempty"` // Force calling a specific function by name
 }
 
 // GenerateResult contains the output from text generation.
 type GenerateResult struct {
-	Text         string `json:"text"`          // Generated text
-	TokensUsed   int    `json:"tokens_used"`   // Number of tokens generated
-	FinishReason string `json:"finish_reason"` // "stop" or "length"
+	Text         string     `json:"text"`                    // Generated text
+	TokensUsed   int        `json:"tokens_used"`             // Number of tokens generated
+	FinishReason string     `json:"finish_reason"`           // "stop", "length", or "tool_calls"
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`    // Tool calls made by the model
 }
 
 // TokenDelta represents a single generated token in streaming mode.
@@ -120,4 +151,22 @@ type StreamingGenerator interface {
 		errs <-chan error,
 		err error,
 	)
+}
+
+// ToolSupporter is implemented by generators that support tool calling.
+// Use type assertion to check if a generator supports tools:
+//
+//	if ts, ok := generator.(ToolSupporter); ok && ts.SupportsTools() {
+//	    parser := ts.ToolParser()
+//	    // use parser to format tools and parse output
+//	}
+type ToolSupporter interface {
+	// SupportsTools returns true if this generator supports tool calling.
+	SupportsTools() bool
+
+	// ToolParser returns the tool parser for this generator, or nil if not supported.
+	ToolParser() ToolParser
+
+	// ToolCallFormat returns the tool call format name (e.g., "functiongemma").
+	ToolCallFormat() string
 }

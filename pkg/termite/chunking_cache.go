@@ -69,7 +69,15 @@ func NewCachedChunker(
 	}
 
 	// Create model registry with session manager
-	registry, err := NewChunkerRegistry(modelsDir, sessionManager, logger.Named("registry"))
+	// Note: chunker registry uses eager loading (KeepAlive=0) since chunkers are always needed
+	registry, err := NewChunkerRegistry(
+		ChunkerConfig{
+			ModelsDir: modelsDir,
+			KeepAlive: 0, // Eager loading - chunkers are always needed
+		},
+		sessionManager,
+		logger.Named("registry"),
+	)
 	if err != nil {
 		cache.Stop()
 		_ = fixedChunker.Close()
