@@ -100,15 +100,22 @@ func NewRerankerRegistry(
 	registry.cache = ttlcache.New(cacheOpts...)
 
 	// Set up eviction callback to close unloaded models
+	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
+	// (manual deletion during Close() handles cleanup synchronously)
 	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, reranking.Model]) {
+		// Skip closing on manual deletion - Close() handles cleanup synchronously
+		if reason == ttlcache.EvictionReasonDeleted {
+			logger.Debug("Reranker model removed from cache (cleanup handled separately)",
+				zap.String("model", item.Key()))
+			return
+		}
+
 		reasonStr := "unknown"
 		switch reason {
 		case ttlcache.EvictionReasonExpired:
 			reasonStr = "expired (keep-alive timeout)"
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
-		case ttlcache.EvictionReasonDeleted:
-			reasonStr = "manually deleted"
 		}
 		logger.Info("Evicting reranker model from cache",
 			zap.String("model", item.Key()),
@@ -322,8 +329,24 @@ func (r *RerankerRegistry) PreloadAll() error {
 func (r *RerankerRegistry) Close() error {
 	r.logger.Info("Closing lazy reranker registry")
 
-	// Stop cache and delete all cached models
+	// Stop cache first to prevent new evictions
 	r.cache.Stop()
+
+	// Close all cached models synchronously (don't rely on async eviction callbacks)
+	for _, key := range r.cache.Keys() {
+		if item := r.cache.Get(key); item != nil {
+			model := item.Value()
+			r.logger.Debug("Closing cached reranker model",
+				zap.String("model", key))
+			if err := model.Close(); err != nil {
+				r.logger.Warn("Error closing reranker model",
+					zap.String("model", key),
+					zap.Error(err))
+			}
+		}
+	}
+
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
 
 	return nil

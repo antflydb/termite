@@ -96,15 +96,22 @@ func NewSeq2SeqRegistry(
 	registry.cache = ttlcache.New(cacheOpts...)
 
 	// Set up eviction callback to close unloaded models
+	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
+	// (manual deletion during Close() handles cleanup synchronously)
 	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, seq2seq.Model]) {
+		// Skip closing on manual deletion - Close() handles cleanup synchronously
+		if reason == ttlcache.EvictionReasonDeleted {
+			logger.Debug("Seq2Seq model removed from cache (cleanup handled separately)",
+				zap.String("model", item.Key()))
+			return
+		}
+
 		reasonStr := "unknown"
 		switch reason {
 		case ttlcache.EvictionReasonExpired:
 			reasonStr = "expired (keep-alive timeout)"
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
-		case ttlcache.EvictionReasonDeleted:
-			reasonStr = "manually deleted"
 		}
 		logger.Info("Evicting Seq2Seq model from cache",
 			zap.String("model", item.Key()),
@@ -307,8 +314,24 @@ func (r *Seq2SeqRegistry) PreloadAll() error {
 func (r *Seq2SeqRegistry) Close() error {
 	r.logger.Info("Closing lazy Seq2Seq registry")
 
-	// Stop cache and delete all cached models
+	// Stop cache first to prevent new evictions
 	r.cache.Stop()
+
+	// Close all cached models synchronously (don't rely on async eviction callbacks)
+	for _, key := range r.cache.Keys() {
+		if item := r.cache.Get(key); item != nil {
+			model := item.Value()
+			r.logger.Debug("Closing cached Seq2Seq model",
+				zap.String("model", key))
+			if err := model.Close(); err != nil {
+				r.logger.Warn("Error closing Seq2Seq model",
+					zap.String("model", key),
+					zap.Error(err))
+			}
+		}
+	}
+
+	// Clear the cache (eviction callbacks may still fire but models are already closed)
 	r.cache.DeleteAll()
 
 	return nil

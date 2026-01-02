@@ -35,10 +35,10 @@ const (
 	questionatorModelName = "lmqg/flan-t5-small-squad-qg"
 )
 
-// TestQuestionateE2E tests the Questionator (Seq2Seq question generation) pipeline:
+// TestQuestionGenerateE2E tests the Questionator (Seq2Seq question generation) pipeline:
 // 1. Starts termite server with Questionator model
 // 2. Tests question generation from context
-func TestQuestionateE2E(t *testing.T) {
+func TestQuestionGenerateE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}

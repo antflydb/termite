@@ -37,6 +37,10 @@ all: build
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+	@echo ""
+	@echo "E2E Testing Options:"
+	@echo "  E2E_TEST=TestName    Run specific test (e.g., make e2e E2E_TEST=TestEmbedE2E)"
+	@echo "  E2E_TIMEOUT=30m      Set test timeout (default: 15m)"
 
 ##@ Development
 
@@ -355,11 +359,22 @@ else
     endif
 endif
 
-.PHONY: e2e
-e2e: download-omni-deps ## Run E2E tests with omni build (ONNX + XLA).
+# E2E test configuration
+E2E_TEST ?=
+E2E_TIMEOUT ?= 15m
+
+.PHONY: e2e e2e-deps
+
+e2e-deps: download-omni-deps ## Download dependencies for E2E tests.
+
+e2e: e2e-deps ## Run E2E tests with omni build (ONNX + XLA).
 	@echo "Running E2E tests with omni build..."
-	@echo "This will download the CLIP model (~500MB) on first run."
+	@echo "This will download models on first run."
 	@echo "Platform: $(PLATFORM)"
+ifdef E2E_TEST
+	@echo "Test: $(E2E_TEST)"
+endif
+	@echo "Timeout: $(E2E_TIMEOUT)"
 	export ONNXRUNTIME_ROOT=$(ONNXRUNTIME_ROOT) && \
 	export PJRT_ROOT=$(PJRT_ROOT) && \
 	export CGO_ENABLED=1 && \
@@ -367,5 +382,5 @@ e2e: download-omni-deps ## Run E2E tests with omni build (ONNX + XLA).
 	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
 	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
 	cd e2e && go mod tidy && \
-	go test -v -tags="onnx,ORT,xla,XLA" -timeout 15m ./...
+	go test -v -tags="onnx,ORT,xla,XLA" -timeout $(E2E_TIMEOUT) $(if $(E2E_TEST),-run $(E2E_TEST)) ./...
 

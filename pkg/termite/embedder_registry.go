@@ -110,18 +110,26 @@ func NewEmbedderRegistry(
 	registry.cache = ttlcache.New(cacheOpts...)
 
 	// Set up eviction callback to close models
+	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
+	// (manual deletion during Close() handles cleanup synchronously)
 	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, embeddings.Embedder]) {
 		modelName := item.Key()
 		embedder := item.Value()
 
-		// Check if model was moved to pinned (don't close in that case)
-		registry.pinnedMu.RLock()
-		isPinned := registry.pinned[modelName] == embedder
-		registry.pinnedMu.RUnlock()
+		// Skip closing on manual deletion - Close() handles cleanup synchronously
+		if reason == ttlcache.EvictionReasonDeleted {
+			// Check if model was moved to pinned (don't close in that case)
+			registry.pinnedMu.RLock()
+			isPinned := registry.pinned[modelName] == embedder
+			registry.pinnedMu.RUnlock()
 
-		if isPinned {
-			logger.Debug("Model moved to pinned, skipping close",
-				zap.String("model", modelName))
+			if isPinned {
+				logger.Debug("Model moved to pinned, skipping close",
+					zap.String("model", modelName))
+			} else {
+				logger.Debug("Embedder removed from cache (cleanup handled separately)",
+					zap.String("model", modelName))
+			}
 			return
 		}
 
@@ -131,8 +139,6 @@ func NewEmbedderRegistry(
 			reasonStr = "expired (keep-alive timeout)"
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
-		case ttlcache.EvictionReasonDeleted:
-			reasonStr = "manually deleted"
 		}
 
 		logger.Info("Unloading embedder model",
@@ -518,8 +524,26 @@ func (r *EmbedderRegistry) Preload(modelNames []string) error {
 func (r *EmbedderRegistry) Close() error {
 	r.logger.Info("Closing lazy embedder registry")
 
-	// Stop cache and delete all cached models
+	// Stop cache first to prevent new evictions
 	r.cache.Stop()
+
+	// Close all cached models synchronously (don't rely on async eviction callbacks)
+	for _, key := range r.cache.Keys() {
+		if item := r.cache.Get(key); item != nil {
+			embedder := item.Value()
+			r.logger.Debug("Closing cached embedder",
+				zap.String("model", key))
+			if closer, ok := embedder.(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil {
+					r.logger.Warn("Error closing embedder",
+						zap.String("model", key),
+						zap.Error(err))
+				}
+			}
+		}
+	}
+
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
 
 	// Close all pinned models
