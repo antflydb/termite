@@ -53,6 +53,7 @@ type ChunkResult struct {
 func NewCachedChunker(
 	modelsDir string,
 	sessionManager *hugot.SessionManager,
+	poolSize int,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {
 	// Create memory cache with 2-minute TTL (same as embeddings)
@@ -73,7 +74,8 @@ func NewCachedChunker(
 	registry, err := NewChunkerRegistry(
 		ChunkerConfig{
 			ModelsDir: modelsDir,
-			KeepAlive: 0, // Eager loading - chunkers are always needed
+			KeepAlive: 0,        // Eager loading - chunkers are always needed
+			PoolSize:  poolSize, // Number of concurrent pipelines per model
 		},
 		sessionManager,
 		logger.Named("registry"),

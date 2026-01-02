@@ -77,6 +77,7 @@ type NERRegistry struct {
 	// Configuration
 	keepAlive       time.Duration
 	maxLoadedModels uint64
+	poolSize        int
 }
 
 // NERConfig configures the NER registry
@@ -84,6 +85,7 @@ type NERConfig struct {
 	ModelsDir       string
 	KeepAlive       time.Duration // How long to keep models loaded (0 = forever)
 	MaxLoadedModels uint64        // Max models in memory (0 = unlimited)
+	PoolSize        int           // Number of concurrent pipelines per model (0 = default)
 }
 
 // NewNERRegistry creates a new lazy-loading NER registry
@@ -101,6 +103,11 @@ func NewNERRegistry(
 		keepAlive = ttlcache.NoTTL // Never expire
 	}
 
+	poolSize := config.PoolSize
+	if poolSize <= 0 {
+		poolSize = min(runtime.NumCPU(), 4)
+	}
+
 	registry := &NERRegistry{
 		modelsDir:       config.ModelsDir,
 		sessionManager:  sessionManager,
@@ -108,6 +115,7 @@ func NewNERRegistry(
 		discovered:      make(map[string]*NERModelInfo),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
+		poolSize:        poolSize,
 	}
 
 	// Configure TTL cache with LRU eviction
@@ -188,7 +196,7 @@ func (r *NERRegistry) discoverModels() error {
 	}
 
 	// Pool size for concurrent pipeline access
-	poolSize := min(runtime.NumCPU(), 4)
+	poolSize := r.poolSize
 
 	for _, dm := range discovered {
 		modelPath := dm.Path

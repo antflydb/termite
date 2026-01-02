@@ -178,7 +178,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// Initialize chunker with optional model directory support
 	// If models_dir is set in config, Termite will discover and load chunker models
 	// If not set, Termite falls back to semantic-only chunking
-	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, zl.Named("chunker"))
+	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, config.PoolSize, zl.Named("chunker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
@@ -190,6 +190,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			ModelsDir:       embedderModelsDir,
 			KeepAlive:       keepAlive,
 			MaxLoadedModels: uint64(config.MaxLoadedModels),
+			PoolSize:        config.PoolSize,
 		},
 		sessionManager,
 		zl.Named("embedder"),
@@ -238,6 +239,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				ModelsDir:       rerankerModelsDir,
 				KeepAlive:       keepAlive,
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
+				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
 			zl.Named("reranker"),
@@ -294,6 +296,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				ModelsDir:       nerModelsDir,
 				KeepAlive:       keepAlive,
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
+				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
 			zl.Named("ner"),

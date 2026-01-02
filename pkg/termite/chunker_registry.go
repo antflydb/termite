@@ -54,6 +54,7 @@ type ChunkerRegistry struct {
 	// Configuration
 	keepAlive       time.Duration
 	maxLoadedModels uint64
+	poolSize        int
 }
 
 // ChunkerConfig configures the lazy chunker registry
@@ -61,6 +62,7 @@ type ChunkerConfig struct {
 	ModelsDir       string
 	KeepAlive       time.Duration // How long to keep models loaded (0 = forever)
 	MaxLoadedModels uint64        // Max models in memory (0 = unlimited)
+	PoolSize        int           // Number of concurrent pipelines per model (0 = default)
 }
 
 // NewChunkerRegistry creates a new lazy-loading chunker registry
@@ -78,6 +80,11 @@ func NewChunkerRegistry(
 		keepAlive = ttlcache.NoTTL // Never expire
 	}
 
+	poolSize := config.PoolSize
+	if poolSize <= 0 {
+		poolSize = min(runtime.NumCPU(), 4)
+	}
+
 	registry := &ChunkerRegistry{
 		modelsDir:       config.ModelsDir,
 		sessionManager:  sessionManager,
@@ -85,6 +92,7 @@ func NewChunkerRegistry(
 		discovered:      make(map[string]*ChunkerModelInfo),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
+		poolSize:        poolSize,
 	}
 
 	// Configure TTL cache with LRU eviction
@@ -165,8 +173,7 @@ func (r *ChunkerRegistry) discoverModels() error {
 	}
 
 	// Pool size for concurrent pipeline access
-	// Cap at 4 to avoid excessive memory usage (each pipeline loads full model)
-	poolSize := min(runtime.NumCPU(), 4)
+	poolSize := r.poolSize
 
 	for _, dm := range discovered {
 		modelPath := dm.Path
