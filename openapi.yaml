@@ -518,6 +518,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /decode:
+    post:
+      summary: Decode text using T5Gemma-2 decoder
+      description: |
+        Generate text using the T5Gemma-2 decoder for autoregressive text generation.
+        This is a novel capability that uses the decoder component of encoder-decoder models.
+
+        ## Models
+
+        - Uses T5Gemma-2 models from `models_dir/rewriters/` that have decoder components
+        - Requires decoder.onnx and decoder-init.onnx files
+
+        ## Use Cases
+
+        - **Text Continuation**: Generate text continuations from prompts
+        - **Embedding Inversion**: Reconstruct text from embeddings (experimental)
+        - **Guided Generation**: Generate text conditioned on encoder outputs
+
+        ## Example
+
+        ```json
+        {
+          "model": "google/t5gemma-2-270m",
+          "prompt": "The meaning of life is"
+        }
+        ```
+      operationId: decodeText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecodeRequest'
+      responses:
+        '200':
+          description: Text decoded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecodeResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found or does not support decoding
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Decode service unavailable (no compatible models)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
@@ -1007,6 +1071,55 @@ components:
             items:
               type: string
           description: Rewritten texts (array of arrays, one per input, multiple per beam)
+    DecodeRequest:
+      type: object
+      required:
+        - model
+        - prompt
+      properties:
+        model:
+          type: string
+          description: Name of T5Gemma-2 or compatible decoder model
+          example: google/t5gemma-2-270m
+        prompt:
+          type: string
+          description: Input prompt for text generation
+          example: "The meaning of life is"
+        max_tokens:
+          type: integer
+          description: Maximum number of tokens to generate (default 256)
+          default: 256
+        temperature:
+          type: number
+          format: float
+          description: Sampling temperature (default 1.0)
+          default: 1.0
+        top_p:
+          type: number
+          format: float
+          description: Nucleus sampling probability (default 1.0)
+          default: 1.0
+    DecodeResponse:
+      type: object
+      required:
+        - model
+        - texts
+      properties:
+        model:
+          type: string
+          description: Name of model used for decoding
+        texts:
+          type: array
+          items:
+            type: string
+          description: Generated text sequences
+        tokens:
+          type: array
+          items:
+            type: array
+            items:
+              type: integer
+          description: Token IDs for each generated sequence (optional)
     ModelsResponse:
       type: object
       required:

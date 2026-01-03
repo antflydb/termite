@@ -78,16 +78,21 @@ func TestMain(m *testing.M) {
 
 	fmt.Printf("E2E Test Setup: Using models directory: %s\n", testModelsDir)
 
-	// Download models from registry
-	if err := downloadTestModels(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to download test models: %v\n", err)
-		os.Exit(1)
-	}
+	// Skip model downloads if SKIP_MODEL_DOWNLOAD is set (useful for running individual tests)
+	if os.Getenv("SKIP_MODEL_DOWNLOAD") != "true" {
+		// Download models from registry
+		if err := downloadTestModels(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to download test models: %v\n", err)
+			os.Exit(1)
+		}
 
-	// Download HuggingFace models
-	if err := downloadHuggingFaceModels(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to download HuggingFace models: %v\n", err)
-		os.Exit(1)
+		// Download HuggingFace models
+		if err := downloadHuggingFaceModels(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to download HuggingFace models: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("Skipping model downloads (SKIP_MODEL_DOWNLOAD=true)\n")
 	}
 
 	// Run tests

@@ -26,6 +26,7 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 // Seq2SeqModelInfo holds metadata about a discovered Seq2Seq model (not loaded yet)
@@ -46,6 +47,9 @@ type Seq2SeqRegistry struct {
 
 	// Loaded models with TTL cache
 	cache *ttlcache.Cache[string, seq2seq.Model]
+
+	// Singleflight to prevent concurrent loads of the same model
+	sfGroup singleflight.Group
 
 	// Configuration
 	keepAlive       time.Duration
@@ -189,9 +193,10 @@ func (r *Seq2SeqRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns a Seq2Seq model by name, loading it if necessary
+// Get returns a Seq2Seq model by name, loading it if necessary.
+// Uses singleflight to prevent concurrent loads of the same model.
 func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
-	// Check cache first
+	// Check cache first (fast path)
 	if item := r.cache.Get(modelName); item != nil {
 		r.logger.Debug("Seq2Seq cache hit", zap.String("model", modelName))
 		return item.Value(), nil
@@ -206,8 +211,29 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 		return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
 	}
 
-	// Load the model
-	return r.loadModel(info)
+	// Use singleflight to prevent concurrent loads of the same model
+	result, err, shared := r.sfGroup.Do(modelName, func() (interface{}, error) {
+		// Double-check cache in case another goroutine loaded while we waited
+		if item := r.cache.Get(modelName); item != nil {
+			r.logger.Debug("Seq2Seq cache hit during singleflight",
+				zap.String("model", modelName))
+			return item.Value(), nil
+		}
+
+		// Load the model
+		return r.loadModel(info)
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if shared {
+		r.logger.Debug("Seq2Seq singleflight shared result",
+			zap.String("model", modelName))
+	}
+
+	return result.(seq2seq.Model), nil
 }
 
 // GetQuestionGenerator returns a Seq2Seq model as a QuestionGenerator by name
@@ -230,19 +256,46 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Load the Seq2Seq model
-	model, backendUsed, err := seq2seq.NewHugotSeq2SeqWithSessionManager(
-		info.Path, r.sessionManager, nil, r.logger.Named(info.Name))
-	if err != nil {
-		return nil, fmt.Errorf("loading Seq2Seq model %s: %w", info.Name, err)
-	}
+	var model seq2seq.Model
+	var backendUsed string
 
-	config := model.Config()
-	r.logger.Info("Successfully loaded Seq2Seq model",
-		zap.String("name", info.Name),
-		zap.String("task", config.Task),
-		zap.Int("max_length", config.MaxLength),
-		zap.String("backend", string(backendUsed)))
+	// Check if this is a T5Gemma-2 model (multimodal seq2seq)
+	if seq2seq.IsT5Gemma2GeneratorModel(info.Path) {
+		r.logger.Info("Detected T5Gemma-2 generator model",
+			zap.String("model", info.Name))
+
+		t5Model, backend, err := seq2seq.NewT5Gemma2GeneratorWithSessionManager(
+			info.Path, r.sessionManager, nil, r.logger.Named(info.Name))
+		if err != nil {
+			return nil, fmt.Errorf("loading T5Gemma-2 model %s: %w", info.Name, err)
+		}
+		model = t5Model
+		backendUsed = string(backend)
+
+		config := t5Model.Config()
+		r.logger.Info("Successfully loaded T5Gemma-2 generator",
+			zap.String("name", info.Name),
+			zap.String("task", config.Task),
+			zap.Int("max_new_tokens", config.MaxNewTokens),
+			zap.Bool("has_vision", t5Model.HasVision()),
+			zap.String("backend", backendUsed))
+	} else {
+		// Load as standard HugotSeq2Seq model
+		hugotModel, backend, err := seq2seq.NewHugotSeq2SeqWithSessionManager(
+			info.Path, r.sessionManager, nil, r.logger.Named(info.Name))
+		if err != nil {
+			return nil, fmt.Errorf("loading Seq2Seq model %s: %w", info.Name, err)
+		}
+		model = hugotModel
+		backendUsed = string(backend)
+
+		config := hugotModel.Config()
+		r.logger.Info("Successfully loaded Seq2Seq model",
+			zap.String("name", info.Name),
+			zap.String("task", config.Task),
+			zap.Int("max_length", config.MaxLength),
+			zap.String("backend", backendUsed))
+	}
 
 	// Add to cache
 	r.cache.Set(info.Name, model, r.keepAlive)
@@ -260,6 +313,13 @@ func (r *Seq2SeqRegistry) List() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// GetModelInfo returns the model info for a discovered model (not necessarily loaded).
+func (r *Seq2SeqRegistry) GetModelInfo(modelName string) *Seq2SeqModelInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.discovered[modelName]
 }
 
 // ListLoaded returns only the currently loaded Seq2Seq model names

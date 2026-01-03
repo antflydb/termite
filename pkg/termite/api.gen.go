@@ -641,6 +641,45 @@ type RewriteResponse struct {
 	Texts [][]string `json:"texts"`
 }
 
+// DecodeRequest defines model for DecodeRequest.
+type DecodeRequest struct {
+	// Model Name of T5Gemma-2 or compatible decoder model
+	Model string `json:"model"`
+
+	// Prompt Input prompt for text generation (mutually exclusive with Embeddings)
+	Prompt string `json:"prompt,omitempty"`
+
+	// Embeddings Pre-computed encoder hidden states for embedding inversion
+	// Shape: [sequence_length, hidden_size] or [batch, sequence_length, hidden_size]
+	// When provided, the decoder generates text directly from these embeddings
+	// without running the encoder
+	Embeddings [][]float32 `json:"embeddings,omitempty"`
+
+	// SequenceLength The sequence length of the embeddings (for reshaping flat arrays)
+	SequenceLength *int `json:"sequence_length,omitempty"`
+
+	// MaxTokens Maximum number of tokens to generate (default 256)
+	MaxTokens *int `json:"max_tokens,omitempty"`
+
+	// Temperature Sampling temperature (default 1.0)
+	Temperature *float32 `json:"temperature,omitempty"`
+
+	// TopP Nucleus sampling probability (default 1.0)
+	TopP *float32 `json:"top_p,omitempty"`
+}
+
+// DecodeResponse defines model for DecodeResponse.
+type DecodeResponse struct {
+	// Model Name of model used for decoding
+	Model string `json:"model"`
+
+	// Texts Generated text sequences
+	Texts []string `json:"texts"`
+
+	// Tokens Token IDs for each generated sequence (optional)
+	Tokens [][]int `json:"tokens,omitempty"`
+}
+
 // Role The role of a message sender in a conversation
 type Role string
 
@@ -1071,6 +1110,9 @@ type ServerInterface interface {
 	// Rewrite text using Seq2Seq models
 	// (POST /rewrite)
 	RewriteText(w http.ResponseWriter, r *http.Request)
+	// Decode text using T5Gemma-2 decoder
+	// (POST /decode)
+	DecodeText(w http.ResponseWriter, r *http.Request)
 	// Get version information
 	// (GET /version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -1174,6 +1216,20 @@ func (siw *ServerInterfaceWrapper) RewriteText(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RewriteText(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DecodeText operation middleware
+func (siw *ServerInterfaceWrapper) DecodeText(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DecodeText(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1324,6 +1380,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/recognize", wrapper.RecognizeEntities)
 	m.HandleFunc("POST "+options.BaseURL+"/rerank", wrapper.RerankPrompts)
 	m.HandleFunc("POST "+options.BaseURL+"/rewrite", wrapper.RewriteText)
+	m.HandleFunc("POST "+options.BaseURL+"/decode", wrapper.DecodeText)
 	m.HandleFunc("GET "+options.BaseURL+"/version", wrapper.GetVersion)
 
 	return m

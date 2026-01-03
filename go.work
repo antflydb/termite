@@ -1,6 +1,7 @@
 go 1.25.5
 
 use (
+	../hugot
 	./e2e
 	./pkg/client
 	./pkg/operator
@@ -11,7 +12,5 @@ use (
 replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
-
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260101005223-9b602a8e2c35
 
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670

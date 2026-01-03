@@ -89,6 +89,11 @@ func (t *TermiteAPI) RewriteText(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRewrite(w, r)
 }
 
+// DecodeText implements ServerInterface - placeholder for future embedding inversion feature
+func (t *TermiteAPI) DecodeText(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "decode endpoint not yet implemented; use /api/rewrite for text generation", http.StatusNotImplemented)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -1306,6 +1311,9 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	// Get model from registry
 	model, err := ln.seq2seqRegistry.Get(req.Model)
 	if err != nil {
+		ln.logger.Error("failed to get rewrite model",
+			zap.String("model", req.Model),
+			zap.Error(err))
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
@@ -1339,3 +1347,4 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 }
+

@@ -160,6 +160,27 @@ embedder:
 
 Termite auto-selects the best available variant if not specified.
 
+### T5Gemma-2 (Multimodal)
+
+T5Gemma-2 is Google's multimodal encoder-decoder model supporting text embeddings, image embeddings, and text generation.
+
+```bash
+# Export model to ONNX (requires uv and HuggingFace login)
+./scripts/export_t5gemma2.py \
+  --model google/t5gemma-2-270m-270m \
+  --output ~/.termite/models/rewriters/google/t5gemma-2-270m
+
+# Use for embeddings
+curl -X POST http://localhost:8080/v1/embeddings \
+  -d '{"model": "google/t5gemma-2-270m", "input": ["Hello world"]}'
+
+# Use for text generation
+curl -X POST http://localhost:8080/api/rewrite \
+  -d '{"model": "google/t5gemma-2-270m", "texts": ["Summarize: ..."]}'
+```
+
+See [docs/T5GEMMA2.md](docs/T5GEMMA2.md) for full setup instructions.
+
 ## Kubernetes Operator
 
 Deploy on GKE with TPU support using the Termite Operator.
