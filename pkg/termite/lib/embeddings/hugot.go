@@ -19,10 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
-	"os/exec"
 	"runtime"
-	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -34,17 +31,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
-
-// getMemoryMB returns process RSS in MB (includes native memory from ONNX/CoreML)
-func getMemoryMB() float64 {
-	if out, err := exec.Command("ps", "-o", "rss=", "-p", fmt.Sprintf("%d", os.Getpid())).Output(); err == nil {
-		var rssKB int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &rssKB); err == nil {
-			return float64(rssKB) / 1024
-		}
-	}
-	return 0
-}
 
 // Ensure PooledHugotEmbedder implements the Embedder interface
 var _ embeddings.Embedder = (*PooledHugotEmbedder)(nil)
@@ -224,11 +210,6 @@ func NewPooledHugotEmbedderWithSessionManager(
 		poolSize = runtime.NumCPU()
 	}
 
-	// MEMORY PROFILING: Before session
-	memBefore := getMemoryMB()
-	logger.Info("MEMORY PROFILE: Before session creation",
-		zap.Float64("rss_mb", memBefore))
-
 	// Get session from session manager
 	var session *khugot.Session
 	var backendUsed hugot.BackendType
@@ -260,12 +241,6 @@ func NewPooledHugotEmbedderWithSessionManager(
 		backendUsed = hugot.GetDefaultBackend().Type()
 	}
 
-	// MEMORY PROFILING: After session
-	memAfterSession := getMemoryMB()
-	logger.Info("MEMORY PROFILE: After session creation",
-		zap.Float64("rss_mb", memAfterSession),
-		zap.Float64("delta_mb", memAfterSession-memBefore))
-
 	logger.Info("Initializing pooled Hugot embedder",
 		zap.String("modelPath", modelPath),
 		zap.String("onnxFilename", onnxFilename),
@@ -275,8 +250,6 @@ func NewPooledHugotEmbedderWithSessionManager(
 	// Create N pipelines with unique names
 	pipelinesList := make([]*pipelines.FeatureExtractionPipeline, poolSize)
 	for i := 0; i < poolSize; i++ {
-		memBeforePipeline := getMemoryMB()
-
 		pipelineName := fmt.Sprintf("%s:%s:%d", modelPath, onnxFilename, i)
 		pipelineConfig := khugot.FeatureExtractionConfig{
 			ModelPath:    modelPath,
@@ -296,21 +269,7 @@ func NewPooledHugotEmbedderWithSessionManager(
 		}
 		pipelinesList[i] = pipeline
 
-		// MEMORY PROFILING: After each pipeline creation
-		memAfterPipeline := getMemoryMB()
-		logger.Info("MEMORY PROFILE: After pipeline creation",
-			zap.Int("index", i),
-			zap.String("name", pipelineName),
-			zap.Float64("rss_mb", memAfterPipeline),
-			zap.Float64("delta_mb", memAfterPipeline-memBeforePipeline))
 	}
-
-	// MEMORY PROFILING: After all pipelines
-	memFinal := getMemoryMB()
-	logger.Info("MEMORY PROFILE: Embedder initialization complete",
-		zap.Float64("rss_mb", memFinal),
-		zap.Float64("total_delta_mb", memFinal-memBefore),
-		zap.Int("pipeline_count", poolSize))
 
 	logger.Info("Successfully created pooled feature extraction pipelines", zap.Int("count", poolSize))
 

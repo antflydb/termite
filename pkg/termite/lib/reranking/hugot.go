@@ -18,10 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"runtime"
-	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/reranking"
@@ -32,17 +29,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
-
-// getMemoryMB returns process RSS in MB (includes native memory from ONNX/CoreML)
-func getMemoryMB() float64 {
-	if out, err := exec.Command("ps", "-o", "rss=", "-p", fmt.Sprintf("%d", os.Getpid())).Output(); err == nil {
-		var rssKB int64
-		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &rssKB); err == nil {
-			return float64(rssKB) / 1024
-		}
-	}
-	return 0
-}
 
 // Ensure PooledHugotReranker implements the Model interface
 var _ reranking.Model = (*PooledHugotReranker)(nil)
@@ -135,11 +121,6 @@ func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolS
 		poolSize = runtime.NumCPU()
 	}
 
-	// MEMORY PROFILING: Before reranker session
-	memBefore := getMemoryMB()
-	logger.Info("MEMORY PROFILE [RERANKER]: Before session creation",
-		zap.Float64("rss_mb", memBefore))
-
 	logger.Info("Initializing pooled Hugot reranker",
 		zap.String("modelPath", modelPath),
 		zap.String("onnxFilename", onnxFilename),
@@ -180,17 +161,9 @@ func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolS
 		logger.Info("Created new Hugot session", zap.String("backend", hugot.BackendName()))
 	}
 
-	// MEMORY PROFILING: After reranker session
-	memAfterSession := getMemoryMB()
-	logger.Info("MEMORY PROFILE [RERANKER]: After session creation",
-		zap.Float64("rss_mb", memAfterSession),
-		zap.Float64("delta_mb", memAfterSession-memBefore))
-
 	// Create N pipelines with unique names
 	pipelinesList := make([]*pipelines.CrossEncoderPipeline, poolSize)
 	for i := 0; i < poolSize; i++ {
-		memBeforePipeline := getMemoryMB()
-
 		pipelineName := fmt.Sprintf("%s:%s:%d", modelPath, onnxFilename, i)
 		pipelineConfig := khugot.CrossEncoderConfig{
 			ModelPath:    modelPath,
@@ -213,22 +186,7 @@ func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolS
 			return nil, backendUsed, fmt.Errorf("creating cross-encoder pipeline %d: %w", i, err)
 		}
 		pipelinesList[i] = pipeline
-
-		// MEMORY PROFILING: After each reranker pipeline creation
-		memAfterPipeline := getMemoryMB()
-		logger.Info("MEMORY PROFILE [RERANKER]: After pipeline creation",
-			zap.Int("index", i),
-			zap.String("name", pipelineName),
-			zap.Float64("rss_mb", memAfterPipeline),
-			zap.Float64("delta_mb", memAfterPipeline-memBeforePipeline))
 	}
-
-	// MEMORY PROFILING: After all reranker pipelines
-	memFinal := getMemoryMB()
-	logger.Info("MEMORY PROFILE [RERANKER]: Reranker initialization complete",
-		zap.Float64("rss_mb", memFinal),
-		zap.Float64("total_delta_mb", memFinal-memBefore),
-		zap.Int("pipeline_count", poolSize))
 
 	logger.Info("Successfully created pooled cross-encoder pipelines", zap.Int("count", poolSize))
 
