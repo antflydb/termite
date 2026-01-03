@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
@@ -31,6 +33,17 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
+
+// getMemoryMB returns process RSS in MB (includes native memory from ONNX/CoreML)
+func getMemoryMB() float64 {
+	if out, err := exec.Command("ps", "-o", "rss=", "-p", fmt.Sprintf("%d", os.Getpid())).Output(); err == nil {
+		var rssKB int64
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &rssKB); err == nil {
+			return float64(rssKB) / 1024
+		}
+	}
+	return 0
+}
 
 // Ensure HugotGenerator implements the Generator, StreamingGenerator, and ToolSupporter interfaces
 var _ Generator = (*HugotGenerator)(nil)
@@ -305,6 +318,11 @@ func NewHugotGeneratorWithSessionManager(modelPath string, sessionManager *hugot
 		return model, hugot.BackendType(""), nil
 	}
 
+	// MEMORY PROFILING: Before generator session
+	memBefore := getMemoryMB()
+	logger.Info("MEMORY PROFILE [GENERATOR]: Before session creation",
+		zap.Float64("rss_mb", memBefore))
+
 	logger.Info("Initializing Hugot generator with SessionManager",
 		zap.String("modelPath", modelPath))
 
@@ -314,10 +332,17 @@ func NewHugotGeneratorWithSessionManager(modelPath string, sessionManager *hugot
 		return nil, "", fmt.Errorf("getting session from manager: %w", err)
 	}
 
+	// MEMORY PROFILING: After generator session
+	memAfterSession := getMemoryMB()
+	logger.Info("MEMORY PROFILE [GENERATOR]: After session creation",
+		zap.Float64("rss_mb", memAfterSession),
+		zap.Float64("delta_mb", memAfterSession-memBefore))
+
 	logger.Info("Got session from SessionManager",
 		zap.String("backend", string(backendUsed)))
 
 	// Create text generation pipeline with streaming enabled
+	memBeforePipeline := getMemoryMB()
 	pipelineName := fmt.Sprintf("generator:%s", modelPath)
 	pipelineConfig := khugot.TextGenerationConfig{
 		ModelPath: modelPath,
@@ -333,6 +358,15 @@ func NewHugotGeneratorWithSessionManager(modelPath string, sessionManager *hugot
 		logger.Error("Failed to create pipeline", zap.Error(err))
 		return nil, "", fmt.Errorf("creating text generation pipeline: %w", err)
 	}
+
+	// MEMORY PROFILING: After generator pipeline
+	memAfterPipeline := getMemoryMB()
+	logger.Info("MEMORY PROFILE [GENERATOR]: After pipeline creation",
+		zap.String("model", modelPath),
+		zap.Float64("rss_mb", memAfterPipeline),
+		zap.Float64("delta_mb", memAfterPipeline-memBeforePipeline),
+		zap.Float64("total_delta_mb", memAfterPipeline-memBefore))
+
 	logger.Info("Successfully created streaming-enabled text generation pipeline")
 
 	// Read image token from model's special_tokens_map.json

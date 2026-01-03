@@ -72,18 +72,33 @@ func (b *onnxDarwinBackend) Priority() int {
 }
 
 func (b *onnxDarwinBackend) CreateSession(opts ...options.WithOption) (*hugot.Session, error) {
-	// Build CoreML configuration based on GPU mode
-	coremlConfig := b.getCoreMLConfig()
-
-	// Prepend CoreML provider - user options can override if needed
-	coremlOpts := []options.WithOption{options.WithCoreML(coremlConfig)}
+	var baseOpts []options.WithOption
 
 	// Check for custom library path from environment
 	if libPath := getOnnxLibraryPath(); libPath != "" {
-		coremlOpts = append(coremlOpts, options.WithOnnxLibraryPath(libPath))
+		baseOpts = append(baseOpts, options.WithOnnxLibraryPath(libPath))
 	}
 
-	opts = append(coremlOpts, opts...)
+	// Only add CoreML if not explicitly disabled via GPUModeOff.
+	//
+	// Benchmarks show pure ONNX Runtime CPU significantly outperforms CoreML EP
+	// for embedding models due to CoreML bridge layer overhead:
+	//   - CoreML (100 individual): 1.63s total, 16.33ms/request
+	//   - Pure ONNX CPU (batch 100): 129ms total, 1.29ms/text (12.7x faster)
+	//   - Single requests: CoreML 14.5ms vs ONNX CPU 1.95ms (7.4x faster)
+	//
+	// Additionally, CoreML EP cannot handle dynamic batch sizes > 1.
+	// See pkg/termite/lib/embeddings/benchmark_batch_test.go for details.
+	//
+	// Alternative: Export models with fixed batch dimensions (e.g., batch=8) to enable
+	// CoreML with batching. This requires re-exporting models and padding inputs to
+	// match the fixed size. See scripts/export_model_to_registry.py for model export.
+	if b.GetGPUMode() != GPUModeOff {
+		coremlConfig := b.getCoreMLConfig()
+		baseOpts = append(baseOpts, options.WithCoreML(coremlConfig))
+	}
+
+	opts = append(baseOpts, opts...)
 	return hugot.NewORTSession(opts...)
 }
 

@@ -19,7 +19,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -31,6 +34,17 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
+
+// getMemoryMB returns process RSS in MB (includes native memory from ONNX/CoreML)
+func getMemoryMB() float64 {
+	if out, err := exec.Command("ps", "-o", "rss=", "-p", fmt.Sprintf("%d", os.Getpid())).Output(); err == nil {
+		var rssKB int64
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &rssKB); err == nil {
+			return float64(rssKB) / 1024
+		}
+	}
+	return 0
+}
 
 // Ensure PooledHugotEmbedder implements the Embedder interface
 var _ embeddings.Embedder = (*PooledHugotEmbedder)(nil)
@@ -57,6 +71,16 @@ func normalizeL2(vec []float32) []float32 {
 	return normalized
 }
 
+// DefaultEmbeddingBatchSize is the default batch size for embedding inference.
+//
+// The ONNX Runtime CoreML Execution Provider cannot handle batch sizes > 1 for embedding models.
+// This is specific to the CoreML EP bridge layer - pure ONNX Runtime CPU handles batching fine.
+// With CoreML, any batch size > 1 causes: "Error executing model: Unable to compute the prediction
+// using a neural network model (error code: -1)".
+//
+// See batch_test.go for validation of this limitation.
+const DefaultEmbeddingBatchSize = 1
+
 // PooledHugotEmbedder manages multiple ONNX pipelines for concurrent embedding generation.
 // Each request acquires a pipeline slot via semaphore, enabling true parallelism.
 type PooledHugotEmbedder struct {
@@ -68,6 +92,7 @@ type PooledHugotEmbedder struct {
 	sessionShared bool
 	poolSize      int
 	caps          embeddings.EmbedderCapabilities
+	batchSize     int
 }
 
 // NewPooledHugotEmbedder creates a new pooled embedder using the Hugot ONNX runtime.
@@ -107,7 +132,13 @@ func NewPooledHugotEmbedderWithSession(modelPath string, onnxFilename string, po
 		zap.Int("poolSize", poolSize),
 		zap.String("backend", hugot.BackendName()))
 
-	// Use shared session or create a new one
+	// Use shared session or create a new one.
+	// For embedders, we disable CoreML (GPUModeOff) because pure ONNX Runtime CPU
+	// is significantly faster due to CoreML EP bridge layer overhead.
+	// See pkg/termite/lib/hugot/backend_onnx_darwin.go for benchmark details.
+	if sharedSession == nil {
+		hugot.SetGPUMode(hugot.GPUModeOff)
+	}
 	session, err := hugot.NewSessionOrUseExisting(sharedSession)
 	if err != nil {
 		logger.Error("Failed to create Hugot session", zap.Error(err))
@@ -158,6 +189,7 @@ func NewPooledHugotEmbedderWithSession(modelPath string, onnxFilename string, po
 		sessionShared: sessionShared,
 		poolSize:      poolSize,
 		caps:          embeddings.TextOnlyCapabilities(),
+		batchSize:     DefaultEmbeddingBatchSize,
 	}, nil
 }
 
@@ -192,12 +224,23 @@ func NewPooledHugotEmbedderWithSessionManager(
 		poolSize = runtime.NumCPU()
 	}
 
+	// MEMORY PROFILING: Before session
+	memBefore := getMemoryMB()
+	logger.Info("MEMORY PROFILE: Before session creation",
+		zap.Float64("rss_mb", memBefore))
+
 	// Get session from session manager
 	var session *khugot.Session
 	var backendUsed hugot.BackendType
 	var err error
 
 	if sessionManager != nil {
+		// For embedders, prefer CPU-only ONNX (no CoreML) because benchmarks show
+		// pure ONNX Runtime CPU is significantly faster due to CoreML EP overhead.
+		// This only takes effect if the embedder is the first to create the session;
+		// otherwise the cached session's configuration is used.
+		// See pkg/termite/lib/hugot/backend_onnx_darwin.go for benchmark details.
+		hugot.SetGPUMode(hugot.GPUModeOff)
 		session, backendUsed, err = sessionManager.GetSessionForModel(modelBackends)
 		if err != nil {
 			return nil, "", fmt.Errorf("getting session from manager: %w", err)
@@ -205,13 +248,23 @@ func NewPooledHugotEmbedderWithSessionManager(
 		logger.Info("Using session from SessionManager",
 			zap.String("backend", string(backendUsed)))
 	} else {
-		// Fallback to default session creation for backward compatibility
+		// Fallback to default session creation for backward compatibility.
+		// For embedders, we disable CoreML (GPUModeOff) because pure ONNX Runtime CPU
+		// is significantly faster due to CoreML EP bridge layer overhead.
+		// See pkg/termite/lib/hugot/backend_onnx_darwin.go for benchmark details.
+		hugot.SetGPUMode(hugot.GPUModeOff)
 		session, err = hugot.NewSession()
 		if err != nil {
 			return nil, "", fmt.Errorf("creating hugot session: %w", err)
 		}
 		backendUsed = hugot.GetDefaultBackend().Type()
 	}
+
+	// MEMORY PROFILING: After session
+	memAfterSession := getMemoryMB()
+	logger.Info("MEMORY PROFILE: After session creation",
+		zap.Float64("rss_mb", memAfterSession),
+		zap.Float64("delta_mb", memAfterSession-memBefore))
 
 	logger.Info("Initializing pooled Hugot embedder",
 		zap.String("modelPath", modelPath),
@@ -222,6 +275,8 @@ func NewPooledHugotEmbedderWithSessionManager(
 	// Create N pipelines with unique names
 	pipelinesList := make([]*pipelines.FeatureExtractionPipeline, poolSize)
 	for i := 0; i < poolSize; i++ {
+		memBeforePipeline := getMemoryMB()
+
 		pipelineName := fmt.Sprintf("%s:%s:%d", modelPath, onnxFilename, i)
 		pipelineConfig := khugot.FeatureExtractionConfig{
 			ModelPath:    modelPath,
@@ -240,8 +295,22 @@ func NewPooledHugotEmbedderWithSessionManager(
 			return nil, "", fmt.Errorf("creating feature extraction pipeline %d: %w", i, err)
 		}
 		pipelinesList[i] = pipeline
-		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
+
+		// MEMORY PROFILING: After each pipeline creation
+		memAfterPipeline := getMemoryMB()
+		logger.Info("MEMORY PROFILE: After pipeline creation",
+			zap.Int("index", i),
+			zap.String("name", pipelineName),
+			zap.Float64("rss_mb", memAfterPipeline),
+			zap.Float64("delta_mb", memAfterPipeline-memBeforePipeline))
 	}
+
+	// MEMORY PROFILING: After all pipelines
+	memFinal := getMemoryMB()
+	logger.Info("MEMORY PROFILE: Embedder initialization complete",
+		zap.Float64("rss_mb", memFinal),
+		zap.Float64("total_delta_mb", memFinal-memBefore),
+		zap.Int("pipeline_count", poolSize))
 
 	logger.Info("Successfully created pooled feature extraction pipelines", zap.Int("count", poolSize))
 
@@ -253,6 +322,7 @@ func NewPooledHugotEmbedderWithSessionManager(
 		sessionShared: true, // SessionManager owns the session
 		poolSize:      poolSize,
 		caps:          embeddings.TextOnlyCapabilities(),
+		batchSize:     DefaultEmbeddingBatchSize,
 	}, backendUsed, nil
 }
 
@@ -263,6 +333,7 @@ func (p *PooledHugotEmbedder) Capabilities() embeddings.EmbedderCapabilities {
 
 // Embed generates embeddings for the given content.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Processes texts in batches to avoid memory explosion on CoreML.
 func (p *PooledHugotEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart) ([][]float32, error) {
 	if len(contents) == 0 {
 		return [][]float32{}, nil
@@ -281,31 +352,58 @@ func (p *PooledHugotEmbedder) Embed(ctx context.Context, contents [][]ai.Content
 	// Hugot only supports text embeddings
 	values := embeddings.ExtractText(contents)
 
-	p.logger.Debug("Starting embedding generation",
-		zap.Int("pipelineIndex", idx),
-		zap.Int("numTexts", len(values)))
-
-	// Run feature extraction inference
-	output, err := pipeline.RunPipeline(values)
-	if err != nil {
-		p.logger.Error("Pipeline inference failed",
-			zap.Int("pipelineIndex", idx),
-			zap.Error(err))
-		return nil, fmt.Errorf("running feature extraction: %w", err)
+	// Process in batches to avoid CoreML memory explosion
+	// CoreML can fail with large batches (61+ texts causes 6GB+ memory allocation)
+	result := make([][]float32, 0, len(values))
+	batchSize := p.batchSize
+	if batchSize <= 0 {
+		batchSize = DefaultEmbeddingBatchSize
 	}
 
-	// Extract embeddings from output
-	result := make([][]float32, len(output.Embeddings))
-	for i, embedding := range output.Embeddings {
-		if len(embedding) == 0 {
-			p.logger.Error("Empty embedding returned",
-				zap.Int("pipelineIndex", idx),
-				zap.Int("index", i))
-			return nil, fmt.Errorf("empty embedding at index %d", i)
+	numBatches := (len(values) + batchSize - 1) / batchSize
+	p.logger.Debug("Processing embeddings in batches",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("numTexts", len(values)),
+		zap.Int("batchSize", batchSize),
+		zap.Int("numBatches", numBatches))
+
+	for batchStart := 0; batchStart < len(values); batchStart += batchSize {
+		// Check context cancellation between batches
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
 		}
-		// Normalize the embedding (L2 normalization)
-		normalized := normalizeL2(embedding)
-		result[i] = normalized
+
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(values) {
+			batchEnd = len(values)
+		}
+		batch := values[batchStart:batchEnd]
+
+		// Run feature extraction inference for this batch
+		output, err := pipeline.RunPipeline(batch)
+		if err != nil {
+			p.logger.Error("Pipeline inference failed",
+				zap.Int("pipelineIndex", idx),
+				zap.Int("batchStart", batchStart),
+				zap.Int("batchSize", len(batch)),
+				zap.Error(err))
+			return nil, fmt.Errorf("running feature extraction (batch %d-%d): %w", batchStart, batchEnd, err)
+		}
+
+		// Extract and normalize embeddings from this batch
+		for i, embedding := range output.Embeddings {
+			if len(embedding) == 0 {
+				p.logger.Error("Empty embedding returned",
+					zap.Int("pipelineIndex", idx),
+					zap.Int("index", batchStart+i))
+				return nil, fmt.Errorf("empty embedding at index %d", batchStart+i)
+			}
+			// Normalize the embedding (L2 normalization)
+			normalized := normalizeL2(embedding)
+			result = append(result, normalized)
+		}
 	}
 
 	p.logger.Debug("Embedding generation complete",
