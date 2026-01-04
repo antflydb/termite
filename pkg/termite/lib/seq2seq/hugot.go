@@ -61,6 +61,12 @@ func NewHugotSeq2SeqWithSession(modelPath string, sharedSession *khugot.Session,
 		zap.String("modelPath", modelPath),
 		zap.String("backend", hugot.BackendName()))
 
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	hugot.SetGPUMode(hugot.GPUModeOff)
+
 	// Load seq2seq config if available
 	config := Config{
 		MaxLength:          64,
@@ -155,6 +161,12 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 
 	logger.Info("Initializing Hugot Seq2Seq model with SessionManager",
 		zap.String("modelPath", modelPath))
+
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	hugot.SetGPUMode(hugot.GPUModeOff)
 
 	// Load seq2seq config if available
 	config := Config{

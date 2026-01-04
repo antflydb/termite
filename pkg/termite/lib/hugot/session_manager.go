@@ -166,8 +166,12 @@ func (sm *SessionManager) GetSessionForModel(modelBackends []string, opts ...opt
 			continue
 		}
 
-		// Apply device setting before creating session
-		SetGPUMode(spec.Device.ToGPUMode())
+		// Apply device setting before creating session, but only if explicitly configured.
+		// This preserves any explicit SetGPUMode(Off) call made by model registries
+		// (e.g., seq2seq models require CPU-only due to CoreML batch size limitations).
+		if spec.Device != "" && spec.Device != DeviceAuto {
+			SetGPUMode(spec.Device.ToGPUMode())
+		}
 
 		session, err := sm.GetSession(spec.Backend, opts...)
 		if err == nil {

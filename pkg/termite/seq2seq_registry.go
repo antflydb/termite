@@ -69,6 +69,13 @@ func NewSeq2SeqRegistry(
 		logger = zap.NewNop()
 	}
 
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	// This must be set before any sessions are created.
+	hugot.SetGPUMode(hugot.GPUModeOff)
+
 	keepAlive := config.KeepAlive
 	if keepAlive == 0 {
 		keepAlive = ttlcache.NoTTL // Never expire
@@ -231,8 +238,11 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 		zap.String("path", info.Path))
 
 	// Load the Seq2Seq model
+	// Restrict to ONNX backend only - CoreML cannot handle dynamic batch sizes > 1
+	// and large seq2seq models (like PEGASUS) exceed CoreML's model size limits.
+	onnxOnly := []string{"onnx"}
 	model, backendUsed, err := seq2seq.NewHugotSeq2SeqWithSessionManager(
-		info.Path, r.sessionManager, nil, r.logger.Named(info.Name))
+		info.Path, r.sessionManager, onnxOnly, r.logger.Named(info.Name))
 	if err != nil {
 		return nil, fmt.Errorf("loading Seq2Seq model %s: %w", info.Name, err)
 	}

@@ -36,12 +36,16 @@ const (
 )
 
 // TestParaphraseE2E tests the PEGASUS paraphraser pipeline:
-// 1. Starts termite server with Paraphraser model
-// 2. Tests paraphrasing functionality with multiple outputs
+// 1. Downloads Paraphraser model if not present (lazy download)
+// 2. Starts termite server with Paraphraser model
+// 3. Tests paraphrasing functionality with multiple outputs
 func TestParaphraseE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+
+	// Ensure paraphraser model is downloaded (lazy download)
+	ensureRegistryModel(t, paraphraserModelName, ModelTypeRewriter)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()

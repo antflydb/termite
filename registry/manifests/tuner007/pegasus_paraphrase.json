@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "name": "pegasus_paraphrase",
+  "type": "rewriter",
+  "description": "PEGASUS model fine-tuned for paraphrasing",
+  "source": "tuner007/pegasus_paraphrase",
+  "files": [
+    {
+      "name": "encoder.onnx",
+      "digest": "sha256:7113f7ca058e3c4e86496a4477f0bebadc1a58dd29bf9d598813aeab5f442b4d",
+      "size": 1200032286
+    },
+    {
+      "name": "decoder-init.onnx",
+      "digest": "sha256:933872e1c8779c9986cc7691fe1aadb4327a6f3ad5441d429e7891795b6dc8a1",
+      "size": 1862974179
+    },
+    {
+      "name": "decoder.onnx",
+      "digest": "sha256:e302fc708f56660e89957983f8fe59e74a5f4a1d9d4c3b7d10196c9338f54a4e",
+      "size": 1728695714
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:8bef5af65137998752e301c2de2cec7c2af5f0149c9fbe2050b4e513279ae490",
+      "size": 6603484
+    },
+    {
+      "name": "config.json",
+      "digest": "sha256:833ad7059c54f47f15714095bf7500cb622b8d478c1e65ef44f66ae46da872d7",
+      "size": 2455
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:fbf8c16957e894759afc5aa753912072c8e41e14145e70b8f502e3cdd91666a0",
+      "size": 20317
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:fd1c8052e4c8554e4ff49685b297bf70b5080db9525993b671453b99ceb8a2c2",
+      "size": 1766
+    },
+    {
+      "name": "spiece.model",
+      "digest": "sha256:0015189ef36359283fec8b93cf6d9ce51bca37eb1101defc68a53b394913b96c",
+      "size": 1912529
+    },
+    {
+      "name": "seq2seq_config.json",
+      "digest": "sha256:3f6f03805468d9fb2ab05671756e4058d3a76f6da3b64f8fc613cad5db3d1025",
+      "size": 212
+    }
+  ],
+  "owner": "tuner007",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/tuner007/pegasus_paraphrase",
+    "downloadedAt": "2026-01-04T20:32:49.415479+00:00"
+  }
+}
