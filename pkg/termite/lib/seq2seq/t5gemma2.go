@@ -41,8 +41,9 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-// Ensure T5Gemma2Generator implements the Model interface
+// Ensure T5Gemma2Generator implements the Model and Decoder interfaces
 var _ Model = (*T5Gemma2Generator)(nil)
+var _ Decoder = (*T5Gemma2Generator)(nil)
 
 // T5Gemma2Generator implements multimodal seq2seq text generation using T5Gemma-2.
 // It supports text-to-text and image+text-to-text generation.
@@ -431,6 +432,80 @@ func (g *T5Gemma2Generator) loadVisionPipeline() error {
 // Config returns the generator configuration.
 func (g *T5Gemma2Generator) Config() T5Gemma2GeneratorConfig {
 	return g.config
+}
+
+// HiddenSize returns the expected embedding dimension for the model.
+// This is used to validate embeddings passed to DecodeFromEmbeddings.
+func (g *T5Gemma2Generator) HiddenSize() int {
+	return g.config.HiddenSize
+}
+
+// DecodeFromEmbeddings generates text from pre-computed encoder hidden states.
+// This enables embedding-to-text generation workflows where custom embeddings
+// (from external sources, manipulated vectors, or vision encoders) are used
+// directly for text generation without running the encoder.
+//
+// The embeddings are used as encoder_hidden_states in the decoder's cross-attention
+// mechanism, allowing the decoder to generate text conditioned on these embeddings.
+//
+// Example use cases:
+//   - Embedding inversion: Reconstruct text from embeddings
+//   - Custom embedding injection: Use manipulated or external embeddings
+//   - Cross-modal generation: Convert vision embeddings to text descriptions
+func (g *T5Gemma2Generator) DecodeFromEmbeddings(
+	ctx context.Context,
+	input *DecoderInput,
+	opts DecodeOptions,
+) (*GeneratedOutput, error) {
+	if len(input.EncoderHiddenStates) == 0 {
+		return nil, errors.New("encoder hidden states are required")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// Validate embedding dimensions
+	expectedDim := g.config.HiddenSize
+	for i, emb := range input.EncoderHiddenStates {
+		if len(emb) != expectedDim {
+			return nil, fmt.Errorf("embedding %d dimension mismatch: got %d, expected %d",
+				i, len(emb), expectedDim)
+		}
+	}
+
+	g.logger.Debug("Starting T5Gemma-2 decode from embeddings",
+		zap.Int("num_embeddings", len(input.EncoderHiddenStates)),
+		zap.Int("hidden_size", expectedDim),
+		zap.Int("max_tokens", opts.MaxTokens))
+
+	// Apply default options if not specified
+	if opts.MaxTokens <= 0 {
+		opts.MaxTokens = g.config.MaxNewTokens
+	}
+	if opts.Temperature <= 0 {
+		opts.Temperature = g.config.Temperature
+	}
+	if opts.TopP <= 0 {
+		opts.TopP = g.config.TopP
+	}
+	if opts.RepetitionPenalty <= 0 {
+		opts.RepetitionPenalty = g.config.RepetitionPenalty
+	}
+
+	// Run generation using the decoder with custom encoder hidden states
+	output, err := g.runDecoderWithEmbeddings(ctx, input, opts)
+	if err != nil {
+		g.logger.Error("T5Gemma-2 decode from embeddings failed", zap.Error(err))
+		return nil, fmt.Errorf("decoding from embeddings: %w", err)
+	}
+
+	g.logger.Debug("T5Gemma-2 decode from embeddings completed",
+		zap.Int("num_outputs", len(output.Texts)))
+
+	return output, nil
 }
 
 // Close releases resources.

@@ -98,6 +98,21 @@ func (g *T5Gemma2Generator) Close() error {
 	return nil
 }
 
+// HiddenSize returns the expected embedding dimension.
+// Stub returns 0 as ONNX is not available.
+func (g *T5Gemma2Generator) HiddenSize() int {
+	return 0
+}
+
+// DecodeFromEmbeddings is not available without ONNX Runtime.
+func (g *T5Gemma2Generator) DecodeFromEmbeddings(
+	ctx context.Context,
+	input *DecoderInput,
+	opts DecodeOptions,
+) (*GeneratedOutput, error) {
+	return nil, errors.New("T5Gemma-2 decode from embeddings not available: build with -tags=\"onnx,ORT\"")
+}
+
 // IsT5Gemma2GeneratorModel checks if a model directory contains T5Gemma-2 generator files.
 func IsT5Gemma2GeneratorModel(modelPath string) bool {
 	// Must have standard seq2seq files

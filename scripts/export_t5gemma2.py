@@ -476,6 +476,77 @@ def export_encoder(model, processor, output_dir: Path) -> None:
         logger.info("       Using embedding_layer.onnx for embeddings (without attention)")
         logger.info("       For full encoder functionality, use PyTorch inference instead of ONNX")
 
+    # Export 3: Encoder with inputs_embeds (for embedding-to-text generation)
+    encoder_embeds_path = output_dir / "encoder_embeds.onnx"
+    logger.info("   1c. Exporting encoder with inputs_embeds support...")
+
+    # Get hidden size from model config
+    if hasattr(model.config, 'encoder'):
+        hidden_size = model.config.encoder.hidden_size
+    elif hasattr(model.config, 'hidden_size'):
+        hidden_size = model.config.hidden_size
+    else:
+        hidden_size = 640  # Default for T5Gemma2-270m
+
+    class EncoderEmbedsModule(torch.nn.Module):
+        """Encoder that accepts pre-computed embeddings directly (inputs_embeds)."""
+        def __init__(self, encoder):
+            super().__init__()
+            self.encoder = encoder
+
+        def forward(self, inputs_embeds, attention_mask):
+            """Run encoder directly on embeddings, bypassing token embedding lookup."""
+            outputs = self.encoder(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                output_hidden_states=False,
+                return_dict=True,
+            )
+            return outputs.last_hidden_state
+
+    encoder_embeds_module = EncoderEmbedsModule(encoder)
+    encoder_embeds_module.eval()
+    for param in encoder_embeds_module.parameters():
+        param.requires_grad = False
+
+    # Create dummy inputs_embeds
+    batch_size, seq_len = input_ids.shape
+    dummy_inputs_embeds = torch.randn(batch_size, seq_len, hidden_size)
+
+    try:
+        with torch.no_grad():
+            torch.onnx.export(
+                encoder_embeds_module,
+                (dummy_inputs_embeds, attention_mask),
+                str(encoder_embeds_path),
+                export_params=True,
+                opset_version=OPSET_VERSION,
+                do_constant_folding=True,
+                input_names=["inputs_embeds", "attention_mask"],
+                output_names=["encoder_hidden_states"],
+                dynamic_axes={
+                    "inputs_embeds": {0: "batch_size", 1: "sequence_length"},
+                    "attention_mask": {0: "batch_size", 1: "sequence_length"},
+                    "encoder_hidden_states": {0: "batch_size", 1: "sequence_length"},
+                },
+                dynamo=False,
+            )
+
+        # Validate
+        onnx_model = onnx.load(str(encoder_embeds_path))
+        onnx.checker.check_model(onnx_model)
+        size_mb = encoder_embeds_path.stat().st_size / (1024 * 1024)
+        logger.info(f"       Saved: encoder_embeds.onnx ({size_mb:.1f} MB)")
+
+        # Test encoder_embeds output shape
+        with torch.no_grad():
+            test_output = encoder_embeds_module(dummy_inputs_embeds, attention_mask)
+            logger.info(f"       Encoder (embeds) output shape: {test_output.shape}")
+
+    except Exception as e:
+        logger.warning(f"       Encoder with inputs_embeds export failed: {e}")
+        logger.info("       Embedding-to-text generation will require the standard encoder path")
+
 
 def export_vision_encoder(model, processor, output_dir: Path) -> bool:
     """Export the vision encoder (SigLIP) to ONNX if present."""

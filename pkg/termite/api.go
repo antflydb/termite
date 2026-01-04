@@ -34,6 +34,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
@@ -89,9 +90,9 @@ func (t *TermiteAPI) RewriteText(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRewrite(w, r)
 }
 
-// DecodeText implements ServerInterface - placeholder for future embedding inversion feature
+// DecodeText implements ServerInterface - embedding-to-text generation
 func (t *TermiteAPI) DecodeText(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "decode endpoint not yet implemented; use /api/rewrite for text generation", http.StatusNotImplemented)
+	t.node.handleApiDecode(w, r)
 }
 
 // ListModels implements ServerInterface
@@ -1338,6 +1339,156 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	resp := RewriteResponse{
 		Model: req.Model,
 		Texts: output.Texts,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleApiDecode handles POST /api/decode for embedding-to-text generation.
+// It supports two modes:
+// - Text prompt: standard text generation using the seq2seq model
+// - Embeddings: direct decoding from pre-computed encoder hidden states
+func (ln *TermiteNode) handleApiDecode(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if seq2seq registry is available
+	if ln.seq2seqRegistry == nil {
+		http.Error(w, "decode not available: seq2seq models not loaded", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		ln.logger.Error("failed to acquire request slot", zap.Error(err))
+		http.Error(w, "service overloaded", http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
+
+	// Decode request
+	var req DecodeRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		ln.logger.Error("decoding decode request", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate: prompt XOR embeddings
+	hasPrompt := req.Prompt != ""
+	hasEmbeddings := len(req.Embeddings) > 0
+	if !hasPrompt && !hasEmbeddings {
+		http.Error(w, "either prompt or embeddings is required", http.StatusBadRequest)
+		return
+	}
+	if hasPrompt && hasEmbeddings {
+		http.Error(w, "prompt and embeddings are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+
+	// Get model from registry
+	model, err := ln.seq2seqRegistry.Get(req.Model)
+	if err != nil {
+		ln.logger.Error("failed to get decode model",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	var output *seq2seq.GeneratedOutput
+
+	if hasEmbeddings {
+		// Embedding-to-text path: decode from pre-computed embeddings
+		dec, ok := model.(seq2seq.Decoder)
+		if !ok {
+			http.Error(w, "model does not support embedding decoding", http.StatusBadRequest)
+			return
+		}
+
+		hiddenSize := dec.HiddenSize()
+
+		// Validate embedding dimensions
+		for i, emb := range req.Embeddings {
+			if len(emb) != hiddenSize {
+				http.Error(w, fmt.Sprintf("embedding %d has wrong dimension: got %d, expected %d",
+					i, len(emb), hiddenSize), http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Build decode options
+		opts := seq2seq.DefaultDecodeOptions()
+		if req.MaxTokens > 0 {
+			opts.MaxTokens = req.MaxTokens
+		}
+		if req.Temperature > 0 {
+			opts.Temperature = req.Temperature
+		}
+		if req.TopP > 0 {
+			opts.TopP = req.TopP
+		}
+
+		// Build decoder input
+		input := &seq2seq.DecoderInput{
+			EncoderHiddenStates: req.Embeddings,
+			HiddenSize:          hiddenSize,
+		}
+		if len(req.AttentionMask) > 0 {
+			// Convert []int to []int64
+			input.AttentionMask = make([]int64, len(req.AttentionMask))
+			for i, v := range req.AttentionMask {
+				input.AttentionMask[i] = int64(v)
+			}
+		}
+
+		ln.logger.Debug("decoding from embeddings",
+			zap.String("model", req.Model),
+			zap.Int("seq_len", len(req.Embeddings)),
+			zap.Int("hidden_size", hiddenSize))
+
+		output, err = dec.DecodeFromEmbeddings(r.Context(), input, opts)
+	} else {
+		// Text prompt path: standard generation
+		ln.logger.Debug("decoding from prompt",
+			zap.String("model", req.Model),
+			zap.String("prompt", req.Prompt))
+
+		output, err = model.Generate(r.Context(), []string{req.Prompt})
+	}
+
+	if err != nil {
+		ln.logger.Error("decode failed",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("decode failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	ln.logger.Info("decode request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_outputs", len(output.Texts)))
+
+	// Build response - flatten nested texts
+	var texts []string
+	for _, batch := range output.Texts {
+		texts = append(texts, batch...)
+	}
+
+	resp := DecodeResponse{
+		Model: req.Model,
+		Texts: texts,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

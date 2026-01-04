@@ -421,6 +421,100 @@ func (c *TermiteClient) RewriteText(ctx context.Context, model string, inputs []
 	return resp.JSON200, nil
 }
 
+// DecodeConfig contains configuration for text decoding/generation.
+type DecodeConfig struct {
+	MaxTokens   int
+	Temperature float32
+	TopP        float32
+}
+
+// DecodeText decodes text from a prompt using a Seq2Seq model.
+func (c *TermiteClient) DecodeText(ctx context.Context, model string, prompt string, cfg *DecodeConfig) (*oapi.DecodeResponse, error) {
+	req := oapi.DecodeRequest{
+		Model:  model,
+		Prompt: prompt,
+	}
+
+	if cfg != nil {
+		if cfg.MaxTokens > 0 {
+			req.MaxTokens = cfg.MaxTokens
+		}
+		if cfg.Temperature > 0 {
+			req.Temperature = cfg.Temperature
+		}
+		if cfg.TopP > 0 {
+			req.TopP = cfg.TopP
+		}
+	}
+
+	resp, err := c.client.DecodeTextWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
+// DecodeFromEmbeddings generates text from pre-computed encoder hidden states.
+// This enables embedding-to-text generation by bypassing the encoder.
+func (c *TermiteClient) DecodeFromEmbeddings(ctx context.Context, model string, embeddings [][]float32, cfg *DecodeConfig) (*oapi.DecodeResponse, error) {
+	req := oapi.DecodeRequest{
+		Model:      model,
+		Embeddings: embeddings,
+	}
+
+	if cfg != nil {
+		if cfg.MaxTokens > 0 {
+			req.MaxTokens = cfg.MaxTokens
+		}
+		if cfg.Temperature > 0 {
+			req.Temperature = cfg.Temperature
+		}
+		if cfg.TopP > 0 {
+			req.TopP = cfg.TopP
+		}
+	}
+
+	resp, err := c.client.DecodeTextWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
 // GenerateConfig contains configuration for text generation.
 type GenerateConfig struct {
 	MaxTokens   int
