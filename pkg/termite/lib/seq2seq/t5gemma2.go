@@ -84,6 +84,8 @@ type T5Gemma2GeneratorConfig struct {
 	Temperature float32 `json:"temperature"`
 	// TopP is the nucleus sampling probability (used when DoSample=true)
 	TopP float32 `json:"top_p"`
+	// RepetitionPenalty penalizes repeated tokens (1.0 = no penalty, >1.0 = penalize)
+	RepetitionPenalty float32 `json:"repetition_penalty"`
 	// ImageSize for vision encoder preprocessing
 	ImageSize int `json:"image_size"`
 	// HiddenSize of the model
@@ -159,6 +161,15 @@ func NewT5Gemma2GeneratorWithSession(modelPath string, sharedSession *khugot.Ses
 	pipelineName := fmt.Sprintf("t5gemma2-seq2seq:%s", filepath.Base(modelPath))
 	pipelineOptions := []khugot.Seq2SeqOption{
 		pipelines.WithSeq2SeqMaxTokens(config.MaxNewTokens),
+		// T5Gemma2 models produce a garbage first token due to decoder_start_token_id
+		// being None in the model config. Skip it in output.
+		pipelines.WithSkipFirstToken(true),
+	}
+
+	// Apply repetition penalty if configured (default is 1.2)
+	if config.RepetitionPenalty > 0 {
+		pipelineOptions = append(pipelineOptions,
+			pipelines.WithRepetitionPenalty(config.RepetitionPenalty))
 	}
 
 	if config.DoSample && config.TopP > 0 && config.Temperature > 0 {
@@ -446,13 +457,14 @@ func (g *T5Gemma2Generator) Close() error {
 // loadT5Gemma2GeneratorConfig loads T5Gemma-2 generation config from model directory
 func loadT5Gemma2GeneratorConfig(modelPath string) (T5Gemma2GeneratorConfig, error) {
 	config := T5Gemma2GeneratorConfig{
-		MaxNewTokens: 256,
-		NumBeams:     1,
-		DoSample:     false,
-		Temperature:  1.0,
-		TopP:         1.0,
-		ImageSize:    896,
-		HiddenSize:   640,
+		MaxNewTokens:      256,
+		NumBeams:          1,
+		DoSample:          false,
+		Temperature:       1.0,
+		TopP:              1.0,
+		RepetitionPenalty: 1.2, // Default penalty to avoid degenerate repetition
+		ImageSize:         896,
+		HiddenSize:        640,
 	}
 
 	// Try t5gemma2_config.json first, then config.json
@@ -474,11 +486,12 @@ func loadT5Gemma2GeneratorConfig(modelPath string) (T5Gemma2GeneratorConfig, err
 			Task      string `json:"task"`
 			HiddenSize int `json:"hidden_size"`
 			GenerationConfig struct {
-				MaxNewTokens int     `json:"max_new_tokens"`
-				NumBeams     int     `json:"num_beams"`
-				DoSample     bool    `json:"do_sample"`
-				Temperature  float32 `json:"temperature"`
-				TopP         float32 `json:"top_p"`
+				MaxNewTokens      int     `json:"max_new_tokens"`
+				NumBeams          int     `json:"num_beams"`
+				DoSample          bool    `json:"do_sample"`
+				Temperature       float32 `json:"temperature"`
+				TopP              float32 `json:"top_p"`
+				RepetitionPenalty float32 `json:"repetition_penalty"`
 			} `json:"generation_config"`
 			Encoder struct {
 				VisionConfig struct {
@@ -510,6 +523,9 @@ func loadT5Gemma2GeneratorConfig(modelPath string) (T5Gemma2GeneratorConfig, err
 		}
 		if rawConfig.GenerationConfig.TopP > 0 {
 			config.TopP = rawConfig.GenerationConfig.TopP
+		}
+		if rawConfig.GenerationConfig.RepetitionPenalty > 0 {
+			config.RepetitionPenalty = rawConfig.GenerationConfig.RepetitionPenalty
 		}
 
 		if rawConfig.Encoder.VisionConfig.ImageSize > 0 {

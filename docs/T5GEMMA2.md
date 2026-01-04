@@ -250,6 +250,19 @@ T5Gemma-2 requires significant RAM for export:
 
 Use `--skip-vision` if you only need text capabilities.
 
+### Out of Memory During Inference
+
+The 270M model requires significant RAM for inference due to ONNX model sizes:
+- **Text embeddings only**: ~2GB RAM (encoder.onnx: 1.07GB + overhead)
+- **Text generation (seq2seq)**: ~6GB RAM (encoder + 2x decoder ~4.5GB + overhead)
+- **With vision encoder**: Add ~2GB RAM (vision_encoder.onnx: 1.67GB)
+
+**Memory reduction tips:**
+1. **Use text-only mode**: If you don't need images, the vision encoder loads lazily
+2. **Limit max_loaded_models**: Set `max_loaded_models: 1` in config
+3. **Reduce keep_alive**: Set `keep_alive: 1m` to unload models quickly
+4. **Test on a machine with more RAM**: The 270M model needs at least 8GB free RAM
+
 ### Slow Inference
 
 Ensure you're using the ONNX build:
