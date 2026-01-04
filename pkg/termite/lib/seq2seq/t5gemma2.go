@@ -60,6 +60,7 @@ type T5Gemma2Generator struct {
 	sessionShared   bool
 	config          T5Gemma2GeneratorConfig
 	modelPath       string
+	pipelineName    string // pipeline name for hugot registry cleanup
 
 	// Lazy loading for vision encoder
 	hasVisionFile bool       // true if vision_encoder.onnx exists
@@ -213,6 +214,7 @@ func NewT5Gemma2GeneratorWithSession(modelPath string, sharedSession *khugot.Ses
 		sessionShared:   sessionShared,
 		config:          config,
 		modelPath:       modelPath,
+		pipelineName:    pipelineName,
 		hasVisionFile:   hasVision,
 	}, nil
 }
@@ -512,9 +514,12 @@ func (g *T5Gemma2Generator) DecodeFromEmbeddings(
 func (g *T5Gemma2Generator) Close() error {
 	var errs []error
 
-	if g.seq2seqPipeline != nil {
-		if err := g.seq2seqPipeline.Destroy(); err != nil {
-			errs = append(errs, fmt.Errorf("destroying seq2seq pipeline: %w", err))
+	// Use ClosePipeline to properly remove from session registry AND destroy resources.
+	// Just calling Destroy() would leave a stale entry in the registry, causing
+	// "pipeline already initialised" errors on subsequent loads.
+	if g.seq2seqPipeline != nil && g.session != nil && g.pipelineName != "" {
+		if err := khugot.ClosePipeline[*pipelines.Seq2SeqPipeline](g.session, g.pipelineName); err != nil {
+			errs = append(errs, fmt.Errorf("closing seq2seq pipeline: %w", err))
 		}
 	}
 

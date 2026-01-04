@@ -463,6 +463,118 @@ func loadT5Gemma2Config(modelPath string) (*T5Gemma2Config, error) {
 	}, nil
 }
 
+// Ensure T5Gemma2Embedder implements HiddenStatesEmbedder
+var _ HiddenStatesEmbedder = (*T5Gemma2Embedder)(nil)
+
+// EmbedWithHiddenStates returns raw encoder hidden states before mean pooling.
+// This is useful for passing to the decode API for text generation from custom embeddings.
+//
+// The returned hidden states have shape [batch_size][seq_len][hidden_size] where:
+// - batch_size: number of input texts
+// - seq_len: number of tokens in each input (varies per input)
+// - hidden_size: 640 for T5Gemma-2 270M
+func (t *T5Gemma2Embedder) EmbedWithHiddenStates(ctx context.Context, contents [][]ai.ContentPart) (*HiddenStatesOutput, error) {
+	if len(contents) == 0 {
+		return &HiddenStatesOutput{
+			HiddenStates:  [][][]float32{},
+			AttentionMask: [][]int64{},
+		}, nil
+	}
+
+	// Extract text from contents (only text supported for hidden states currently)
+	texts := make([]string, 0, len(contents))
+	for _, parts := range contents {
+		for _, part := range parts {
+			if tc, ok := part.(ai.TextContent); ok {
+				texts = append(texts, tc.Text)
+				break
+			}
+		}
+	}
+
+	if len(texts) == 0 {
+		return nil, errors.New("no text content found in inputs")
+	}
+
+	// Create batch and run preprocessing (tokenization)
+	batch := backends.NewBatch(len(texts))
+	defer func() {
+		if batch.DestroyInputs != nil {
+			_ = batch.DestroyInputs()
+		}
+	}()
+
+	if err := t.encoderPipeline.Preprocess(batch, texts); err != nil {
+		return nil, fmt.Errorf("preprocessing inputs: %w", err)
+	}
+
+	// Run forward pass (encoder inference)
+	if err := t.encoderPipeline.Forward(batch); err != nil {
+		return nil, fmt.Errorf("running encoder forward: %w", err)
+	}
+
+	// Extract raw hidden states from batch.OutputValues
+	// The output shape is [batch_size, seq_len, hidden_size]
+	if len(batch.OutputValues) == 0 {
+		return nil, errors.New("no output from encoder")
+	}
+
+	hiddenStates, attentionMask, err := t.extractHiddenStates(batch)
+	if err != nil {
+		return nil, fmt.Errorf("extracting hidden states: %w", err)
+	}
+
+	return &HiddenStatesOutput{
+		HiddenStates:  hiddenStates,
+		AttentionMask: attentionMask,
+	}, nil
+}
+
+// extractHiddenStates converts batch.OutputValues to the expected format.
+// The raw ONNX output is typically [batch, seq_len, hidden_size] as float32.
+func (t *T5Gemma2Embedder) extractHiddenStates(batch *backends.PipelineBatch) ([][][]float32, [][]int64, error) {
+	// Get the first output (encoder hidden states)
+	rawOutput := batch.OutputValues[0]
+
+	// The output can be in different formats depending on the backend
+	var hiddenStates [][][]float32
+
+	switch v := rawOutput.(type) {
+	case [][][]float32:
+		// Already in the expected format [batch, seq_len, hidden_size]
+		hiddenStates = v
+	case [][]float32:
+		// Flattened format [batch, seq_len * hidden_size] - need to reshape
+		hiddenSize := t.config.HiddenSize
+		hiddenStates = make([][][]float32, len(v))
+		for i, flat := range v {
+			seqLen := len(flat) / hiddenSize
+			if seqLen*hiddenSize != len(flat) {
+				return nil, nil, fmt.Errorf("unexpected embedding dimension: %d (not divisible by hidden_size %d)", len(flat), hiddenSize)
+			}
+			hiddenStates[i] = make([][]float32, seqLen)
+			for j := 0; j < seqLen; j++ {
+				hiddenStates[i][j] = flat[j*hiddenSize : (j+1)*hiddenSize]
+			}
+		}
+	default:
+		return nil, nil, fmt.Errorf("unexpected output type: %T", rawOutput)
+	}
+
+	// Extract attention masks from batch.Input, trimmed to match hidden states length
+	attentionMask := make([][]int64, len(hiddenStates))
+	for i := range hiddenStates {
+		seqLen := len(hiddenStates[i])
+		attentionMask[i] = make([]int64, seqLen)
+		// Fill with 1s for actual tokens (hidden states only contain non-padded tokens)
+		for j := 0; j < seqLen; j++ {
+			attentionMask[i][j] = 1
+		}
+	}
+
+	return hiddenStates, attentionMask, nil
+}
+
 // IsT5Gemma2Model checks if a model directory contains T5Gemma-2 model files.
 // Only encoder.onnx is required; vision_encoder.onnx is optional for text-only use.
 func IsT5Gemma2Model(modelPath string) bool {
