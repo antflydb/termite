@@ -75,25 +75,33 @@ func (b *onnxDarwinBackend) CreateSession(opts ...options.WithOption) (*hugot.Se
 	var baseOpts []options.WithOption
 
 	// Check for custom library path from environment
-	if libPath := getOnnxLibraryPath(); libPath != "" {
+	libPath := getOnnxLibraryPath()
+	if libPath != "" {
 		baseOpts = append(baseOpts, options.WithOnnxLibraryPath(libPath))
 	}
 
-	// Only add CoreML if not explicitly disabled via GPUModeOff.
+	// CoreML Execution Provider is DISABLED by default.
 	//
-	// Benchmarks show pure ONNX Runtime CPU significantly outperforms CoreML EP
-	// for embedding models due to CoreML bridge layer overhead:
-	//   - CoreML (100 individual): 1.63s total, 16.33ms/request
-	//   - Pure ONNX CPU (batch 100): 129ms total, 1.29ms/text (12.7x faster)
-	//   - Single requests: CoreML 14.5ms vs ONNX CPU 1.95ms (7.4x faster)
+	// There are multiple reasons to avoid CoreML EP:
 	//
-	// Additionally, CoreML EP cannot handle dynamic batch sizes > 1.
+	// 1. CRITICAL: CoreML EP cannot handle ONNX models with external data files
+	//    (.onnx.data). During model optimization, CoreML loses the path context
+	//    needed to load external weights, causing "model_path must not be empty"
+	//    errors. Most generative models use external data for their large weights.
+	//
+	// 2. Performance: Benchmarks show pure ONNX Runtime CPU significantly
+	//    outperforms CoreML EP for embedding models due to bridge layer overhead:
+	//    - CoreML (100 individual): 1.63s total, 16.33ms/request
+	//    - Pure ONNX CPU (batch 100): 129ms total, 1.29ms/text (12.7x faster)
+	//    - Single requests: CoreML 14.5ms vs ONNX CPU 1.95ms (7.4x faster)
+	//
+	// 3. Batching: CoreML EP cannot handle dynamic batch sizes > 1.
+	//
+	// To force-enable CoreML (experimental), set TERMITE_FORCE_COREML=1.
+	// This may work for models with embedded weights and fixed batch sizes.
 	// See pkg/termite/lib/embeddings/benchmark_batch_test.go for details.
-	//
-	// Alternative: Export models with fixed batch dimensions (e.g., batch=8) to enable
-	// CoreML with batching. This requires re-exporting models and padding inputs to
-	// match the fixed size. See scripts/export_model_to_registry.py for model export.
-	if b.GetGPUMode() != GPUModeOff {
+	forceCoreML := os.Getenv("TERMITE_FORCE_COREML") != ""
+	if forceCoreML && b.GetGPUMode() != GPUModeOff {
 		coremlConfig := b.getCoreMLConfig()
 		baseOpts = append(baseOpts, options.WithCoreML(coremlConfig))
 	}

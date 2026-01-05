@@ -160,6 +160,7 @@ func (sm *SessionManager) GetSessionForModel(modelBackends []string, opts ...opt
 	}
 
 	// Try each backend spec in priority order
+	var lastErr error
 	for _, spec := range priority {
 		// Skip if model doesn't support this backend (unless model has no restrictions)
 		if len(modelBackends) > 0 && !modelBackendSet[spec.Backend] {
@@ -177,6 +178,16 @@ func (sm *SessionManager) GetSessionForModel(modelBackends []string, opts ...opt
 		if err == nil {
 			return session, spec.Backend, nil
 		}
+		lastErr = err
+		// Note: logging would require adding a logger dependency; for now errors are collected
+	}
+
+	// Include the last error in the returned error for debugging
+	if lastErr != nil {
+		if len(modelBackends) > 0 {
+			return nil, "", fmt.Errorf("no available backends matching model requirements %v: last error: %w", modelBackends, lastErr)
+		}
+		return nil, "", fmt.Errorf("no available backends: last error: %w", lastErr)
 	}
 
 	if len(modelBackends) > 0 {

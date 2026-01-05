@@ -1,10 +1,10 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e h1:eMZroZI7khBu/Ss59ZWBd7yjDP0SYJBkIqyIczMa4eY=
-github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e/go.mod h1:RsUjlcpFngzCXJL4yB5HPjItTAq0MgzMGb6JFy99H3s=
+github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3 h1:Gc2XhrQbiDBa5f3ksgdjjp4b/Lz2CQIv/PB3YKlyhpU=
+github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3/go.mod h1:RsUjlcpFngzCXJL4yB5HPjItTAq0MgzMGb6JFy99H3s=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670 h1:bT8mAdiBPSwQz2O4aPbbfZgj8JQZiqTnBZ+FPqN/TTI=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
-github.com/antflydb/antfly-go/libaf v0.0.0-20260104052131-bee4a5f15200 h1:QQlQ3cqE3ldQKiTshgjONNYUAHpe8dRQjyy8MScKC3M=
-github.com/antflydb/antfly-go/libaf v0.0.0-20260104052131-bee4a5f15200/go.mod h1:4N7js/jQ7HBnyjMjYW2VeWTuSfG67qlI7EV8kVa09DE=
+github.com/antflydb/antfly-go/libaf v0.0.0-20260104234649-2c9c8180d310 h1:CTLKHi35zPmnmRYTPWz1aXwGUNY1xIY2nOjHm8/NyGk=
+github.com/antflydb/antfly-go/libaf v0.0.0-20260104234649-2c9c8180d310/go.mod h1:ouPhREaVNc8jumhynD2caz55hYTIN1UdVwaVVAHpzTA=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0/go.mod h1:lvDnEdqiQrp0O42VQGgmlKpxL1AP2+08jFMw88y4klk=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=

@@ -263,8 +263,9 @@ func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (gener
 	var loadErr error
 
 	if r.sessionManager != nil {
+		// Generative models only support ONNX backend currently
 		model, backendUsed, loadErr = generation.NewHugotGeneratorWithSessionManager(
-			modelPath, r.sessionManager, nil, r.logger.Named(cacheKey))
+			modelPath, r.sessionManager, []string{"onnx"}, r.logger.Named(cacheKey))
 	} else {
 		model, loadErr = generation.NewHugotGeneratorWithSession(
 			modelPath, nil, r.logger.Named(cacheKey))

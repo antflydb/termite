@@ -897,7 +897,10 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	// Get generator from registry
 	generator, err := ln.generatorRegistry.Get(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		ln.logger.Error("Failed to get generator",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("model not found: %s: %v", req.Model, err), http.StatusNotFound)
 		return
 	}
 
