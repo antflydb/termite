@@ -11,15 +11,15 @@ func TestFlorencePrompt(t *testing.T) {
 		task     FlorenceTask
 		expected string
 	}{
-		{FlorenceCaption, "<CAPTION>"},
-		{FlorenceDetailedCaption, "<DETAILED_CAPTION>"},
-		{FlorenceMoreDetailedCaption, "<MORE_DETAILED_CAPTION>"},
-		{FlorenceOCR, "<OCR>"},
-		{FlorenceOCRWithRegion, "<OCR_WITH_REGION>"},
-		{FlorenceObjectDetection, "<OD>"},
-		{FlorenceDenseRegionCaption, "<DENSE_REGION_CAPTION>"},
-		{FlorenceRegionProposal, "<REGION_PROPOSAL>"},
-		{FlorenceCaptionToGrounding, "<CAPTION_TO_PHRASE_GROUNDING>"},
+		{FlorenceCaption, "What does the image describe?"},
+		{FlorenceDetailedCaption, "Describe in detail what is shown in the image."},
+		{FlorenceMoreDetailedCaption, "Describe with a paragraph what is shown in the image."},
+		{FlorenceOCR, "What is the text in the image?"},
+		{FlorenceOCRWithRegion, "What is the text in the image, with regions?"},
+		{FlorenceObjectDetection, "Locate the objects with category name in the image."},
+		{FlorenceDenseRegionCaption, "Locate the objects in the image, with their descriptions."},
+		{FlorenceRegionProposal, "Locate the region proposals in the image."},
+		{FlorenceCaptionToGrounding, "Locate the phrases in the caption:"},
 	}
 
 	for _, tt := range tests {
@@ -31,7 +31,7 @@ func TestFlorencePrompt(t *testing.T) {
 
 func TestFlorenceGroundingPrompt(t *testing.T) {
 	caption := "A green car parked in front of a yellow building."
-	expected := "<CAPTION_TO_PHRASE_GROUNDING>A green car parked in front of a yellow building."
+	expected := "Locate the phrases in the caption:A green car parked in front of a yellow building."
 	assert.Equal(t, expected, FlorenceGroundingPrompt(caption))
 }
 
@@ -81,5 +81,5 @@ func TestFlorenceTaskFromString(t *testing.T) {
 
 func TestFlorenceTaskString(t *testing.T) {
 	task := FlorenceOCR
-	assert.Equal(t, "<OCR>", task.String())
+	assert.Equal(t, "What is the text in the image?", task.String())
 }
