@@ -6,12 +6,12 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3
 
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260104052131-bee4a5f15200
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260104234649-2c9c8180d310
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
