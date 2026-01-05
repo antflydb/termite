@@ -6,12 +6,12 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260101005223-9b602a8e2c35
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e
 
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260104052131-bee4a5f15200
 	github.com/bytedance/sonic v1.14.2
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
@@ -94,7 +94,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
-	github.com/tinylib/msgp v1.6.2 // indirect
+	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/viant/afs v1.30.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect

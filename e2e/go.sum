@@ -1,4 +1,6 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
+github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e h1:eMZroZI7khBu/Ss59ZWBd7yjDP0SYJBkIqyIczMa4eY=
+github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670 h1:bT8mAdiBPSwQz2O4aPbbfZgj8JQZiqTnBZ+FPqN/TTI=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574 h1:ygke1F5fa0y0lozmoQCX+r21Jl0T1CazefEApCE3t8w=
 github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574/go.mod h1:Cm2P05Au+crlgKA+S5URoIpyw1bjegC7AEjl5liBrDk=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
@@ -63,10 +65,6 @@ github.com/gomlx/go-huggingface v0.3.1 h1:kMXA0ecTKywh4xo3WpklCDqUPmyg4ihsyftgCZ
 github.com/gomlx/go-huggingface v0.3.1/go.mod h1:j1cd4gD0A2pwdYHZfkPMYfYr1C+KHCc2YA1kTEBWlTo=
 github.com/gomlx/go-xla v0.1.4 h1:7u1RcRBuCBZefQcmcQXSrJ9PmpxXMbmszmDT4dubibw=
 github.com/gomlx/go-xla v0.1.4/go.mod h1:6OfAcL+h+es7KHz6q0Ql9Vzi5MTys99MJ7aR3Nhko/o=
-github.com/gomlx/gomlx v0.26.0 h1:ra0MtgdUh2rgor3aNodcqeGGJqPLrot3yBm0UqG+lbI=
-github.com/gomlx/gomlx v0.26.0/go.mod h1:8nkmYYv9PF1xbRbX1xNqaQYm3VcAJLs5q9j5kyyRuBk=
-github.com/gomlx/onnx-gomlx v0.3.4 h1:qH3yQNXsbyrKHCGHgcITHkLPS7nWF+LEC9v6Bky7jtc=
-github.com/gomlx/onnx-gomlx v0.3.4/go.mod h1:V0xRbk2eozhH6FCx3RmyjNcfi7AujLP+mmaOHOpr65s=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
@@ -85,10 +83,6 @@ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzh
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/klauspost/crc32 v1.3.0 h1:sSmTt3gUt81RP655XGZPElI0PelVTZ6YwCRnPSupoFM=
 github.com/klauspost/crc32 v1.3.0/go.mod h1:D7kQaZhnkX/Y0tstFGf8VUzv2UofNGqCjnC3zdHB0Hw=
-github.com/knights-analytics/hugot v0.6.1 h1:fno7SwVbrOpQO9zcJXvNo9Yqns8GmWwAYH56tsyPxkM=
-github.com/knights-analytics/hugot v0.6.1/go.mod h1:friObWE4ClAm3T2in9m8w9QGowZJV93dGPW8nn0Fq0E=
-github.com/knights-analytics/ortgenai v0.0.1 h1:AJdqqjWMtMRfXn9Lf6RQ+fJ6W6f8bBHuf1KXQGUgDAk=
-github.com/knights-analytics/ortgenai v0.0.1/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
@@ -171,6 +165,8 @@ github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c h1:pwb4kNSHb4K89
 github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c/go.mod h1:2gwkXLWbDGUQWeL3RtpCmcY4mzCtU13kb9UsAg9xMaw=
 github.com/sugarme/tokenizer v0.3.0 h1:FE8DYbNSz/kSbgEo9l/RjgYHkIJYEdskumitFQBE9FE=
 github.com/sugarme/tokenizer v0.3.0/go.mod h1:VJ+DLK5ZEZwzvODOWwY0cw+B1dabTd3nCB5HuFCItCc=
+github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7 h1:9WfUFJSnLpAlSEWUUtucZrDSDZmE60H0xQPHohksQu8=
+github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687 h1:mPN2mhB+q1DwpMnJCdmG79oFtohAgomHfw45pdxurys=
 github.com/tinylib/msgp v1.6.2 h1:D40LN895O9HJpN8n5Ksqk+abl7zw6RtizDwgRCE7hXk=
 github.com/tinylib/msgp v1.6.2/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
 github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS4MhqMhdFk5YI=

@@ -49,10 +49,11 @@ github.com/NYTimes/gziphandler v1.1.1/go.mod h1:n/CVRwUEOgIxrgPvAQhUUr9oeUtvrhMo
 github.com/Shopify/goreferrer v0.0.0-20220729165902-8cddb4f5de06/go.mod h1:7erjKLwalezA0k99cWs5L11HWOAPNjdUZ6RxH1BXbbM=
 github.com/ajroetker/hugot v0.0.0-20251229040509-3dc1031934d6 h1:sMCUPp1t4ClAZ7RoBfbF9mFPZ4fwu3/TktqtXj7dyrs=
 github.com/ajroetker/hugot v0.0.0-20251229040509-3dc1031934d6/go.mod h1:HM0TApRamY//nlzNqZCIlP1muD8mvkdYSka3bmRrm7Y=
+github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e h1:eMZroZI7khBu/Ss59ZWBd7yjDP0SYJBkIqyIczMa4eY=
+github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e/go.mod h1:RsUjlcpFngzCXJL4yB5HPjItTAq0MgzMGb6JFy99H3s=
 github.com/ajroetker/ortgenai v0.0.0-20251229052243-d2d8091589c4/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/ajroetker/ortgenai v0.0.0-20260101101217-6423af4e4878 h1:5tWcPKi9eDbiaW3hDw+vwIupoz1nJT7xEFtLKB60Vxk=
 github.com/ajroetker/ortgenai v0.0.0-20260101101217-6423af4e4878/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
-github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/alecthomas/kingpin/v2 v2.4.0/go.mod h1:0gyi0zQnjuFk8xrkNKamJoyUo382HRL7ATRpFZCw6tE=
 github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b/go.mod h1:fvzegU4vN3H1qMT+8wDmzjAcDONcgo2/SZ/TyfdUOFs=

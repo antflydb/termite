@@ -6,6 +6,7 @@ require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
+	github.com/knights-analytics/hugot v0.6.1
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
@@ -17,7 +18,6 @@ require (
 	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/charmbracelet/colorprofile v0.3.1 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -42,7 +42,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
-	github.com/knights-analytics/hugot v0.6.1 // indirect
 	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
@@ -95,3 +94,11 @@ require (
 replace github.com/antflydb/termite/pkg/client => ../pkg/client
 
 replace github.com/antflydb/termite/pkg/termite => ../pkg/termite
+
+replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7
+
+replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
+
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260104231007-6a42df6e9b6e
+
+replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670
