@@ -28,34 +28,77 @@ import (
 )
 
 func TestClientFetchIndex(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/index.json" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{
-				"schemaVersion": 1,
-				"models": [
-					{"name": "bge-small", "type": "embedder", "size": 1000}
-				]
-			}`))
-			return
+	t.Run("schema v1", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/index.json" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"schemaVersion": 1,
+					"models": [
+						{"name": "bge-small", "type": "embedder", "size": 1000}
+					]
+				}`))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
+
+		client := NewClient(WithBaseURL(server.URL + "/v1"))
+
+		index, err := client.FetchIndex(context.Background())
+		if err != nil {
+			t.Fatalf("FetchIndex() error = %v", err)
 		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
 
-	client := NewClient(WithBaseURL(server.URL + "/v1"))
+		if len(index.Models) != 1 {
+			t.Errorf("len(Models) = %v, want 1", len(index.Models))
+		}
+		if index.Models[0].Name != "bge-small" {
+			t.Errorf("Models[0].Name = %v, want bge-small", index.Models[0].Name)
+		}
+	})
 
-	index, err := client.FetchIndex(context.Background())
-	if err != nil {
-		t.Fatalf("FetchIndex() error = %v", err)
-	}
+	t.Run("schema v2", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/index.json" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"schemaVersion": 2,
+					"models": [
+						{"name": "bge-small-en-v1.5", "owner": "BAAI", "source": "BAAI/bge-small-en-v1.5", "type": "embedder", "size": 1000, "variants": ["i8", "f16"]},
+						{"name": "mxbai-rerank-base-v1", "owner": "mixedbread-ai", "source": "mixedbread-ai/mxbai-rerank-base-v1", "type": "reranker", "size": 2000}
+					]
+				}`))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer server.Close()
 
-	if len(index.Models) != 1 {
-		t.Errorf("len(Models) = %v, want 1", len(index.Models))
-	}
-	if index.Models[0].Name != "bge-small" {
-		t.Errorf("Models[0].Name = %v, want bge-small", index.Models[0].Name)
-	}
+		client := NewClient(WithBaseURL(server.URL + "/v1"))
+
+		index, err := client.FetchIndex(context.Background())
+		if err != nil {
+			t.Fatalf("FetchIndex() error = %v", err)
+		}
+
+		if index.SchemaVersion != 2 {
+			t.Errorf("SchemaVersion = %v, want 2", index.SchemaVersion)
+		}
+		if len(index.Models) != 2 {
+			t.Errorf("len(Models) = %v, want 2", len(index.Models))
+		}
+		if index.Models[0].Owner != "BAAI" {
+			t.Errorf("Models[0].Owner = %v, want BAAI", index.Models[0].Owner)
+		}
+		if index.Models[0].Source != "BAAI/bge-small-en-v1.5" {
+			t.Errorf("Models[0].Source = %v, want BAAI/bge-small-en-v1.5", index.Models[0].Source)
+		}
+		if len(index.Models[0].Variants) != 2 {
+			t.Errorf("Models[0].Variants = %v, want [i8, f16]", index.Models[0].Variants)
+		}
+	})
 }
 
 func TestClientFetchManifest(t *testing.T) {

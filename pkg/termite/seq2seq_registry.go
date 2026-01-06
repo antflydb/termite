@@ -73,6 +73,13 @@ func NewSeq2SeqRegistry(
 		logger = zap.NewNop()
 	}
 
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	// This must be set before any sessions are created.
+	hugot.SetGPUMode(hugot.GPUModeOff)
+
 	keepAlive := config.KeepAlive
 	if keepAlive == 0 {
 		keepAlive = ttlcache.NoTTL // Never expire

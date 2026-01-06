@@ -36,12 +36,16 @@ const (
 )
 
 // TestRewriteE2E tests the Rewriter (Seq2Seq text rewriting) pipeline:
-// 1. Starts termite server with Rewriter model
-// 2. Tests text rewriting (question generation from context)
+// 1. Downloads Rewriter model if not present (lazy download)
+// 2. Starts termite server with Rewriter model
+// 3. Tests text rewriting (question generation from context)
 func TestRewriteE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+
+	// Ensure rewriter model is downloaded (lazy download)
+	ensureRegistryModel(t, rewriterModelName, ModelTypeRewriter)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

@@ -44,6 +44,15 @@
       "owner": "lmqg"
     },
     {
+      "name": "pegasus_paraphrase",
+      "type": "rewriter",
+      "description": "PEGASUS model fine-tuned for paraphrasing",
+      "source": "tuner007/pegasus_paraphrase",
+      "size": 4800242942,
+      "variants": [],
+      "owner": "tuner007"
+    },
+    {
       "name": "chonky-mmbert-small-multilingual-1",
       "owner": "mirth",
       "type": "chunker",

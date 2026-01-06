@@ -38,29 +38,25 @@ import (
 const functionGemmaModelName = "google/functiongemma-270m-it"
 
 // TestToolCallingE2E tests the tool calling functionality:
-// 1. Uses a model with tool_call_format configured (FunctionGemma)
-// 2. Sends a request with tools defined
-// 3. Verifies the model returns tool calls in the response
+// 1. Downloads FunctionGemma model if not present (lazy download)
+// 2. Uses a model with tool_call_format configured (FunctionGemma)
+// 3. Sends a request with tools defined
+// 4. Verifies the model returns tool calls in the response
 func TestToolCallingE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
 
-	// Check for TERMITE_MODELS_DIR or use temp exported model
-	modelsDir := os.Getenv("TERMITE_MODELS_DIR")
-	if modelsDir == "" {
-		modelsDir = "/tmp/functiongemma-test/models"
-	}
+	// Ensure FunctionGemma model is downloaded (lazy download)
+	ensureRegistryModel(t, functionGemmaModelName, ModelTypeGenerator)
 
-	generatorsDir := filepath.Join(modelsDir, "generators")
-	modelPath := filepath.Join(generatorsDir, functionGemmaModelName)
+	modelsDir := getTestModelsDir()
+	modelPath := filepath.Join(modelsDir, "generators", functionGemmaModelName)
 
 	// Verify the model exists with tool_call_format configured
 	genaiConfigPath := filepath.Join(modelPath, "genai_config.json")
 	if _, err := os.Stat(genaiConfigPath); os.IsNotExist(err) {
-		t.Skipf("FunctionGemma model not found at %s. Export it first with: "+
-			"./scripts/export_model_to_registry.py generator %s --output-dir %s --variants f16 --hf-token YOUR_TOKEN",
-			genaiConfigPath, functionGemmaModelName, filepath.Dir(modelsDir))
+		t.Fatalf("genai_config.json not found at %s after model download", genaiConfigPath)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

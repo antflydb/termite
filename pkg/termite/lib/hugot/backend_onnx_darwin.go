@@ -72,16 +72,73 @@ func (b *onnxDarwinBackend) Priority() int {
 }
 
 func (b *onnxDarwinBackend) CreateSession(opts ...options.WithOption) (*hugot.Session, error) {
-	// Prepend CoreML provider - user options can override if needed
-	coremlOpts := []options.WithOption{options.WithCoreML(nil)}
+	var baseOpts []options.WithOption
 
 	// Check for custom library path from environment
-	if libPath := getOnnxLibraryPath(); libPath != "" {
-		coremlOpts = append(coremlOpts, options.WithOnnxLibraryPath(libPath))
+	libPath := getOnnxLibraryPath()
+	if libPath != "" {
+		baseOpts = append(baseOpts, options.WithOnnxLibraryPath(libPath))
 	}
 
-	opts = append(coremlOpts, opts...)
+	// CoreML Execution Provider is DISABLED by default.
+	//
+	// There are multiple reasons to avoid CoreML EP:
+	//
+	// 1. CRITICAL: CoreML EP cannot handle ONNX models with external data files
+	//    (.onnx.data). During model optimization, CoreML loses the path context
+	//    needed to load external weights, causing "model_path must not be empty"
+	//    errors. Most generative models use external data for their large weights.
+	//
+	// 2. Performance: Benchmarks show pure ONNX Runtime CPU significantly
+	//    outperforms CoreML EP for embedding models due to bridge layer overhead:
+	//    - CoreML (100 individual): 1.63s total, 16.33ms/request
+	//    - Pure ONNX CPU (batch 100): 129ms total, 1.29ms/text (12.7x faster)
+	//    - Single requests: CoreML 14.5ms vs ONNX CPU 1.95ms (7.4x faster)
+	//
+	// 3. Batching: CoreML EP cannot handle dynamic batch sizes > 1.
+	//
+	// To force-enable CoreML (experimental), set TERMITE_FORCE_COREML=1.
+	// This may work for models with embedded weights and fixed batch sizes.
+	// See pkg/termite/lib/embeddings/benchmark_batch_test.go for details.
+	forceCoreML := os.Getenv("TERMITE_FORCE_COREML") != ""
+	if forceCoreML && b.GetGPUMode() != GPUModeOff {
+		coremlConfig := b.getCoreMLConfig()
+		baseOpts = append(baseOpts, options.WithCoreML(coremlConfig))
+	}
+
+	opts = append(baseOpts, opts...)
 	return hugot.NewORTSession(opts...)
+}
+
+// getCoreMLConfig returns the CoreML configuration based on the current GPU mode.
+// Maps GPUMode to CoreML MLComputeUnits:
+//   - GPUModeAuto/GPUModeCoreML: "ALL" (Neural Engine > GPU > CPU)
+//   - GPUModeOff: "CPUOnly"
+//   - GPUModeCuda/GPUModeTpu: "ALL" (not applicable on Mac, fallback to best available)
+func (b *onnxDarwinBackend) getCoreMLConfig() map[string]string {
+	mode := b.GetGPUMode()
+
+	config := make(map[string]string)
+
+	// Map GPUMode to MLComputeUnits
+	switch mode {
+	case GPUModeOff:
+		config["MLComputeUnits"] = "CPUOnly"
+	case GPUModeAuto, GPUModeCoreML, GPUModeCuda, GPUModeTpu, "":
+		// Use ALL to let CoreML pick the best available hardware
+		// (Neural Engine > GPU > CPU based on model and operation)
+		config["MLComputeUnits"] = "ALL"
+	default:
+		config["MLComputeUnits"] = "ALL"
+	}
+
+	// Enable compute plan profiling when TERMITE_DEBUG is set
+	// This logs which hardware (ANE/GPU/CPU) executes each operation
+	if os.Getenv("TERMITE_DEBUG") != "" {
+		config["ProfileComputePlan"] = "1"
+	}
+
+	return config
 }
 
 // getOnnxLibraryPath returns the directory containing libonnxruntime.dylib from environment.

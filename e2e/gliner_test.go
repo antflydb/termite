@@ -30,19 +30,25 @@ import (
 )
 
 const (
-	// GLiNER model name (pulled from HuggingFace in TestMain)
+	// GLiNER model name (downloaded from HuggingFace)
 	// Uses owner/model format matching the directory structure
 	glinerModelName = "onnx-community/gliner_small-v2.1"
+	// The local directory name after download
+	glinerLocalName = "gliner_small-v2.1"
 )
 
 // TestGLiNERE2E tests the GLiNER (entity recognition) pipeline:
-// 1. Starts termite server with GLiNER model
-// 2. Tests entity recognition with default labels
-// 3. Tests entity recognition with custom labels (zero-shot NER)
+// 1. Downloads GLiNER model if not present (lazy download from HuggingFace)
+// 2. Starts termite server with GLiNER model
+// 3. Tests entity recognition with default labels
+// 4. Tests entity recognition with custom labels (zero-shot NER)
 func TestGLiNERE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+
+	// Ensure GLiNER model is downloaded from HuggingFace (lazy download)
+	ensureHuggingFaceModel(t, glinerLocalName, glinerModelName, ModelTypeRecognizer)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -122,15 +128,16 @@ func testListModelsGLiNER(t *testing.T, ctx context.Context, c *client.TermiteCl
 	require.NoError(t, err, "ListModels failed")
 
 	// Check that GLiNER model is in the recognizers or extractors list
+	// Use local name since that's how the server sees it
 	foundRecognizer := false
 	for _, name := range models.Recognizers {
-		if name == glinerModelName {
+		if name == glinerLocalName {
 			foundRecognizer = true
 			break
 		}
 	}
 	for _, name := range models.Extractors {
-		if name == glinerModelName {
+		if name == glinerLocalName {
 			foundRecognizer = true
 			break
 		}
@@ -138,7 +145,7 @@ func testListModelsGLiNER(t *testing.T, ctx context.Context, c *client.TermiteCl
 
 	if !foundRecognizer {
 		t.Errorf("GLiNER model %s not found in recognizers: %v or extractors: %v",
-			glinerModelName, models.Recognizers, models.Extractors)
+			glinerLocalName, models.Recognizers, models.Extractors)
 	} else {
 		t.Logf("Found GLiNER model in recognizers/extractors")
 	}
@@ -153,10 +160,10 @@ func testRecognizeEntities(t *testing.T, ctx context.Context, c *client.TermiteC
 		"Apple Inc. was founded by Steve Jobs.",
 	}
 
-	resp, err := c.Recognize(ctx, glinerModelName, texts, nil)
+	resp, err := c.Recognize(ctx, glinerLocalName, texts, nil)
 	require.NoError(t, err, "Recognize failed")
 
-	assert.Equal(t, glinerModelName, resp.Model)
+	assert.Equal(t, glinerLocalName, resp.Model)
 	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
 
 	// Log the entities found
@@ -184,10 +191,10 @@ func testRecognizeWithCustomLabels(t *testing.T, ctx context.Context, c *client.
 	// Use custom labels for zero-shot NER
 	labels := []string{"product", "company", "date", "vehicle"}
 
-	resp, err := c.Recognize(ctx, glinerModelName, texts, labels)
+	resp, err := c.Recognize(ctx, glinerLocalName, texts, labels)
 	require.NoError(t, err, "Recognize with custom labels failed")
 
-	assert.Equal(t, glinerModelName, resp.Model)
+	assert.Equal(t, glinerLocalName, resp.Model)
 	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
 
 	// Log the entities found

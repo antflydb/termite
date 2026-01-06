@@ -28,9 +28,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// Ensure HugotSeq2Seq implements the Model and QuestionGenerator interfaces
+// Ensure HugotSeq2Seq implements the Model, QuestionGenerator, and Paraphraser interfaces
 var _ Model = (*HugotSeq2Seq)(nil)
 var _ QuestionGenerator = (*HugotSeq2Seq)(nil)
+var _ Paraphraser = (*HugotSeq2Seq)(nil)
 
 // HugotSeq2Seq implements the Model and QuestionGenerator interfaces using Hugot's Seq2SeqPipeline.
 type HugotSeq2Seq struct {
@@ -59,6 +60,12 @@ func NewHugotSeq2SeqWithSession(modelPath string, sharedSession *khugot.Session,
 	logger.Info("Initializing Hugot Seq2Seq model",
 		zap.String("modelPath", modelPath),
 		zap.String("backend", hugot.BackendName()))
+
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	hugot.SetGPUMode(hugot.GPUModeOff)
 
 	// Load seq2seq config if available
 	config := Config{
@@ -154,6 +161,12 @@ func NewHugotSeq2SeqWithSessionManager(modelPath string, sessionManager *hugot.S
 
 	logger.Info("Initializing Hugot Seq2Seq model with SessionManager",
 		zap.String("modelPath", modelPath))
+
+	// Disable CoreML for seq2seq models because:
+	// 1. CoreML cannot handle dynamic batch sizes > 1
+	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
+	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
+	hugot.SetGPUMode(hugot.GPUModeOff)
 
 	// Load seq2seq config if available
 	config := Config{
@@ -266,6 +279,22 @@ func (h *HugotSeq2Seq) GenerateQuestions(ctx context.Context, pairs []AnswerCont
 	inputs := FormatLMQGInputBatch(pairs)
 
 	return h.Generate(ctx, inputs)
+}
+
+// Paraphrase generates paraphrases of the input texts.
+// This is a convenience method for paraphrase models like PEGASUS.
+// The model should be configured with appropriate num_beams and num_return_sequences
+// to generate multiple paraphrase variants.
+func (h *HugotSeq2Seq) Paraphrase(ctx context.Context, texts []string) (*GeneratedOutput, error) {
+	if len(texts) == 0 {
+		return &GeneratedOutput{
+			Texts:  [][]string{},
+			Tokens: [][][]uint32{},
+		}, nil
+	}
+
+	// Paraphrase models take raw text as input
+	return h.Generate(ctx, texts)
 }
 
 // Config returns the model configuration.

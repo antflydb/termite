@@ -171,6 +171,9 @@ var FilenameToVariant = map[string]string{
 // CurrentSchemaVersion is the current manifest schema version
 const CurrentSchemaVersion = 2
 
+// CurrentIndexSchemaVersion is the current registry index schema version
+const CurrentIndexSchemaVersion = 2
+
 // ModelManifest describes an ONNX model and its files
 type ModelManifest struct {
 	// SchemaVersion is the manifest format version (1 = legacy, 2 = with owner/source)
@@ -441,8 +444,8 @@ func ParseRegistryIndex(data []byte) (*RegistryIndex, error) {
 	if err := json.Unmarshal(data, &index); err != nil {
 		return nil, fmt.Errorf("parsing registry index: %w", err)
 	}
-	if index.SchemaVersion != 1 {
-		return nil, fmt.Errorf("unsupported index schema version: %d", index.SchemaVersion)
+	if index.SchemaVersion < 1 || index.SchemaVersion > CurrentIndexSchemaVersion {
+		return nil, fmt.Errorf("unsupported index schema version: %d (expected 1-%d)", index.SchemaVersion, CurrentIndexSchemaVersion)
 	}
 	return &index, nil
 }

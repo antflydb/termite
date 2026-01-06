@@ -208,7 +208,7 @@ func TestParseManifest(t *testing.T) {
 }
 
 func TestParseRegistryIndex(t *testing.T) {
-	validIndex := `{
+	validIndexV1 := `{
 		"schemaVersion": 1,
 		"models": [
 			{"name": "bge-small-en-v1.5", "type": "embedder", "description": "BGE embedding", "size": 12345, "variants": ["i8", "f16"]},
@@ -216,8 +216,16 @@ func TestParseRegistryIndex(t *testing.T) {
 		]
 	}`
 
-	t.Run("valid index", func(t *testing.T) {
-		index, err := ParseRegistryIndex([]byte(validIndex))
+	validIndexV2 := `{
+		"schemaVersion": 2,
+		"models": [
+			{"name": "bge-small-en-v1.5", "owner": "BAAI", "source": "BAAI/bge-small-en-v1.5", "type": "embedder", "description": "BGE embedding", "size": 12345, "variants": ["i8", "f16"]},
+			{"name": "mxbai-rerank-base-v1", "owner": "mixedbread-ai", "source": "mixedbread-ai/mxbai-rerank-base-v1", "type": "reranker", "description": "Reranker", "size": 67890}
+		]
+	}`
+
+	t.Run("valid index v1", func(t *testing.T) {
+		index, err := ParseRegistryIndex([]byte(validIndexV1))
 		if err != nil {
 			t.Fatalf("ParseRegistryIndex() error = %v", err)
 		}
@@ -233,11 +241,39 @@ func TestParseRegistryIndex(t *testing.T) {
 		}
 	})
 
+	t.Run("valid index v2", func(t *testing.T) {
+		index, err := ParseRegistryIndex([]byte(validIndexV2))
+		if err != nil {
+			t.Fatalf("ParseRegistryIndex() error = %v", err)
+		}
+
+		if index.SchemaVersion != 2 {
+			t.Errorf("SchemaVersion = %v, want 2", index.SchemaVersion)
+		}
+		if len(index.Models) != 2 {
+			t.Errorf("len(Models) = %v, want 2", len(index.Models))
+		}
+		if index.Models[0].Owner != "BAAI" {
+			t.Errorf("Models[0].Owner = %v, want BAAI", index.Models[0].Owner)
+		}
+		if index.Models[0].Source != "BAAI/bge-small-en-v1.5" {
+			t.Errorf("Models[0].Source = %v, want BAAI/bge-small-en-v1.5", index.Models[0].Source)
+		}
+	})
+
 	t.Run("invalid schema version", func(t *testing.T) {
 		data := `{"schemaVersion": 99, "models": []}`
 		_, err := ParseRegistryIndex([]byte(data))
 		if err == nil {
 			t.Error("Expected error for invalid schema version")
+		}
+	})
+
+	t.Run("schema version 0 invalid", func(t *testing.T) {
+		data := `{"schemaVersion": 0, "models": []}`
+		_, err := ParseRegistryIndex([]byte(data))
+		if err == nil {
+			t.Error("Expected error for schema version 0")
 		}
 	})
 }

@@ -1079,6 +1079,14 @@ components:
             Set to 0 for unlimited (default). Only effective when keep_alive is non-zero.
           default: 0
           example: 3
+        pool_size:
+          type: integer
+          description: |
+            Number of concurrent inference pipelines per model. Each pipeline loads
+            a copy of the model, so higher values use more memory but allow more
+            concurrent requests. Set to 0 to use the default (min(NumCPU, 4)).
+          default: 0
+          example: 1
         backend_priority:
           type: array
           items:

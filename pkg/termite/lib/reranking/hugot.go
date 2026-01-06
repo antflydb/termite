@@ -186,7 +186,6 @@ func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolS
 			return nil, backendUsed, fmt.Errorf("creating cross-encoder pipeline %d: %w", i, err)
 		}
 		pipelinesList[i] = pipeline
-		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("name", pipelineName))
 	}
 
 	logger.Info("Successfully created pooled cross-encoder pipelines", zap.Int("count", poolSize))

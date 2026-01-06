@@ -19,8 +19,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -37,19 +35,18 @@ const (
 )
 
 // TestREBELE2E tests the REBEL (relation extraction) pipeline:
-// 1. Starts termite server with REBEL model
-// 2. Tests relation extraction via /api/recognize with relations capability
+// 1. Downloads REBEL model if not present (lazy download)
+// 2. Starts termite server with REBEL model
+// 3. Tests relation extraction via /api/recognize with relations capability
 func TestREBELE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
 
-	// Check if REBEL model is available
+	// Ensure REBEL model is downloaded (lazy download)
+	ensureRegistryModel(t, rebelModelName, ModelTypeRecognizer)
+
 	modelsDir := getTestModelsDir()
-	rebelPath := filepath.Join(modelsDir, "recognizers", rebelModelName)
-	if _, err := os.Stat(rebelPath); os.IsNotExist(err) {
-		t.Skipf("REBEL model not available at %s, skipping test", rebelPath)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

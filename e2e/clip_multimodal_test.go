@@ -43,13 +43,17 @@ const (
 )
 
 // TestCLIPMultimodalE2E tests the full CLIP multimodal embedding pipeline:
-// 1. Starts termite server with CLIP model (downloaded by TestMain)
-// 2. Tests text and image embedding
-// 3. Verifies cross-modal embedding dimensions match
+// 1. Downloads CLIP model if not present (lazy download)
+// 2. Starts termite server with CLIP model
+// 3. Tests text and image embedding
+// 4. Verifies cross-modal embedding dimensions match
 func TestCLIPMultimodalE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
+
+	// Ensure CLIP model is downloaded (lazy download)
+	ensureRegistryModel(t, clipModelName, ModelTypeEmbedder)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

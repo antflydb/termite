@@ -22,43 +22,21 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 )
 
-// Models to download for e2e tests (from model registry)
-var testModels = []string{
-	"BAAI/bge-small-en-v1.5",
-	"openai/clip-vit-base-patch32",
-	"lmqg/flan-t5-small-squad-qg",
-	"Babelscape/rebel-large",
-	"google/functiongemma-270m-it",
-	// Uncomment when needed - these are larger models
-	// "mirth/chonky-mmbert-small-multilingual-1",
-	// "mixedbread-ai/mxbai-rerank-base-v1",
-}
-
-// HuggingFace models for e2e tests
-type hfModel struct {
-	name      string
-	repo      string
-	modelType modelregistry.ModelType
-}
-
-var testHFModels = []hfModel{
-	{
-		name:      "gliner_small-v2.1",
-		repo:      "onnx-community/gliner_small-v2.1",
-		modelType: modelregistry.ModelTypeRecognizer,
-	},
-}
-
 // testModelsDir is the shared models directory for all e2e tests
 var testModelsDir string
 
-// TestMain sets up the e2e test environment by downloading required models
+// modelDownloadMutex ensures only one model downloads at a time to avoid
+// duplicate downloads and provide clearer progress output
+var modelDownloadMutex sync.Mutex
+
+// TestMain sets up the e2e test environment (models directory only - downloads are lazy)
 func TestMain(m *testing.M) {
 	// Use TERMITE_MODELS_DIR if set, otherwise use a temp directory
 	testModelsDir = os.Getenv("TERMITE_MODELS_DIR")
@@ -77,31 +55,43 @@ func TestMain(m *testing.M) {
 	}
 
 	fmt.Printf("E2E Test Setup: Using models directory: %s\n", testModelsDir)
-
-	// Skip model downloads if SKIP_MODEL_DOWNLOAD is set (useful for running individual tests)
-	if os.Getenv("SKIP_MODEL_DOWNLOAD") != "true" {
-		// Download models from registry
-		if err := downloadTestModels(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to download test models: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Download HuggingFace models
-		if err := downloadHuggingFaceModels(); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to download HuggingFace models: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		fmt.Printf("Skipping model downloads (SKIP_MODEL_DOWNLOAD=true)\n")
-	}
+	fmt.Printf("E2E Test Setup: Models will be downloaded lazily as needed by each test\n")
 
 	// Run tests
 	code := m.Run()
 	os.Exit(code)
 }
 
-// downloadTestModels downloads all required models for e2e tests
-func downloadTestModels() error {
+// ModelType represents the type of model for determining directory placement
+type ModelType string
+
+const (
+	ModelTypeEmbedder   ModelType = "embedders"
+	ModelTypeReranker   ModelType = "rerankers"
+	ModelTypeChunker    ModelType = "chunkers"
+	ModelTypeRewriter   ModelType = "rewriters"
+	ModelTypeRecognizer ModelType = "recognizers"
+	ModelTypeGenerator  ModelType = "generators"
+)
+
+// ensureRegistryModel downloads a model from the Antfly model registry if not present.
+// It is safe to call from multiple tests - only downloads once.
+// Returns the model path and any error.
+func ensureRegistryModel(t *testing.T, modelName string, modelType ModelType) string {
+	t.Helper()
+
+	modelDownloadMutex.Lock()
+	defer modelDownloadMutex.Unlock()
+
+	modelPath := filepath.Join(testModelsDir, string(modelType), modelName)
+
+	if _, err := os.Stat(modelPath); err == nil {
+		t.Logf("Model %s already exists at %s", modelName, modelPath)
+		return modelPath
+	}
+
+	t.Logf("Downloading model from registry: %s", modelName)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -114,56 +104,45 @@ func downloadTestModels() error {
 				milestone := int(percent / 25)
 				if milestone > lastMilestone[filename] || (downloaded == total && lastMilestone[filename] < 4) {
 					lastMilestone[filename] = milestone
-					fmt.Printf("  %s: %.0f%%\n", filename, percent)
+					t.Logf("  %s: %.0f%%", filename, percent)
 				}
 			}
 		}),
 	)
 
-	for _, modelName := range testModels {
-		// Determine model path based on model type
-		// Path includes owner: embedders/BAAI/bge-small-en-v1.5
-		var modelPath string
-		switch modelName {
-		case "mixedbread-ai/mxbai-rerank-base-v1":
-			modelPath = filepath.Join(testModelsDir, "rerankers", modelName)
-		case "mirth/chonky-mmbert-small-multilingual-1":
-			modelPath = filepath.Join(testModelsDir, "chunkers", modelName)
-		case "lmqg/flan-t5-small-squad-qg":
-			modelPath = filepath.Join(testModelsDir, "rewriters", modelName)
-		case "Babelscape/rebel-large":
-			modelPath = filepath.Join(testModelsDir, "recognizers", modelName)
-		case "google/functiongemma-270m-it":
-			modelPath = filepath.Join(testModelsDir, "generators", modelName)
-		default:
-			modelPath = filepath.Join(testModelsDir, "embedders", modelName)
-		}
-
-		if _, err := os.Stat(modelPath); err == nil {
-			fmt.Printf("Model %s already exists, skipping download\n", modelName)
-			continue
-		}
-
-		fmt.Printf("Downloading model: %s\n", modelName)
-
-		manifest, err := regClient.FetchManifest(ctx, modelName)
-		if err != nil {
-			return fmt.Errorf("fetch manifest for %s: %w", modelName, err)
-		}
-
-		// Pull the f32 variant (default)
-		if err := regClient.PullModel(ctx, manifest, testModelsDir, []string{modelregistry.VariantF32}); err != nil {
-			return fmt.Errorf("pull model %s: %w", modelName, err)
-		}
-
-		fmt.Printf("Downloaded model: %s\n", modelName)
+	manifest, err := regClient.FetchManifest(ctx, modelName)
+	if err != nil {
+		t.Fatalf("Failed to fetch manifest for %s: %v", modelName, err)
 	}
 
-	return nil
+	// Pull the f32 variant (default)
+	if err := regClient.PullModel(ctx, manifest, testModelsDir, []string{modelregistry.VariantF32}); err != nil {
+		t.Fatalf("Failed to pull model %s: %v", modelName, err)
+	}
+
+	t.Logf("Successfully downloaded model: %s", modelName)
+	return modelPath
 }
 
-// downloadHuggingFaceModels downloads models directly from HuggingFace
-func downloadHuggingFaceModels() error {
+// ensureHuggingFaceModel downloads a model directly from HuggingFace if not present.
+// modelName is the name used in the local directory (e.g., "gliner_small-v2.1")
+// repo is the HuggingFace repository (e.g., "onnx-community/gliner_small-v2.1")
+// Returns the model path.
+func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType ModelType) string {
+	t.Helper()
+
+	modelDownloadMutex.Lock()
+	defer modelDownloadMutex.Unlock()
+
+	modelPath := filepath.Join(testModelsDir, string(modelType), modelName)
+
+	if _, err := os.Stat(modelPath); err == nil {
+		t.Logf("HuggingFace model %s already exists at %s", modelName, modelPath)
+		return modelPath
+	}
+
+	t.Logf("Downloading model from HuggingFace: %s from %s", modelName, repo)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -176,39 +155,37 @@ func downloadHuggingFaceModels() error {
 				milestone := int(percent / 25)
 				if milestone > lastMilestone[filename] || (downloaded == total && lastMilestone[filename] < 4) {
 					lastMilestone[filename] = milestone
-					fmt.Printf("  %s: %.0f%%\n", filename, percent)
+					t.Logf("  %s: %.0f%%", filename, percent)
 				}
 			}
 		}),
 	)
 
-	for _, model := range testHFModels {
-		// Get the model path based on type
-		var modelPath string
-		switch model.modelType {
-		case modelregistry.ModelTypeRecognizer:
-			modelPath = filepath.Join(testModelsDir, "recognizers", model.name)
-		case modelregistry.ModelTypeRewriter:
-			modelPath = filepath.Join(testModelsDir, "rewriters", model.name)
-		default:
-			modelPath = filepath.Join(testModelsDir, model.name)
-		}
-
-		if _, err := os.Stat(modelPath); err == nil {
-			fmt.Printf("HuggingFace model %s already exists, skipping download\n", model.name)
-			continue
-		}
-
-		fmt.Printf("Downloading HuggingFace model: %s from %s\n", model.name, model.repo)
-
-		if err := hfClient.PullFromHuggingFace(ctx, model.repo, model.modelType, testModelsDir, ""); err != nil {
-			return fmt.Errorf("pull HuggingFace model %s: %w", model.name, err)
-		}
-
-		fmt.Printf("Downloaded HuggingFace model: %s\n", model.name)
+	// Convert our ModelType to modelregistry.ModelType
+	var regModelType modelregistry.ModelType
+	switch modelType {
+	case ModelTypeRecognizer:
+		regModelType = modelregistry.ModelTypeRecognizer
+	case ModelTypeRewriter:
+		regModelType = modelregistry.ModelTypeRewriter
+	case ModelTypeEmbedder:
+		regModelType = modelregistry.ModelTypeEmbedder
+	case ModelTypeReranker:
+		regModelType = modelregistry.ModelTypeReranker
+	case ModelTypeChunker:
+		regModelType = modelregistry.ModelTypeChunker
+	case ModelTypeGenerator:
+		regModelType = modelregistry.ModelTypeGenerator
+	default:
+		regModelType = modelregistry.ModelTypeEmbedder
 	}
 
-	return nil
+	if err := hfClient.PullFromHuggingFace(ctx, repo, regModelType, testModelsDir, ""); err != nil {
+		t.Fatalf("Failed to pull HuggingFace model %s: %v", modelName, err)
+	}
+
+	t.Logf("Successfully downloaded HuggingFace model: %s", modelName)
+	return modelPath
 }
 
 // findAvailablePort finds an available TCP port

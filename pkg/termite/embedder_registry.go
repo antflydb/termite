@@ -62,6 +62,7 @@ type EmbedderRegistry struct {
 	// Configuration
 	keepAlive       time.Duration
 	maxLoadedModels uint64
+	poolSize        int
 }
 
 // EmbedderConfig configures the embedder registry
@@ -69,6 +70,7 @@ type EmbedderConfig struct {
 	ModelsDir       string
 	KeepAlive       time.Duration // How long to keep models loaded (0 = forever)
 	MaxLoadedModels uint64        // Max models in memory (0 = unlimited)
+	PoolSize        int           // Number of concurrent pipelines per model (0 = default)
 }
 
 // NewEmbedderRegistry creates a new lazy-loading embedder registry
@@ -94,6 +96,7 @@ func NewEmbedderRegistry(
 		pinned:          make(map[string]embeddings.Embedder),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
+		poolSize:        config.PoolSize,
 	}
 
 	// Configure TTL cache with LRU eviction
@@ -187,7 +190,10 @@ func (r *EmbedderRegistry) discoverModels() error {
 		return fmt.Errorf("discovering embedder models: %w", err)
 	}
 
-	poolSize := min(runtime.NumCPU(), 4)
+	poolSize := r.poolSize
+	if poolSize <= 0 {
+		poolSize = min(runtime.NumCPU(), 4)
+	}
 
 	for _, dm := range discovered {
 		modelPath := dm.Path
