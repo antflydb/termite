@@ -33,14 +33,14 @@ This script exports 4 ONNX files:
   4. decoder.onnx - Decoder with past_key_values (efficient generation)
 
 Usage:
-    # Export 270M variant (recommended for development)
-    ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --output ./models/t5gemma2/270m
+    # Export 270M variant (recommended for development) - uses default output path
+    ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m
 
     # Export with testing
-    ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --output ./models/t5gemma2/270m --test
+    ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --test
 
     # Export 1B variant
-    ./scripts/export_t5gemma2.py --model google/t5gemma-2-1b-1b --output ./models/t5gemma2/1b
+    ./scripts/export_t5gemma2.py --model google/t5gemma-2-1b-1b --output ~/.termite/models/rewriters/google/t5gemma-2-1b
 
 Available Models:
     - google/t5gemma-2-270m-270m (~800M total params, fast)
@@ -807,7 +807,7 @@ def save_configs(model, processor, output_dir: Path, model_id: str) -> None:
         "model_id": model_id,
         "model_type": "t5gemma2",
         "task": "multimodal_seq2seq",
-        "capabilities": ["embeddings", "generation", "decoding", "multimodal"],
+        "capabilities": ["embeddings", "generation", "multimodal"],
         "max_encoder_length": 131072,  # 128K
         "max_decoder_length": 32768,   # 32K output
         "hidden_size": hidden_size,
@@ -960,7 +960,6 @@ def export_model(model_id: str, output_dir: str) -> None:
     if has_vision:
         logger.info("   - Image embeddings: vision_encoder.onnx")
     logger.info("   - Text generation: encoder.onnx + decoder-init.onnx")
-    logger.info("   - Decode from embeddings: decoder-init.onnx (with encoder_hidden_states)")
 
 
 def test_exported_model(output_dir: str, test_text: Optional[str] = None) -> None:
@@ -1076,14 +1075,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Export 270M variant (recommended for development)
-  ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --output ./models/t5gemma2/270m
+  # Export 270M variant (recommended for development) - uses default path
+  ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m
 
   # Export with testing
-  ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --output ./models/t5gemma2/270m --test
+  ./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --test
 
-  # Export 1B variant
-  ./scripts/export_t5gemma2.py --model google/t5gemma-2-1b-1b --output ./models/t5gemma2/1b
+  # Export 1B variant with custom path
+  ./scripts/export_t5gemma2.py --model google/t5gemma-2-1b-1b --output ~/.termite/models/rewriters/google/t5gemma-2-1b
 
 Available Models:
   - google/t5gemma-2-270m-270m (~800M total params, fast)
@@ -1109,8 +1108,8 @@ Output Files:
     parser.add_argument(
         "-o", "--output",
         type=str,
-        default="./models/t5gemma2/270m",
-        help="Output directory for the exported model",
+        default=os.path.expanduser("~/.termite/models/rewriters/google/t5gemma-2-270m"),
+        help="Output directory for the exported model (default: ~/.termite/models/rewriters/google/t5gemma-2-270m)",
     )
     parser.add_argument(
         "--test",

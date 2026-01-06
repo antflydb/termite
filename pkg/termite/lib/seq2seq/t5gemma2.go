@@ -30,7 +30,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	khugot "github.com/knights-analytics/hugot"
@@ -41,9 +40,8 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
-// Ensure T5Gemma2Generator implements the Model and Decoder interfaces
+// Ensure T5Gemma2Generator implements the Model interface
 var _ Model = (*T5Gemma2Generator)(nil)
-var _ Decoder = (*T5Gemma2Generator)(nil)
 
 // T5Gemma2Generator implements multimodal seq2seq text generation using T5Gemma-2.
 // It supports text-to-text and image+text-to-text generation.
@@ -62,10 +60,7 @@ type T5Gemma2Generator struct {
 	modelPath       string
 	pipelineName    string // pipeline name for hugot registry cleanup
 
-	// Lazy loading for vision encoder
-	hasVisionFile bool       // true if vision_encoder.onnx exists
-	visionOnce    sync.Once  // ensures vision pipeline loaded only once
-	visionLoadErr error      // captures any error during lazy load
+	hasVisionFile bool // true if vision_encoder.onnx exists
 }
 
 // T5Gemma2GeneratorConfig holds configuration for T5Gemma-2 generation
@@ -193,13 +188,51 @@ func NewT5Gemma2GeneratorWithSession(modelPath string, sharedSession *khugot.Ses
 		return nil, fmt.Errorf("creating Seq2Seq pipeline: %w", err)
 	}
 
-	// Vision pipeline is loaded lazily on first image request to save memory.
-	// Only log whether the file exists, don't load it yet.
+	// Load vision pipeline eagerly if available.
+	// The vision encoder is required for correct text generation behavior,
+	// even when only processing text (discovered in previous testing).
+	var visionPipeline *pipelines.FeatureExtractionPipeline
 	if hasVision {
-		logger.Info("T5Gemma-2 generator initialized (vision available, will load on first use)",
+		logger.Info("Loading vision encoder pipeline",
+			zap.String("modelPath", modelPath))
+
+		imageSize := config.ImageSize
+		if imageSize == 0 {
+			imageSize = 896 // Default for T5Gemma-2 (SigLIP)
+		}
+
+		visionPipelineName := fmt.Sprintf("t5gemma2-vision:%s", filepath.Base(modelPath))
+		visionConfig := khugot.FeatureExtractionConfig{
+			ModelPath:    modelPath,
+			Name:         visionPipelineName,
+			OnnxFilename: "vision_encoder.onnx",
+			Options: []backends.PipelineOption[*pipelines.FeatureExtractionPipeline]{
+				pipelines.WithImageMode(),
+				pipelines.WithPreprocessSteps[*pipelines.FeatureExtractionPipeline](
+					imageutil.ResizeStep(imageSize),
+					imageutil.CenterCropStep(imageSize, imageSize),
+				),
+				pipelines.WithNormalizationSteps[*pipelines.FeatureExtractionPipeline](
+					imageutil.RescaleStep(),
+					imageutil.CLIPPixelNormalizationStep(),
+				),
+				pipelines.WithNCHWFormat[*pipelines.FeatureExtractionPipeline](),
+			},
+		}
+
+		var err error
+		visionPipeline, err = khugot.NewPipeline(session, visionConfig)
+		if err != nil {
+			if !sessionShared {
+				session.Destroy()
+			}
+			return nil, fmt.Errorf("creating vision pipeline: %w", err)
+		}
+
+		logger.Info("T5Gemma-2 generator initialized (with vision encoder)",
 			zap.String("task", config.Task),
 			zap.Int("max_new_tokens", config.MaxNewTokens),
-			zap.Int("imageSize", config.ImageSize))
+			zap.Int("imageSize", imageSize))
 	} else {
 		logger.Info("T5Gemma-2 generator initialized (text-only mode)",
 			zap.String("task", config.Task),
@@ -209,7 +242,7 @@ func NewT5Gemma2GeneratorWithSession(modelPath string, sharedSession *khugot.Ses
 	return &T5Gemma2Generator{
 		session:         session,
 		seq2seqPipeline: seq2seqPipeline,
-		visionPipeline:  nil, // Loaded lazily
+		visionPipeline:  visionPipeline,
 		logger:          logger,
 		sessionShared:   sessionShared,
 		config:          config,
@@ -382,132 +415,18 @@ func (g *T5Gemma2Generator) IsVisionLoaded() bool {
 	return g.visionPipeline != nil
 }
 
-// loadVisionPipeline lazily loads the vision encoder pipeline.
-// Thread-safe: uses sync.Once to ensure only one load attempt.
+// loadVisionPipeline checks that the vision encoder pipeline is available.
+// The vision pipeline is loaded eagerly at initialization time.
 func (g *T5Gemma2Generator) loadVisionPipeline() error {
-	g.visionOnce.Do(func() {
-		if !g.hasVisionFile {
-			g.visionLoadErr = errors.New("vision encoder not available: vision_encoder.onnx not found")
-			return
-		}
-
-		g.logger.Info("Lazily loading vision encoder pipeline",
-			zap.String("modelPath", g.modelPath))
-
-		imageSize := g.config.ImageSize
-		if imageSize == 0 {
-			imageSize = 896 // Default for T5Gemma-2 (SigLIP)
-		}
-
-		visionPipelineName := fmt.Sprintf("t5gemma2-vision:%s", filepath.Base(g.modelPath))
-		visionConfig := khugot.FeatureExtractionConfig{
-			ModelPath:    g.modelPath,
-			Name:         visionPipelineName,
-			OnnxFilename: "vision_encoder.onnx",
-			Options: []backends.PipelineOption[*pipelines.FeatureExtractionPipeline]{
-				pipelines.WithImageMode(),
-				pipelines.WithPreprocessSteps[*pipelines.FeatureExtractionPipeline](
-					imageutil.ResizeStep(imageSize),
-					imageutil.CenterCropStep(imageSize, imageSize),
-				),
-				pipelines.WithNormalizationSteps[*pipelines.FeatureExtractionPipeline](
-					imageutil.RescaleStep(),
-					imageutil.CLIPPixelNormalizationStep(),
-				),
-				pipelines.WithNCHWFormat[*pipelines.FeatureExtractionPipeline](),
-			},
-		}
-
-		pipeline, err := khugot.NewPipeline(g.session, visionConfig)
-		if err != nil {
-			g.visionLoadErr = fmt.Errorf("loading vision pipeline: %w", err)
-			return
-		}
-
-		g.visionPipeline = pipeline
-		g.logger.Info("Vision encoder pipeline loaded successfully",
-			zap.Int("imageSize", imageSize))
-	})
-	return g.visionLoadErr
+	if g.visionPipeline == nil {
+		return errors.New("vision encoder not available: vision_encoder.onnx not found or failed to load")
+	}
+	return nil
 }
 
 // Config returns the generator configuration.
 func (g *T5Gemma2Generator) Config() T5Gemma2GeneratorConfig {
 	return g.config
-}
-
-// HiddenSize returns the expected embedding dimension for the model.
-// This is used to validate embeddings passed to DecodeFromEmbeddings.
-func (g *T5Gemma2Generator) HiddenSize() int {
-	return g.config.HiddenSize
-}
-
-// DecodeFromEmbeddings generates text from pre-computed encoder hidden states.
-// This enables embedding-to-text generation workflows where custom embeddings
-// (from external sources, manipulated vectors, or vision encoders) are used
-// directly for text generation without running the encoder.
-//
-// The embeddings are used as encoder_hidden_states in the decoder's cross-attention
-// mechanism, allowing the decoder to generate text conditioned on these embeddings.
-//
-// Example use cases:
-//   - Embedding inversion: Reconstruct text from embeddings
-//   - Custom embedding injection: Use manipulated or external embeddings
-//   - Cross-modal generation: Convert vision embeddings to text descriptions
-func (g *T5Gemma2Generator) DecodeFromEmbeddings(
-	ctx context.Context,
-	input *DecoderInput,
-	opts DecodeOptions,
-) (*GeneratedOutput, error) {
-	if len(input.EncoderHiddenStates) == 0 {
-		return nil, errors.New("encoder hidden states are required")
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-	}
-
-	// Validate embedding dimensions
-	expectedDim := g.config.HiddenSize
-	for i, emb := range input.EncoderHiddenStates {
-		if len(emb) != expectedDim {
-			return nil, fmt.Errorf("embedding %d dimension mismatch: got %d, expected %d",
-				i, len(emb), expectedDim)
-		}
-	}
-
-	g.logger.Debug("Starting T5Gemma-2 decode from embeddings",
-		zap.Int("num_embeddings", len(input.EncoderHiddenStates)),
-		zap.Int("hidden_size", expectedDim),
-		zap.Int("max_tokens", opts.MaxTokens))
-
-	// Apply default options if not specified
-	if opts.MaxTokens <= 0 {
-		opts.MaxTokens = g.config.MaxNewTokens
-	}
-	if opts.Temperature <= 0 {
-		opts.Temperature = g.config.Temperature
-	}
-	if opts.TopP <= 0 {
-		opts.TopP = g.config.TopP
-	}
-	if opts.RepetitionPenalty <= 0 {
-		opts.RepetitionPenalty = g.config.RepetitionPenalty
-	}
-
-	// Run generation using the decoder with custom encoder hidden states
-	output, err := g.runDecoderWithEmbeddings(ctx, input, opts)
-	if err != nil {
-		g.logger.Error("T5Gemma-2 decode from embeddings failed", zap.Error(err))
-		return nil, fmt.Errorf("decoding from embeddings: %w", err)
-	}
-
-	g.logger.Debug("T5Gemma-2 decode from embeddings completed",
-		zap.Int("num_outputs", len(output.Texts)))
-
-	return output, nil
 }
 
 // Close releases resources.

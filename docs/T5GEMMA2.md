@@ -65,15 +65,11 @@ huggingface-cli login
 cd termite
 
 # Export the 270M model (recommended for development, ~6.7GB)
-./scripts/export_t5gemma2.py \
-  --model google/t5gemma-2-270m-270m \
-  --output ~/.termite/models/rewriters/google/t5gemma-2-270m
+# Uses default output: ~/.termite/models/rewriters/google/t5gemma-2-270m
+./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m
 
-# Verify the export with a test
-./scripts/export_t5gemma2.py \
-  --model google/t5gemma-2-270m-270m \
-  --output ~/.termite/models/rewriters/google/t5gemma-2-270m \
-  --test
+# Or export with a test to verify the output
+./scripts/export_t5gemma2.py --model google/t5gemma-2-270m-270m --test
 ```
 
 ### Available Models
@@ -258,10 +254,11 @@ The 270M model requires significant RAM for inference due to ONNX model sizes:
 - **With vision encoder**: Add ~2GB RAM (vision_encoder.onnx: 1.67GB)
 
 **Memory reduction tips:**
-1. **Use text-only mode**: If you don't need images, the vision encoder loads lazily
-2. **Limit max_loaded_models**: Set `max_loaded_models: 1` in config
-3. **Reduce keep_alive**: Set `keep_alive: 1m` to unload models quickly
-4. **Test on a machine with more RAM**: The 270M model needs at least 8GB free RAM
+1. **Limit max_loaded_models**: Set `max_loaded_models: 1` in config
+2. **Reduce keep_alive**: Set `keep_alive: 1m` to unload models quickly
+3. **Test on a machine with more RAM**: The 270M model needs at least 8GB free RAM
+
+**Note:** The vision encoder is loaded eagerly at initialization time as it is required for proper text generation behavior.
 
 ### Slow Inference
 
