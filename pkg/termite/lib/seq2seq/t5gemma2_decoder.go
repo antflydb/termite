@@ -83,6 +83,15 @@ func (g *T5Gemma2Generator) runDecoderWithEmbeddings(
 		return nil, fmt.Errorf("creating encoder_hidden_states tensor: %w", err)
 	}
 
+	// Track whether tensors have been transferred to batch ownership.
+	// If any operation fails before batch takes ownership, defers will clean up.
+	tensorsOwnedByBatch := false
+	defer func() {
+		if !tensorsOwnedByBatch {
+			encoderHiddenStatesTensor.Destroy()
+		}
+	}()
+
 	// Create attention mask
 	var attentionMask []int64
 	if input.AttentionMask != nil && len(input.AttentionMask) > 0 {
@@ -104,9 +113,13 @@ func (g *T5Gemma2Generator) runDecoderWithEmbeddings(
 		flatAttentionMask,
 	)
 	if err != nil {
-		encoderHiddenStatesTensor.Destroy()
 		return nil, fmt.Errorf("creating encoder_attention_mask tensor: %w", err)
 	}
+	defer func() {
+		if !tensorsOwnedByBatch {
+			encoderAttentionMaskTensor.Destroy()
+		}
+	}()
 
 	// Create a Seq2SeqBatch and set encoder outputs directly
 	batch := pipelines.NewSeq2SeqBatch(batchSize)
@@ -114,7 +127,7 @@ func (g *T5Gemma2Generator) runDecoderWithEmbeddings(
 	batch.SetEncoderHiddenStates(encoderHiddenStatesTensor)
 	batch.SetEncoderAttentionMask(encoderAttentionMaskTensor)
 
-	// Set cleanup function for encoder tensors
+	// Set cleanup function for encoder tensors - batch now owns the tensors
 	batch.SetDestroyEncoder(func() error {
 		err1 := encoderHiddenStatesTensor.Destroy()
 		err2 := encoderAttentionMaskTensor.Destroy()
@@ -123,6 +136,7 @@ func (g *T5Gemma2Generator) runDecoderWithEmbeddings(
 		}
 		return err2
 	})
+	tensorsOwnedByBatch = true // Tensors are now managed by batch.Destroy()
 
 	// Ensure cleanup on exit
 	defer func() {
