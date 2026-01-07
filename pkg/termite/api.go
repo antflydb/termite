@@ -1408,7 +1408,10 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 	// Get model from registry
 	classifier, err := ln.classifierRegistry.Get(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		ln.logger.Error("failed to get classifier model",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to load model %s: %v", req.Model, err), http.StatusInternalServerError)
 		return
 	}
 

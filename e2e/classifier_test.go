@@ -31,10 +31,9 @@ import (
 
 const (
 	// mDeBERTa model name (downloaded from HuggingFace)
-	// Using the ONNX version from onnx-community
 	mDebertaModelName = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
-	// The local directory name after download
-	mDebertaLocalName = "mDeBERTa-v3-base-mnli-xnli"
+	// The local directory name after download includes the owner prefix
+	mDebertaLocalName = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 )
 
 // TestMDebertaClassifierE2E tests the mDeBERTa zero-shot classification pipeline:

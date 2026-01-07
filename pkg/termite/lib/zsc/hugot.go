@@ -22,7 +22,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -249,8 +248,14 @@ func (c *HugotZSC) ClassifyWithHypothesis(ctx context.Context, texts []string, l
 		zap.Strings("labels", labels),
 		zap.String("hypothesis_template", hypothesisTemplate))
 
+	// Set labels and hypothesis template on the pipeline
+	c.pipeline.Labels = labels
+	if hypothesisTemplate != "" {
+		c.pipeline.HypothesisTemplate = hypothesisTemplate
+	}
+
 	// Run the pipeline
-	output, err := c.pipeline.RunPipeline(texts, labels)
+	output, err := c.pipeline.RunPipeline(texts)
 	if err != nil {
 		c.logger.Error("Zero-shot classification failed", zap.Error(err))
 		return nil, fmt.Errorf("running zero-shot classification: %w", err)
@@ -286,13 +291,19 @@ func (c *HugotZSC) MultiLabelClassify(ctx context.Context, texts []string, label
 		zap.Int("num_texts", len(texts)),
 		zap.Strings("labels", labels))
 
-	// For multi-label, we need to run with multilabel option
-	// This treats each label independently
-	output, err := c.pipeline.RunPipeline(texts, labels)
+	// Set labels and multi-label mode on the pipeline
+	c.pipeline.Labels = labels
+	c.pipeline.Multilabel = true
+
+	// Run the pipeline
+	output, err := c.pipeline.RunPipeline(texts)
 	if err != nil {
 		c.logger.Error("Multi-label classification failed", zap.Error(err))
 		return nil, fmt.Errorf("running multi-label classification: %w", err)
 	}
+
+	// Reset multilabel for future calls
+	c.pipeline.Multilabel = false
 
 	results := convertZSCOutput(output)
 
@@ -334,17 +345,14 @@ func convertZSCOutput(output *pipelines.ZeroShotOutput) [][]Classification {
 
 	results := make([][]Classification, len(output.ClassificationOutputs))
 	for i, out := range output.ClassificationOutputs {
-		classifications := make([]Classification, len(out.Labels))
-		for j, label := range out.Labels {
+		// SortedValues is already sorted by score descending
+		classifications := make([]Classification, len(out.SortedValues))
+		for j, kv := range out.SortedValues {
 			classifications[j] = Classification{
-				Label: label,
-				Score: float32(out.Scores[j]),
+				Label: kv.Key,
+				Score: float32(kv.Value),
 			}
 		}
-		// Sort by score descending
-		sort.Slice(classifications, func(a, b int) bool {
-			return classifications[a].Score > classifications[b].Score
-		})
 		results[i] = classifications
 	}
 	return results
@@ -436,8 +444,11 @@ func newPooledHugotZSCInternal(modelPath string, poolSize int, sharedSession *kh
 
 	for i := 0; i < poolSize; i++ {
 		pipelineName := fmt.Sprintf("zsc:%s:%s:%d", modelPath, onnxFilename, i)
+		// Provide default labels (required by hugot) - will be overridden per request
+		defaultLabels := []string{"positive", "negative", "neutral"}
 		pipelineOptions := []khugot.ZeroShotClassificationOption{
 			pipelines.WithHypothesisTemplate(config.HypothesisTemplate),
+			pipelines.WithLabels(defaultLabels),
 		}
 		if config.MultiLabel {
 			pipelineOptions = append(pipelineOptions, pipelines.WithMultilabel(true))
@@ -502,7 +513,13 @@ func (p *PooledHugotZSC) ClassifyWithHypothesis(ctx context.Context, texts []str
 		zap.Int("pipelineIndex", idx),
 		zap.Int("numTexts", len(texts)))
 
-	output, err := pipeline.RunPipeline(texts, labels)
+	// Set labels and hypothesis template on the pipeline
+	pipeline.Labels = labels
+	if hypothesisTemplate != "" {
+		pipeline.HypothesisTemplate = hypothesisTemplate
+	}
+
+	output, err := pipeline.RunPipeline(texts)
 	if err != nil {
 		p.logger.Error("Pipeline inference failed",
 			zap.Int("pipelineIndex", idx),
@@ -521,10 +538,41 @@ func (p *PooledHugotZSC) ClassifyWithHypothesis(ctx context.Context, texts []str
 
 // MultiLabelClassify classifies texts allowing multiple labels per text.
 func (p *PooledHugotZSC) MultiLabelClassify(ctx context.Context, texts []string, labels []string) ([][]Classification, error) {
-	results, err := p.Classify(ctx, texts, labels)
-	if err != nil {
-		return nil, err
+	if len(texts) == 0 {
+		return [][]Classification{}, nil
 	}
+
+	if len(labels) == 0 {
+		return nil, errors.New("at least one label is required")
+	}
+
+	// Acquire semaphore slot
+	if err := p.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	}
+	defer p.sem.Release(1)
+
+	// Round-robin pipeline selection
+	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+	pipeline := p.pipelines[idx]
+
+	// Set labels and multi-label mode on the pipeline
+	pipeline.Labels = labels
+	pipeline.Multilabel = true
+
+	output, err := pipeline.RunPipeline(texts)
+
+	// Reset multilabel for future calls
+	pipeline.Multilabel = false
+
+	if err != nil {
+		p.logger.Error("Multi-label pipeline inference failed",
+			zap.Int("pipelineIndex", idx),
+			zap.Error(err))
+		return nil, fmt.Errorf("running multi-label classification: %w", err)
+	}
+
+	results := convertZSCOutput(output)
 
 	// Apply threshold if configured
 	if p.config.Threshold > 0 {
