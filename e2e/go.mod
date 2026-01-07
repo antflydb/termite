@@ -3,10 +3,9 @@ module github.com/antflydb/termite/e2e
 go 1.25.0
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20251223084332-a4c929e52574
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260104234649-2c9c8180d310
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
-	github.com/knights-analytics/hugot v0.6.1
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
@@ -42,6 +41,7 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
+	github.com/knights-analytics/hugot v0.6.1 // indirect
 	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
@@ -69,7 +69,7 @@ require (
 	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	github.com/sugarme/tokenizer v0.3.0 // indirect
-	github.com/tinylib/msgp v1.6.2 // indirect
+	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/viant/afs v1.30.0 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
