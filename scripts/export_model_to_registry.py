@@ -64,6 +64,15 @@ Usage:
     # Export a generative LLM with CUDA-optimized INT4
     ./export_model_to_registry.py generator google/gemma-3-1b-it --variants i4-cuda
 
+    # Export a zero-shot classifier (mDeBERTa-MNLI)
+    ./export_model_to_registry.py classifier MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+
+    # Export BART-MNLI classifier
+    ./export_model_to_registry.py classifier facebook/bart-large-mnli
+
+    # Pull pre-exported ONNX classifier from Xenova (no conversion needed)
+    ./export_model_to_registry.py classifier Xenova/bart-large-mnli --from-onnx
+
     # Export and upload to R2
     ./export_model_to_registry.py embedder BAAI/bge-small-en-v1.5 --upload
 
@@ -821,6 +830,7 @@ def export_classifier_model(
     model_id: str,
     output_dir: Path,
     variants: list[str] | None = None,
+    from_onnx: bool = False,
 ) -> Path:
     """
     Export a Zero-Shot Classification model (NLI-based) to ONNX format.
@@ -832,6 +842,7 @@ def export_classifier_model(
         model_id: HuggingFace model ID (e.g., MoritzLaurer/mDeBERTa-v3-base-mnli-xnli)
         output_dir: Directory to save the model
         variants: List of variant types to create (e.g., ["f16", "i8"])
+        from_onnx: If True, load pre-exported ONNX model (e.g., Xenova/bart-large-mnli)
     """
     from transformers import AutoTokenizer, AutoConfig
     from optimum.onnxruntime import ORTModelForSequenceClassification
@@ -841,16 +852,25 @@ def export_classifier_model(
     variants = variants or []
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Exporting zero-shot classifier: {model_id}")
+    if from_onnx:
+        logger.info(f"Loading pre-exported ONNX classifier: {model_id}")
+    else:
+        logger.info(f"Exporting zero-shot classifier: {model_id}")
     logger.info(f"Output: {output_dir}")
 
     # Load model config first to check label mapping
     logger.info("Loading model configuration...")
     config = AutoConfig.from_pretrained(model_id)
 
-    # Export to ONNX
-    logger.info("Converting to ONNX format...")
-    ort_model = ORTModelForSequenceClassification.from_pretrained(model_id, export=True)
+    # Load or export to ONNX
+    # When from_onnx=True, Optimum will download existing ONNX files from the repo
+    # When from_onnx=False, Optimum will convert PyTorch model to ONNX
+    if from_onnx:
+        logger.info("Downloading pre-exported ONNX model...")
+        ort_model = ORTModelForSequenceClassification.from_pretrained(model_id, export=False)
+    else:
+        logger.info("Converting to ONNX format...")
+        ort_model = ORTModelForSequenceClassification.from_pretrained(model_id, export=True)
     ort_model.save_pretrained(output_dir)
 
     # Save tokenizer
@@ -2498,17 +2518,23 @@ def cmd_export(args):
     logger.info(f"Variants:    {', '.join(args.variants) if args.variants else 'none'}")
     logger.info(f"Capabilities:{', '.join(capabilities) if capabilities else 'none'}")
     logger.info(f"Backends:    {', '.join(args.backends) if args.backends else 'none'}")
+    logger.info(f"From ONNX:   {args.from_onnx}")
     logger.info("=" * 60)
 
     # Export model using appropriate function
-    logger.info("\n[1/4] Exporting model to ONNX...")
     hf_token = getattr(args, "hf_token", None)
+
+    if args.from_onnx:
+        logger.info("\n[1/4] Loading pre-exported ONNX model...")
+    else:
+        logger.info("\n[1/4] Exporting model to ONNX...")
+
     if args.model_type == "rewriter":
         export_seq2seq_model(model_id, model_dir, args.variants)
     elif args.model_type == "generator":
         export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
     elif args.model_type == "classifier":
-        export_classifier_model(model_id, model_dir, args.variants)
+        export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
     elif recognizer_arch == "gliner":
         export_gliner_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "rebel":
@@ -2632,6 +2658,15 @@ Examples:
 
   # Export a generative LLM with CUDA-optimized INT4
   %(prog)s generator google/gemma-3-1b-it --variants i4-cuda
+
+  # Export a zero-shot classifier (mDeBERTa-MNLI)
+  %(prog)s classifier MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+
+  # Export BART-MNLI classifier
+  %(prog)s classifier facebook/bart-large-mnli
+
+  # Pull pre-exported ONNX classifier from Xenova (no conversion needed)
+  %(prog)s classifier Xenova/bart-large-mnli --from-onnx
 
   # Garbage collect orphaned blobs and index entries (dry run)
   %(prog)s gc
@@ -2760,6 +2795,12 @@ Environment Variables:
         export_parser.add_argument(
             "--hf-token",
             help="HuggingFace API token for gated models (or set HF_TOKEN env var)",
+        )
+        export_parser.add_argument(
+            "--from-onnx",
+            action="store_true",
+            help="Pull pre-exported ONNX model from HuggingFace instead of converting "
+                 "(e.g., Xenova/bart-large-mnli). Downloads existing ONNX files directly.",
         )
         # Store the model type for later
         export_parser.set_defaults(model_type=model_type)
