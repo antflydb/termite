@@ -25,6 +25,8 @@ import (
 	"image/color"
 	"image/png"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -115,6 +117,10 @@ func TestCLIPMultimodalE2E(t *testing.T) {
 
 	t.Run("CrossModalSimilarity", func(t *testing.T) {
 		testCrossModalSimilarity(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("DifferentImagesProduceDifferentEmbeddings", func(t *testing.T) {
+		testDifferentImagesProduceDifferentEmbeddings(t, ctx, serverURL)
 	})
 
 	// 6. Graceful shutdown
@@ -227,13 +233,103 @@ func testCrossModalSimilarity(t *testing.T, ctx context.Context, c *client.Termi
 	t.Logf("Cosine similarity between 'a red square' and red square image: %.4f", similarity)
 }
 
-// embedImage sends an image embedding request using the oapi client directly
+// testDifferentImagesProduceDifferentEmbeddings verifies that different images produce different embeddings
+func testDifferentImagesProduceDifferentEmbeddings(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	// Create a synthetic red square image
+	redSquareData := createTestImage(t, 100, 100, color.RGBA{255, 0, 0, 255})
+	redSquareEmb := embedImage(t, ctx, serverURL, clipModelName, redSquareData)
+
+	// Create a synthetic blue square image
+	blueSquareData := createTestImage(t, 100, 100, color.RGBA{0, 0, 255, 255})
+	blueSquareEmb := embedImage(t, ctx, serverURL, clipModelName, blueSquareData)
+
+	// Load the real flower image if available
+	flowerPath := filepath.Join("testdata", "flower.jpg")
+	flowerData, err := os.ReadFile(flowerPath)
+	if err != nil {
+		t.Logf("Skipping flower.jpg test (file not found at %s): %v", flowerPath, err)
+	}
+
+	var flowerEmb []float32
+	if flowerData != nil {
+		flowerEmb = embedImageWithMimeType(t, ctx, serverURL, clipModelName, flowerData, "image/jpeg")
+	}
+
+	// Log the embeddings
+	t.Logf("Red square embedding: dim=%d, first3=[%.4f, %.4f, %.4f]",
+		len(redSquareEmb), redSquareEmb[0], redSquareEmb[1], redSquareEmb[2])
+	t.Logf("Blue square embedding: dim=%d, first3=[%.4f, %.4f, %.4f]",
+		len(blueSquareEmb), blueSquareEmb[0], blueSquareEmb[1], blueSquareEmb[2])
+	if flowerEmb != nil {
+		t.Logf("Flower embedding: dim=%d, first3=[%.4f, %.4f, %.4f]",
+			len(flowerEmb), flowerEmb[0], flowerEmb[1], flowerEmb[2])
+	}
+
+	// Verify embeddings are different
+	redBlueSim := cosineSimilarity(redSquareEmb, blueSquareEmb)
+	t.Logf("Cosine similarity (red square vs blue square): %.4f", redBlueSim)
+
+	// Red and blue squares should be somewhat similar (both simple colored squares) but not identical
+	if redBlueSim > 0.99 {
+		t.Errorf("Red and blue square embeddings are too similar (%.4f), expected different embeddings", redBlueSim)
+	}
+
+	// Verify the embeddings are not exactly the same
+	sameCount := 0
+	for i := range redSquareEmb {
+		if redSquareEmb[i] == blueSquareEmb[i] {
+			sameCount++
+		}
+	}
+	if sameCount == len(redSquareEmb) {
+		t.Error("Red and blue square embeddings are identical - model may not be processing images correctly")
+	}
+
+	if flowerEmb != nil {
+		redFlowerSim := cosineSimilarity(redSquareEmb, flowerEmb)
+		blueFlowerSim := cosineSimilarity(blueSquareEmb, flowerEmb)
+		t.Logf("Cosine similarity (red square vs flower): %.4f", redFlowerSim)
+		t.Logf("Cosine similarity (blue square vs flower): %.4f", blueFlowerSim)
+
+		// Flower should be quite different from simple colored squares
+		if redFlowerSim > 0.95 {
+			t.Errorf("Red square and flower embeddings are too similar (%.4f)", redFlowerSim)
+		}
+
+		// Verify flower embedding is not identical to squares
+		flowerSameAsRed := 0
+		flowerSameAsBlue := 0
+		for i := range flowerEmb {
+			if flowerEmb[i] == redSquareEmb[i] {
+				flowerSameAsRed++
+			}
+			if flowerEmb[i] == blueSquareEmb[i] {
+				flowerSameAsBlue++
+			}
+		}
+		if flowerSameAsRed == len(flowerEmb) {
+			t.Error("Flower and red square embeddings are identical")
+		}
+		if flowerSameAsBlue == len(flowerEmb) {
+			t.Error("Flower and blue square embeddings are identical")
+		}
+	}
+}
+
+// embedImage sends an image embedding request using the oapi client directly (assumes PNG)
 func embedImage(t *testing.T, ctx context.Context, serverURL, model string, imageData []byte) []float32 {
+	return embedImageWithMimeType(t, ctx, serverURL, model, imageData, "image/png")
+}
+
+// embedImageWithMimeType sends an image embedding request with a specific MIME type
+func embedImageWithMimeType(t *testing.T, ctx context.Context, serverURL, model string, imageData []byte, mimeType string) []float32 {
 	t.Helper()
 
 	// Build data URI
 	base64Image := base64.StdEncoding.EncodeToString(imageData)
-	dataURI := "data:image/png;base64," + base64Image
+	dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64Image)
 
 	// Build ContentPart for image
 	var contentPart oapi.ContentPart

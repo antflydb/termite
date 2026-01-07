@@ -3,7 +3,7 @@ module github.com/antflydb/termite/e2e
 go 1.25.0
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260104234649-2c9c8180d310
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260105234922-f6ed1eb6788d
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
 	github.com/stretchr/testify v1.11.1
@@ -19,7 +19,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
@@ -59,10 +59,10 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
 	github.com/pkoukk/tiktoken-go-loader v0.0.2 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.67.4 // indirect
+	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/xid v1.6.0 // indirect
@@ -99,6 +99,6 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
-replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3
+replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-20260107061453-f83ae7b7c356
 
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670

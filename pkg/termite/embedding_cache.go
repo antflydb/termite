@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -135,6 +136,8 @@ func (c *CachedEmbedder) cacheKey(contents [][]ai.ContentPart) string {
 			case ai.TextContent:
 				_, _ = h.WriteString("t:")
 				_, _ = h.WriteString(p.Text)
+				c.logger.Debug("Cache key: text content",
+					zap.String("text_prefix", truncateString(p.Text, 50)))
 			case ai.BinaryContent:
 				_, _ = h.WriteString("b:")
 				_, _ = h.WriteString(p.MIMEType)
@@ -142,6 +145,13 @@ func (c *CachedEmbedder) cacheKey(contents [][]ai.ContentPart) string {
 				// Use SHA256 for binary content (more collision-resistant)
 				binHash := sha256.Sum256(p.Data)
 				_, _ = h.Write(binHash[:])
+				c.logger.Debug("Cache key: binary content",
+					zap.String("mime_type", p.MIMEType),
+					zap.Int("data_len", len(p.Data)),
+					zap.String("sha256_prefix", fmt.Sprintf("%x", binHash[:8])))
+			default:
+				c.logger.Warn("Cache key: unknown content type",
+					zap.String("type", fmt.Sprintf("%T", part)))
 			}
 			_, _ = h.WriteString("|")
 		}
@@ -253,4 +263,12 @@ func (ec *EmbeddingCache) Stats() map[string]any {
 		"misses": metrics.Misses,
 		"items":  ec.cache.Len(),
 	}
+}
+
+// truncateString returns the first n characters of s, or s if len(s) <= n
+func truncateString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
