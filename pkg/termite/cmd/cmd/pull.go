@@ -31,6 +31,7 @@ var pullCmd = &cobra.Command{
 Model names use owner/model format (like HuggingFace and Ollama):
   - BAAI/bge-small-en-v1.5
   - sentence-transformers/all-MiniLM-L6-v2
+  - sentence-transformers/all-mpnet-base-v2
 
 Models are downloaded to the appropriate directory based on their type:
   - Embedders:     models/embedders/<owner>/<model-name>/
@@ -79,7 +80,11 @@ Examples:
   termite pull hf:onnx-community/gliner_small-v2.1 --type recognizer
 
   # Pull rewriter model from HuggingFace
-  termite pull hf:onnx-community/gemma-3-270m-it-ONNX --type rewriter`,
+  termite pull hf:onnx-community/gemma-3-270m-it-ONNX --type rewriter
+
+  # Pull sentence-transformers models from HuggingFace (sentence similarity)
+  termite pull hf:sentence-transformers/all-MiniLM-L6-v2 --type embedder
+  termite pull hf:sentence-transformers/all-mpnet-base-v2 --type embedder`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runPull,
 }
