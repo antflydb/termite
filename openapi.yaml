@@ -452,6 +452,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /classify:
+    post:
+      summary: Zero-shot text classification
+      description: |
+        Classifies text into arbitrary categories using NLI-based zero-shot classification models.
+
+        ## How It Works
+
+        Zero-shot classification uses Natural Language Inference (NLI) to classify text
+        without requiring training data for the specific categories. The model determines
+        how well a text "entails" each candidate label.
+
+        ## Models
+
+        - Models are auto-discovered from `models_dir/classifiers/`
+        - Supports multilingual models like mDeBERTa-mnli-xnli
+        - Compatible with HuggingFace NLI/MNLI models exported to ONNX
+
+        ## Use Cases
+
+        - **Sentiment Analysis**: Classify as positive/negative/neutral
+        - **Topic Classification**: Categorize by topic without training
+        - **Intent Detection**: Identify user intents from text
+        - **Content Moderation**: Detect inappropriate content types
+
+        ## Example
+
+        ```json
+        {
+          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
+          "texts": ["I love this product!", "The service was terrible."],
+          "labels": ["positive", "negative", "neutral"]
+        }
+        ```
+
+        ## Multilingual Support
+
+        The mDeBERTa-mnli-xnli model supports 100+ languages. You can classify text
+        in any supported language using labels in that language:
+
+        ```json
+        {
+          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
+          "texts": ["J'adore ce produit!"],
+          "labels": ["positif", "négatif", "neutre"]
+        }
+        ```
+      operationId: classifyText
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClassifyRequest'
+      responses:
+        '200':
+          description: Classification completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassifyResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Classification service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /rewrite:
     post:
       summary: Rewrite text using Seq2Seq models
@@ -1007,6 +1092,82 @@ components:
             items:
               type: string
           description: Rewritten texts (array of arrays, one per input, multiple per beam)
+    ClassifyRequest:
+      type: object
+      required:
+        - model
+        - texts
+        - labels
+      properties:
+        model:
+          type: string
+          description: Name of classifier model from models_dir/classifiers/
+          example: MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+        texts:
+          type: array
+          items:
+            type: string
+          description: Texts to classify
+          example:
+            - I love this product!
+            - The service was terrible.
+        labels:
+          type: array
+          items:
+            type: string
+          description: |
+            Candidate labels for zero-shot classification.
+            The model will predict which label(s) best describe each text.
+          example:
+            - positive
+            - negative
+            - neutral
+        hypothesis_template:
+          type: string
+          description: |
+            Custom hypothesis template for NLI-based classification.
+            Use "{}" as placeholder for the label.
+            Default: "This example is {}."
+          example: This text expresses a {} sentiment.
+        multi_label:
+          type: boolean
+          default: false
+          description: |
+            If true, allows multiple labels per text (independent scoring).
+            If false (default), scores are normalized across labels.
+    ClassifyResult:
+      type: object
+      required:
+        - label
+        - score
+      properties:
+        label:
+          type: string
+          description: The predicted class/category
+          example: positive
+        score:
+          type: number
+          format: float
+          description: Confidence score (0.0 to 1.0)
+          example: 0.95
+    ClassifyResponse:
+      type: object
+      required:
+        - model
+        - classifications
+      properties:
+        model:
+          type: string
+          description: Name of model used for classification
+        classifications:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: '#/components/schemas/ClassifyResult'
+          description: |
+            Array of classification results (one per input text).
+            Each result is an array of ClassifyResult sorted by score descending.
     ModelsResponse:
       type: object
       required:
@@ -1016,6 +1177,7 @@ components:
         - generators
         - recognizers
         - rewriters
+        - classifiers
       properties:
         chunkers:
           type: array
@@ -1032,6 +1194,13 @@ components:
           description: Available reranking models
           example:
             - BAAI/bge-reranker-v2-m3
+        classifiers:
+          type: array
+          items:
+            type: string
+          description: Available zero-shot classification models
+          example:
+            - MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
         embedders:
           type: array
           items:

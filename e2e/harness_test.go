@@ -72,6 +72,7 @@ const (
 	ModelTypeRewriter   ModelType = "rewriters"
 	ModelTypeRecognizer ModelType = "recognizers"
 	ModelTypeGenerator  ModelType = "generators"
+	ModelTypeClassifier ModelType = "classifiers"
 )
 
 // ensureRegistryModel downloads a model from the Antfly model registry if not present.
@@ -176,6 +177,8 @@ func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType Mode
 		regModelType = modelregistry.ModelTypeChunker
 	case ModelTypeGenerator:
 		regModelType = modelregistry.ModelTypeGenerator
+	case ModelTypeClassifier:
+		regModelType = modelregistry.ModelTypeClassifier
 	default:
 		regModelType = modelregistry.ModelTypeEmbedder
 	}
@@ -234,4 +237,9 @@ func getRewriterModelsDir() string {
 // getGeneratorModelsDir returns the generators subdirectory
 func getGeneratorModelsDir() string {
 	return filepath.Join(testModelsDir, "generators")
+}
+
+// getClassifierModelsDir returns the classifiers subdirectory
+func getClassifierModelsDir() string {
+	return filepath.Join(testModelsDir, "classifiers")
 }

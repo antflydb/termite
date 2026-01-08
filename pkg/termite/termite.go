@@ -41,6 +41,7 @@ type TermiteNode struct {
 	generatorRegistry     *GeneratorRegistry
 	nerRegistry           NERRegistryInterface
 	seq2seqRegistry       *Seq2SeqRegistry
+	classifierRegistry    *ClassifierRegistry
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -344,6 +345,37 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	}
 
+	// Initialize classifier registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var classifierRegistry *ClassifierRegistry
+	var classifierModelsDir string
+	if config.ModelsDir != "" {
+		classifierModelsDir = filepath.Join(config.ModelsDir, "classifiers")
+	}
+	if classifierModelsDir != "" {
+		classifierRegistry, err = NewClassifierRegistry(
+			ClassifierConfig{
+				ModelsDir:       classifierModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+				PoolSize:        config.PoolSize,
+			},
+			sessionManager,
+			zl.Named("classifier"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize classifier registry", zap.Error(err))
+		}
+		defer func() { _ = classifierRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := classifierRegistry.Preload(classifierRegistry.List()); err != nil {
+				zl.Warn("Failed to preload some classifier models", zap.Error(err))
+			}
+		}
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -408,6 +440,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,
 		seq2seqRegistry:       seq2seqRegistry,
+		classifierRegistry:    classifierRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
