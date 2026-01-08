@@ -40,6 +40,10 @@ Usage:
     # Export a CLIP multimodal model with variants
     ./export_model_to_registry.py embedder openai/clip-vit-base-patch32 --capabilities multimodal --backends onnx --variants f16 i8
 
+    # Export sentence-transformers models (sentence similarity/embeddings)
+    ./export_model_to_registry.py embedder sentence-transformers/all-MiniLM-L6-v2 --variants f16 i8
+    ./export_model_to_registry.py embedder sentence-transformers/all-mpnet-base-v2 --variants f16 i8
+
     # Export a traditional NER model (BERT-based TokenClassification)
     ./export_model_to_registry.py recognizer dslim/bert-base-NER --capabilities labels
 

@@ -356,14 +356,9 @@ func parseEmbedInput(
 	if parts, err := input.AsEmbedRequestInput2(); err == nil && len(parts) > 0 {
 		contents := make([][]ai.ContentPart, len(parts))
 		for i, part := range parts {
-			// Try text content
-			if textPart, err := part.AsTextContentPart(); err == nil {
-				contents[i] = []ai.ContentPart{ai.TextContent{Text: textPart.Text}}
-				continue
-			}
-
-			// Try image URL content
-			if imgPart, err := part.AsImageURLContentPart(); err == nil {
+			// Try image URL content first - check Type field since both AsTextContentPart
+			// and AsImageURLContentPart will succeed on any JSON (Go unmarshal doesn't fail on extra fields)
+			if imgPart, err := part.AsImageURLContentPart(); err == nil && imgPart.Type == ImageURLContentPartTypeImageUrl {
 				// Use scraping package - handles data:, http://, https://, file://, s3://
 				mimeType, data, err := scraping.DownloadContent(ctx, imgPart.ImageUrl.Url, securityConfig, s3Creds)
 				if err != nil {
@@ -373,6 +368,12 @@ func parseEmbedInput(
 					MIMEType: mimeType,
 					Data:     data,
 				}}
+				continue
+			}
+
+			// Try text content - check Type field
+			if textPart, err := part.AsTextContentPart(); err == nil && textPart.Type == TextContentPartTypeText {
+				contents[i] = []ai.ContentPart{ai.TextContent{Text: textPart.Text}}
 				continue
 			}
 
