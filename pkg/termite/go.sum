@@ -1,6 +1,6 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3 h1:Gc2XhrQbiDBa5f3ksgdjjp4b/Lz2CQIv/PB3YKlyhpU=
-github.com/ajroetker/hugot v0.0.0-20260105022326-878c0e85c7e3/go.mod h1:RsUjlcpFngzCXJL4yB5HPjItTAq0MgzMGb6JFy99H3s=
+github.com/ajroetker/hugot v0.0.0-20260107061453-f83ae7b7c356 h1:opUqf468UDMKDFEmmQZybIi5s7egT0RZGZX+WeylE8A=
+github.com/ajroetker/hugot v0.0.0-20260107061453-f83ae7b7c356/go.mod h1:I3/sobJjSQecs1xBUKnbjBKcbaX03uQ7gfkDW55zAU8=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670 h1:bT8mAdiBPSwQz2O4aPbbfZgj8JQZiqTnBZ+FPqN/TTI=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260105234922-f6ed1eb6788d h1:7C9y7i5pb6frXFtsXszDLVhevEQ8/A/ySDwLHrq4dog=
