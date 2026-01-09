@@ -1,6 +1,4 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/hugot v0.0.0-20260107061453-f83ae7b7c356 h1:opUqf468UDMKDFEmmQZybIi5s7egT0RZGZX+WeylE8A=
-github.com/ajroetker/hugot v0.0.0-20260107061453-f83ae7b7c356/go.mod h1:I3/sobJjSQecs1xBUKnbjBKcbaX03uQ7gfkDW55zAU8=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670 h1:bT8mAdiBPSwQz2O4aPbbfZgj8JQZiqTnBZ+FPqN/TTI=
 github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670/go.mod h1:zolhST8PioaCCsnwHBUesIBKU4CW/ZrF169YjFfg7BY=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260105234922-f6ed1eb6788d h1:7C9y7i5pb6frXFtsXszDLVhevEQ8/A/ySDwLHrq4dog=
@@ -229,6 +227,8 @@ github.com/sugarme/tokenizer v0.3.0 h1:FE8DYbNSz/kSbgEo9l/RjgYHkIJYEdskumitFQBE9
 github.com/sugarme/tokenizer v0.3.0/go.mod h1:VJ+DLK5ZEZwzvODOWwY0cw+B1dabTd3nCB5HuFCItCc=
 github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7 h1:9WfUFJSnLpAlSEWUUtucZrDSDZmE60H0xQPHohksQu8=
 github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7/go.mod h1:HKSGc4Btb3VntH/BV/UsJYzgTMbLT/Gk69kv95rjruM=
+github.com/timkaye11/hugot v0.0.0-20260108205439-6127b8a4c499 h1:f5+W2JKwNwLLkYzZ+A+Wcv9shdFSffo1L8zasfaIUAw=
+github.com/timkaye11/hugot v0.0.0-20260108205439-6127b8a4c499/go.mod h1:F8q/Zn0G8jUFUCp6KAuUvQRRsHZk3VEb0Efo0c6z/N8=
 github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687 h1:mPN2mhB+q1DwpMnJCdmG79oFtohAgomHfw45pdxurys=
 github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687/go.mod h1:V0xRbk2eozhH6FCx3RmyjNcfi7AujLP+mmaOHOpr65s=
 github.com/tinylib/msgp v1.6.3 h1:bCSxiTz386UTgyT1i0MSCvdbWjVW+8sG3PjkGsZQt4s=

@@ -112,7 +112,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator"]
+ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "t5gemma2"]
 
 # Recognizer capabilities - these describe what extraction tasks the model supports
 # Used in manifest to advertise model capabilities to Termite
@@ -154,6 +154,11 @@ MODEL_TYPE_CONFIG = {
         "ort_class": None,  # Uses onnxruntime-genai model builder
         "default_model": "google/gemma-3-1b-it",
         "dir_name": "generators",
+    },
+    "t5gemma2": {
+        "ort_class": None,  # Uses custom export script
+        "default_model": "google/t5gemma-2-270m-270m",
+        "dir_name": "t5gemma2",
     },
 }
 
@@ -239,6 +244,24 @@ GENERATOR_MANIFEST_FILES = [
     "special_tokens_map.json",
     "config.json",
     "generation_config.json",
+]
+
+# Files for T5Gemma-2 multimodal encoder-decoder models
+T5GEMMA2_MANIFEST_FILES = [
+    "encoder.onnx",
+    "encoder.onnx_data",
+    "vision_encoder.onnx",
+    "vision_encoder.onnx_data",
+    "decoder-init.onnx",
+    "decoder-init.onnx_data",
+    "decoder.onnx",
+    "decoder.onnx_data",
+    "tokenizer.json",
+    "config.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "t5gemma2_config.json",
+    "preprocessor_config.json",
 ]
 
 
@@ -1117,6 +1140,78 @@ def detect_and_add_tool_call_format(model_dir: Path) -> None:
         logger.warning(f"Failed to update genai_config.json: {e}")
 
 
+def export_t5gemma2_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+) -> Path:
+    """
+    Export a T5Gemma-2 multimodal encoder-decoder model to ONNX format.
+
+    Uses the custom export_t5gemma2.py script which handles:
+      - Text encoder export (encoder.onnx)
+      - Vision encoder export (vision_encoder.onnx) if multimodal
+      - Decoder export (decoder-init.onnx, decoder.onnx)
+      - Tokenizer and configuration files
+
+    Args:
+        model_id: HuggingFace model ID (e.g., google/t5gemma-2-270m-270m)
+        output_dir: Directory to save the model
+        variants: List of variant types (not used currently, reserved for future)
+    """
+    import subprocess
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Exporting T5Gemma-2 model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Get the path to the export script
+    script_dir = Path(__file__).parent
+    export_script = script_dir / "export_t5gemma2.py"
+
+    if not export_script.exists():
+        raise RuntimeError(f"T5Gemma-2 export script not found: {export_script}")
+
+    # Build the export command
+    cmd = [
+        "python", str(export_script),
+        "--model", model_id,
+        "--output", str(output_dir),
+    ]
+
+    logger.info(f"Running: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if result.stdout:
+            for line in result.stdout.strip().split('\n'):
+                logger.info(f"  {line}")
+        logger.info("T5Gemma-2 export completed successfully")
+    except subprocess.CalledProcessError as e:
+        logger.error("T5Gemma-2 export failed")
+        if e.stdout:
+            logger.error(f"stdout: {e.stdout}")
+        if e.stderr:
+            logger.error(f"stderr: {e.stderr}")
+        raise RuntimeError(f"T5Gemma-2 export failed: {e.stderr}")
+
+    # Log exported files
+    logger.info("\nExported files:")
+    for f in sorted(output_dir.rglob("*")):
+        if f.is_file():
+            size_mb = f.stat().st_size / (1024 * 1024)
+            rel_path = f.relative_to(output_dir)
+            logger.info(f"  {rel_path}: {size_mb:.2f} MB")
+
+    return output_dir
+
+
 def generate_manifest(
     model_type: ModelType,
     model_name: str,
@@ -1147,10 +1242,13 @@ def generate_manifest(
     # Use appropriate file list based on model type and capabilities
     is_multimodal = capabilities and "multimodal" in capabilities
     is_generator = model_type == "generator"
+    is_t5gemma2 = model_type == "t5gemma2"
     is_gliner = recognizer_arch == "gliner"
     is_rebel = recognizer_arch == "rebel"
 
-    if is_multimodal:
+    if is_t5gemma2:
+        file_list = T5GEMMA2_MANIFEST_FILES
+    elif is_multimodal:
         file_list = MULTIMODAL_MANIFEST_FILES
     elif model_type == "rewriter":
         file_list = SEQ2SEQ_MANIFEST_FILES
@@ -1866,6 +1964,9 @@ def test_model(
     logger.info("Testing exported model...")
     capabilities = capabilities or []
 
+    if model_type == "t5gemma2":
+        return test_t5gemma2_model(model_dir)
+
     if "multimodal" in capabilities:
         return test_multimodal_model(model_dir)
 
@@ -2281,6 +2382,103 @@ def test_generator_model(model_dir: Path) -> bool:
         return False
 
 
+def test_t5gemma2_model(model_dir: Path) -> bool:
+    """Test a T5Gemma-2 multimodal encoder-decoder model."""
+    import onnxruntime as ort
+    import numpy as np
+
+    try:
+        # Check for required files
+        encoder_path = model_dir / "encoder.onnx"
+        decoder_init_path = model_dir / "decoder-init.onnx"
+
+        if not encoder_path.exists():
+            logger.error(f"encoder.onnx not found in {model_dir}")
+            return False
+        if not decoder_init_path.exists():
+            logger.error(f"decoder-init.onnx not found in {model_dir}")
+            return False
+
+        # Check for config
+        config_path = model_dir / "t5gemma2_config.json"
+        if config_path.exists():
+            logger.info("Loading t5gemma2_config.json...")
+            with open(config_path) as f:
+                config = json.load(f)
+            logger.info(f"  Model ID: {config.get('model_id', 'unknown')}")
+            logger.info(f"  Hidden size: {config.get('hidden_size', 'unknown')}")
+            logger.info(f"  Capabilities: {', '.join(config.get('capabilities', []))}")
+
+        # Load encoder
+        logger.info("Loading encoder ONNX model...")
+        encoder_session = ort.InferenceSession(
+            str(encoder_path),
+            providers=["CPUExecutionProvider"],
+        )
+
+        # Get input info
+        encoder_inputs = encoder_session.get_inputs()
+        logger.info(f"  Encoder inputs: {[i.name for i in encoder_inputs]}")
+
+        # Create dummy inputs
+        batch_size = 1
+        seq_len = 32
+
+        dummy_input_ids = np.ones((batch_size, seq_len), dtype=np.int64)
+        dummy_attention_mask = np.ones((batch_size, seq_len), dtype=np.int64)
+
+        # Run encoder
+        logger.info("Running encoder inference...")
+        encoder_outputs = encoder_session.run(
+            None,
+            {
+                "input_ids": dummy_input_ids,
+                "attention_mask": dummy_attention_mask,
+            },
+        )
+        encoder_hidden_states = encoder_outputs[0]
+        logger.info(f"  Encoder output shape: {encoder_hidden_states.shape}")
+
+        # Test decoder-init
+        logger.info("Loading decoder-init ONNX model...")
+        decoder_init_session = ort.InferenceSession(
+            str(decoder_init_path),
+            providers=["CPUExecutionProvider"],
+        )
+
+        decoder_inputs = decoder_init_session.get_inputs()
+        logger.info(f"  Decoder inputs: {[i.name for i in decoder_inputs]}")
+
+        # Create dummy decoder inputs
+        dummy_decoder_input_ids = np.zeros((batch_size, 1), dtype=np.int64)
+
+        logger.info("Running decoder-init inference...")
+        decoder_outputs = decoder_init_session.run(
+            None,
+            {
+                "input_ids": dummy_decoder_input_ids,
+                "encoder_hidden_states": encoder_hidden_states,
+                "encoder_attention_mask": dummy_attention_mask,
+            },
+        )
+        logits = decoder_outputs[0]
+        logger.info(f"  Decoder logits shape: {logits.shape}")
+
+        # Check vision encoder if present
+        vision_path = model_dir / "vision_encoder.onnx"
+        if vision_path.exists():
+            logger.info("Vision encoder found (multimodal model)")
+
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def cmd_gc(args):
     """Handle the gc subcommand."""
     endpoint = args.r2_endpoint or os.environ.get("AWS_ENDPOINT_URL")
@@ -2344,7 +2542,12 @@ def cmd_export(args):
     # Export model using appropriate function
     logger.info("\n[1/4] Exporting model to ONNX...")
     hf_token = getattr(args, "hf_token", None)
-    if args.model_type == "rewriter":
+    if args.model_type == "t5gemma2":
+        # Add default capabilities for T5Gemma-2
+        if not capabilities:
+            capabilities = ["embeddings", "generation", "decoding", "multimodal"]
+        export_t5gemma2_model(model_id, model_dir, args.variants)
+    elif args.model_type == "rewriter":
         export_seq2seq_model(model_id, model_dir, args.variants)
     elif args.model_type == "generator":
         export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
@@ -2524,7 +2727,7 @@ Environment Variables:
     )
 
     # Export subcommands (one for each model type)
-    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator"]:
+    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "t5gemma2"]:
         export_parser = subparsers.add_parser(
             model_type,
             help=f"Export a {model_type} model to ONNX",

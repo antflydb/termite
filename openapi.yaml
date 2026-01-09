@@ -679,6 +679,12 @@ components:
           type: boolean
           default: true
           description: Truncate input to fit model context length
+        return_hidden_states:
+          type: boolean
+          default: false
+          description: |
+            If true, returns raw encoder hidden states [seq_len, hidden_size] per input
+            instead of mean-pooled embeddings. Useful for passing to the decode API.
     EmbedResponse:
       type: object
       example:
@@ -692,7 +698,6 @@ components:
             - 0.089
       required:
         - model
-        - embeddings
       properties:
         model:
           type: string
@@ -705,7 +710,30 @@ components:
             items:
               type: number
               format: float
-          description: Array of embedding vectors (one per input string)
+          description: |
+            Array of mean-pooled embedding vectors [hidden_size] per input.
+            Present when return_hidden_states is false (default).
+        hidden_states:
+          type: array
+          items:
+            type: array
+            items:
+              type: array
+              items:
+                type: number
+                format: float
+          description: |
+            Raw encoder hidden states [seq_len, hidden_size] per input.
+            Present when return_hidden_states is true.
+        attention_mask:
+          type: array
+          items:
+            type: array
+            items:
+              type: integer
+          description: |
+            Attention mask [seq_len] per input indicating valid tokens.
+            Present when return_hidden_states is true.
     Chunk:
       type: object
       description: A chunk of text with position information.

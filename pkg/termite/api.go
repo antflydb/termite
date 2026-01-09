@@ -29,9 +29,10 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	libafembed "github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	"github.com/antflydb/termite/pkg/termite/lib/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/bytedance/sonic/decoder"
@@ -237,6 +238,49 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if hidden states are requested
+	if req.ReturnHiddenStates {
+		// Check if embedder supports hidden states extraction
+		hsEmbedder, ok := embedder.(embeddings.HiddenStatesEmbedder)
+		if !ok {
+			http.Error(w, fmt.Sprintf("model %s does not support hidden states extraction", req.Model), http.StatusBadRequest)
+			return
+		}
+
+		// Generate hidden states (skip caching - different output format)
+		output, err := hsEmbedder.EmbedWithHiddenStates(r.Context(), contents)
+		if err != nil {
+			ln.logger.Error("failed to extract hidden states",
+				zap.String("model", req.Model),
+				zap.Error(err))
+			http.Error(w, fmt.Sprintf("extracting hidden states: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Convert int64 attention mask to int for JSON serialization
+		attentionMask := make([][]int, len(output.AttentionMask))
+		for i, mask := range output.AttentionMask {
+			attentionMask[i] = make([]int, len(mask))
+			for j, v := range mask {
+				attentionMask[i][j] = int(v)
+			}
+		}
+
+		// Return hidden states response (always JSON for now)
+		resp := EmbedResponse{
+			Model:         req.Model,
+			HiddenStates:  output.HiddenStates,
+			AttentionMask: attentionMask,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+			ln.logger.Error("encoding hidden states response", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		return
+	}
+
 	// Wrap embedder with caching for deduplicated requests
 	cachedEmbedder := ln.embeddingCache.WrapEmbedder(embedder, req.Model)
 
@@ -343,7 +387,7 @@ func parseEmbedInput(
 
 // validateContentTypes checks that all content types in the input are supported
 // by the embedder's capabilities.
-func validateContentTypes(contents [][]ai.ContentPart, caps embeddings.EmbedderCapabilities) error {
+func validateContentTypes(contents [][]ai.ContentPart, caps libafembed.EmbedderCapabilities) error {
 	// Build set of supported MIME types
 	supported := make(map[string]bool)
 	for _, m := range caps.SupportedMIMETypes {
@@ -372,7 +416,7 @@ func validateContentTypes(contents [][]ai.ContentPart, caps embeddings.EmbedderC
 }
 
 // getMIMETypeList returns a list of supported MIME types for error messages.
-func getMIMETypeList(caps embeddings.EmbedderCapabilities) []string {
+func getMIMETypeList(caps libafembed.EmbedderCapabilities) []string {
 	types := make([]string, len(caps.SupportedMIMETypes))
 	for i, m := range caps.SupportedMIMETypes {
 		types[i] = m.MIMEType
@@ -1310,6 +1354,9 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	// Get model from registry
 	model, err := ln.seq2seqRegistry.Get(req.Model)
 	if err != nil {
+		ln.logger.Error("failed to get rewrite model",
+			zap.String("model", req.Model),
+			zap.Error(err))
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
@@ -1343,3 +1390,4 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 }
+

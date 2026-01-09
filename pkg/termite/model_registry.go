@@ -64,10 +64,54 @@ func isMultimodalModel(modelPath string) (hasStandard, hasQuantized bool) {
 	return
 }
 
+// isT5Gemma2Model checks if a model directory contains T5Gemma-2 model files.
+// T5Gemma-2 models have encoder.onnx + vision_encoder.onnx.
+func isT5Gemma2Model(modelPath string) bool {
+	encoderPath := filepath.Join(modelPath, "encoder.onnx")
+	visionPath := filepath.Join(modelPath, "vision_encoder.onnx")
+
+	// Must have both encoder and vision encoder
+	if !fileExistsRegistry(encoderPath) || !fileExistsRegistry(visionPath) {
+		return false
+	}
+
+	// Check config.json for model_type: "t5gemma2"
+	configPath := filepath.Join(modelPath, "config.json")
+	if data, err := os.ReadFile(configPath); err == nil {
+		var config struct {
+			ModelType string `json:"model_type"`
+		}
+		if err := json.Unmarshal(data, &config); err == nil {
+			return config.ModelType == "t5gemma2"
+		}
+	}
+
+	// Also check t5gemma2_config.json
+	t5gemma2ConfigPath := filepath.Join(modelPath, "t5gemma2_config.json")
+	return fileExistsRegistry(t5gemma2ConfigPath)
+}
+
 // fileExistsRegistry checks if a file exists
 func fileExistsRegistry(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// isDirectoryEntry checks if an entry is a directory, following symlinks.
+// This is needed because os.DirEntry.IsDir() returns false for symlinks.
+func isDirectoryEntry(path string, entry os.DirEntry) bool {
+	// Fast path: regular directory
+	if entry.IsDir() {
+		return true
+	}
+	// Check if it's a symlink to a directory
+	if entry.Type()&os.ModeSymlink != 0 {
+		info, err := os.Stat(path) // Stat follows symlinks
+		if err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // DiscoveredModel represents a model found during directory scanning
@@ -113,7 +157,8 @@ func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, lo
 	}
 
 	for _, ownerEntry := range ownerEntries {
-		if !ownerEntry.IsDir() {
+		// Check if it's a directory (or symlink to directory)
+		if !isDirectoryEntry(filepath.Join(modelsDir, ownerEntry.Name()), ownerEntry) {
 			continue
 		}
 
@@ -128,7 +173,8 @@ func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, lo
 		}
 
 		for _, modelEntry := range modelEntries {
-			if !modelEntry.IsDir() {
+			// Check if it's a directory (or symlink to directory)
+			if !isDirectoryEntry(filepath.Join(ownerPath, modelEntry.Name()), modelEntry) {
 				continue
 			}
 			modelPath := filepath.Join(ownerPath, modelEntry.Name())

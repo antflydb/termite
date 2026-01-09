@@ -200,6 +200,23 @@ func (r *EmbedderRegistry) discoverModels() error {
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
+		// Check if this is a T5Gemma-2 multimodal encoder-decoder model
+		if isT5Gemma2Model(modelPath) {
+			r.logger.Info("Discovered T5Gemma-2 embedder model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath))
+
+			r.discovered[registryFullName] = &ModelInfo{
+				Name:         registryFullName,
+				Path:         modelPath,
+				OnnxFilename: "", // T5Gemma-2 uses multiple files (encoder.onnx, vision_encoder.onnx)
+				PoolSize:     poolSize,
+				ModelType:    "t5gemma2",
+				Variants:     []string{"default"},
+			}
+			continue // Skip standard embedder handling
+		}
+
 		// Check if this is a multimodal (CLIP-style) model
 		hasMultimodalStd, hasMultimodalQt := isMultimodalModel(modelPath)
 		if hasMultimodalStd || hasMultimodalQt {
@@ -336,6 +353,14 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 
 	// Handle different model types
 	switch info.ModelType {
+	case "t5gemma2":
+		// Load T5Gemma-2 multimodal encoder-decoder model
+		embedder, backendUsed, err = termembeddings.NewT5Gemma2EmbedderWithSessionManager(
+			info.Path,
+			r.sessionManager,
+			nil, // modelBackends - use default priority (ONNX only)
+			r.logger.Named(info.Name),
+		)
 	case "clip":
 		// Load standard precision CLIP multimodal model
 		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
