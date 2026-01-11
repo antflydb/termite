@@ -166,20 +166,6 @@ func (t *TermiteAPI) GetVersion(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GetRegistry implements ServerInterface
-// Returns the complete catalog of supported models with full metadata
-func (t *TermiteAPI) GetRegistry(w http.ResponseWriter, r *http.Request) {
-	// Buffer the response to avoid partial writes on error
-	data, err := json.Marshal(ModelRegistry)
-	if err != nil {
-		t.logger.Error("marshaling registry response", zap.Error(err))
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
-}
-
 // handleApiEmbed handles embedding generation requests using Ollama-compatible API
 // with OpenAI-compatible multimodal extension for CLIP models.
 func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {

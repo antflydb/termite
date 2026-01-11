@@ -5,7 +5,7 @@
       "name": "bge-small-en-v1.5",
       "owner": "BAAI",
       "type": "embedder",
-      "description": "",
+      "description": "Compact and efficient English sentence embedding model. Great balance of speed and quality for semantic search applications.",
       "source": "BAAI/bge-small-en-v1.5",
       "size": 133987476,
       "variants": [
@@ -14,73 +14,42 @@
       ]
     },
     {
-      "name": "rebel-large",
-      "owner": "Babelscape",
-      "type": "recognizer",
-      "description": "",
-      "source": "Babelscape/rebel-large",
-      "size": 3163580492,
-      "variants": [],
-      "capabilities": [
-        "relations"
+      "name": "all-MiniLM-L6-v2",
+      "owner": "sentence-transformers",
+      "type": "embedder",
+      "description": "Extremely fast sentence embeddings model. Optimized for speed while maintaining good quality. Ideal for high-throughput applications.",
+      "source": "sentence-transformers/all-MiniLM-L6-v2",
+      "size": 91000000,
+      "variants": [
+        "f32",
+        "f16",
+        "i8"
+      ],
+      "backends": [
+        "onnx"
       ]
     },
     {
-      "name": "functiongemma-270m-it",
-      "type": "generator",
-      "description": "",
-      "source": "google/functiongemma-270m-it",
-      "size": 1174265658,
-      "variants": [],
-      "owner": "google"
-    },
-    {
-      "name": "flan-t5-small-squad-qg",
-      "type": "rewriter",
-      "description": "",
-      "source": "lmqg/flan-t5-small-squad-qg",
-      "size": 596964700,
-      "variants": [],
-      "owner": "lmqg"
-    },
-    {
-      "name": "pegasus_paraphrase",
-      "type": "rewriter",
-      "description": "PEGASUS model fine-tuned for paraphrasing",
-      "source": "tuner007/pegasus_paraphrase",
-      "size": 4800242942,
-      "variants": [],
-      "owner": "tuner007"
-    },
-    {
-      "name": "chonky-mmbert-small-multilingual-1",
-      "owner": "mirth",
-      "type": "chunker",
-      "description": "",
-      "source": "mirth/chonky_mmbert_small_multilingual_1",
-      "size": 597479152,
+      "name": "all-mpnet-base-v2",
+      "owner": "sentence-transformers",
+      "type": "embedder",
+      "description": "High-quality sentence embeddings with excellent semantic understanding. Best accuracy among sentence-transformers models.",
+      "source": "sentence-transformers/all-mpnet-base-v2",
+      "size": 438000000,
       "variants": [
+        "f32",
         "f16",
         "i8"
-      ]
-    },
-    {
-      "name": "mxbai-rerank-base-v1",
-      "owner": "mixedbread-ai",
-      "type": "reranker",
-      "description": "",
-      "source": "mixedbread-ai/mxbai-rerank-base-v1",
-      "size": 747254415,
-      "variants": [
-        "f16",
-        "i8"
+      ],
+      "backends": [
+        "onnx"
       ]
     },
     {
       "name": "clip-vit-base-patch32",
       "owner": "openai",
       "type": "embedder",
-      "description": "",
+      "description": "Multimodal model that creates joint embeddings for both text and images. Enables cross-modal search and similarity. Requires ONNX Runtime.",
       "source": "openai/clip-vit-base-patch32",
       "size": 612032340,
       "variants": [
@@ -93,6 +62,158 @@
       "backends": [
         "onnx"
       ]
+    },
+    {
+      "name": "mxbai-rerank-base-v1",
+      "owner": "mixedbread-ai",
+      "type": "reranker",
+      "description": "State-of-the-art document reranking model. Significantly improves search relevance by rescoring candidate documents.",
+      "source": "mixedbread-ai/mxbai-rerank-base-v1",
+      "size": 747254415,
+      "variants": [
+        "f16",
+        "i8"
+      ]
+    },
+    {
+      "name": "chonky-mmbert-small-multilingual-1",
+      "owner": "mirth",
+      "type": "chunker",
+      "description": "Neural semantic chunking model with multilingual support. Intelligently segments documents at natural semantic boundaries.",
+      "source": "mirth/chonky_mmbert_small_multilingual_1",
+      "size": 597479152,
+      "variants": [
+        "f16",
+        "i8"
+      ]
+    },
+    {
+      "name": "rebel-large",
+      "owner": "Babelscape",
+      "type": "recognizer",
+      "description": "Relation extraction model based on BART. Extracts entity-relation triplets from text for knowledge graph construction.",
+      "source": "Babelscape/rebel-large",
+      "size": 3163580492,
+      "variants": [],
+      "capabilities": [
+        "relations"
+      ]
+    },
+    {
+      "name": "bert-base-NER",
+      "owner": "dslim",
+      "type": "recognizer",
+      "description": "Standard BERT-based named entity recognition. Identifies Person, Organization, Location, and Miscellaneous entities.",
+      "source": "dslim/bert-base-NER",
+      "size": 433000000,
+      "variants": [
+        "f32",
+        "f16",
+        "i8"
+      ],
+      "capabilities": [
+        "labels"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "bert-large-NER",
+      "owner": "dslim",
+      "type": "recognizer",
+      "description": "Larger BERT model for named entity recognition. Higher accuracy than base model for complex entity extraction tasks.",
+      "source": "dslim/bert-large-NER",
+      "size": 1340000000,
+      "variants": [
+        "f32",
+        "f16",
+        "i8"
+      ],
+      "capabilities": [
+        "labels"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "gliner_small-v2.1",
+      "owner": "urchade",
+      "type": "recognizer",
+      "description": "Zero-shot NER model that can extract entities for any label without retraining. Specify custom entity types at inference time.",
+      "source": "urchade/gliner_small-v2.1",
+      "size": 209000000,
+      "variants": [
+        "f32",
+        "f16",
+        "i8"
+      ],
+      "capabilities": [
+        "labels",
+        "zeroshot"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "gliner-multitask-large-v0.5",
+      "owner": "knowledgator",
+      "type": "recognizer",
+      "description": "Powerful multitask extraction model. Combines NER, zero-shot labeling, relation extraction, and question answering in one model.",
+      "source": "knowledgator/gliner-multitask-large-v0.5",
+      "size": 1420000000,
+      "variants": [
+        "f32",
+        "f16",
+        "i8"
+      ],
+      "capabilities": [
+        "labels",
+        "zeroshot",
+        "relations",
+        "answers"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "flan-t5-small-squad-qg",
+      "owner": "lmqg",
+      "type": "rewriter",
+      "description": "Question generation model fine-tuned on SQuAD. Generates relevant questions from text passages for training data creation.",
+      "source": "lmqg/flan-t5-small-squad-qg",
+      "size": 596964700,
+      "variants": []
+    },
+    {
+      "name": "pegasus_paraphrase",
+      "owner": "tuner007",
+      "type": "rewriter",
+      "description": "Paraphrasing model based on PEGASUS. Rewrites text while preserving meaning for data augmentation and style transfer.",
+      "source": "tuner007/pegasus_paraphrase",
+      "size": 4800242942,
+      "variants": []
+    },
+    {
+      "name": "functiongemma-270m-it",
+      "owner": "google",
+      "type": "generator",
+      "description": "Compact instruction-tuned model optimized for function calling. Ideal for tool use and structured output generation.",
+      "source": "google/functiongemma-270m-it",
+      "size": 1174265658,
+      "variants": []
+    },
+    {
+      "name": "gemma-3-1b-it",
+      "owner": "google",
+      "type": "generator",
+      "description": "Larger instruction-tuned Gemma model. Better reasoning and generation quality for more complex tasks.",
+      "source": "google/gemma-3-1b-it",
+      "size": 4000000000,
+      "variants": []
     }
   ]
 }
