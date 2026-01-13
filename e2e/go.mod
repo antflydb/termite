@@ -6,6 +6,7 @@ require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260105234922-f6ed1eb6788d
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
+	github.com/knights-analytics/hugot v0.6.1
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
@@ -41,7 +42,6 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
-	github.com/knights-analytics/hugot v0.6.1 // indirect
 	github.com/knights-analytics/ortgenai v0.0.1 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect

@@ -373,8 +373,20 @@ func (p *PooledHugotEmbedder) Embed(ctx context.Context, contents [][]ai.Content
 }
 
 // Close releases resources.
-// Only destroys the session if it was created by this embedder (not shared).
+// Properly closes each pipeline to remove it from the session, then destroys
+// the session if it was created by this embedder (not shared).
 func (p *PooledHugotEmbedder) Close() error {
+	// Close each pipeline to remove it from the session
+	for _, pipeline := range p.pipelines {
+		if pipeline != nil {
+			name := pipeline.PipelineName
+			if err := khugot.ClosePipeline[*pipelines.FeatureExtractionPipeline](p.session, name); err != nil {
+				p.logger.Warn("Failed to close pipeline", zap.String("name", name), zap.Error(err))
+			}
+		}
+	}
+	p.pipelines = nil
+
 	if p.session != nil && !p.sessionShared {
 		p.logger.Info("Destroying Hugot session (owned by this pooled embedder)")
 		return p.session.Destroy()
