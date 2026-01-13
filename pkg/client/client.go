@@ -390,6 +390,73 @@ func (c *TermiteClient) ExtractRelations(ctx context.Context, model string, text
 	return resp.JSON200, nil
 }
 
+// Classify performs zero-shot text classification.
+// Returns classification results with labels and scores for each input text.
+func (c *TermiteClient) Classify(ctx context.Context, model string, texts []string, labels []string) (*oapi.ClassifyResponse, error) {
+	req := oapi.ClassifyRequest{
+		Model:  model,
+		Texts:  texts,
+		Labels: labels,
+	}
+
+	resp, err := c.client.ClassifyTextWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
+// ClassifyMultiLabel performs multi-label zero-shot text classification.
+// Unlike regular classification where scores sum to 1, multi-label allows independent label scores.
+func (c *TermiteClient) ClassifyMultiLabel(ctx context.Context, model string, texts []string, labels []string) (*oapi.ClassifyResponse, error) {
+	req := oapi.ClassifyRequest{
+		Model:      model,
+		Texts:      texts,
+		Labels:     labels,
+		MultiLabel: true,
+	}
+
+	resp, err := c.client.ClassifyTextWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
 // RewriteText rewrites input texts using a Seq2Seq rewriter model.
 func (c *TermiteClient) RewriteText(ctx context.Context, model string, inputs []string) (*oapi.RewriteResponse, error) {
 	req := oapi.RewriteRequest{

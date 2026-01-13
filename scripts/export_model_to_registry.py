@@ -68,6 +68,15 @@ Usage:
     # Export a generative LLM with CUDA-optimized INT4
     ./export_model_to_registry.py generator google/gemma-3-1b-it --variants i4-cuda
 
+    # Export a zero-shot classifier (mDeBERTa-MNLI)
+    ./export_model_to_registry.py classifier MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+
+    # Export BART-MNLI classifier
+    ./export_model_to_registry.py classifier facebook/bart-large-mnli
+
+    # Pull pre-exported ONNX classifier from Xenova (no conversion needed)
+    ./export_model_to_registry.py classifier Xenova/bart-large-mnli --from-onnx
+
     # Export and upload to R2
     ./export_model_to_registry.py embedder BAAI/bge-small-en-v1.5 --upload
 
@@ -112,7 +121,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator"]
+ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier"]
 
 # Recognizer capabilities - these describe what extraction tasks the model supports
 # Used in manifest to advertise model capabilities to Termite
@@ -154,6 +163,11 @@ MODEL_TYPE_CONFIG = {
         "ort_class": None,  # Uses onnxruntime-genai model builder
         "default_model": "google/gemma-3-1b-it",
         "dir_name": "generators",
+    },
+    "classifier": {
+        "ort_class": "ORTModelForSequenceClassification",
+        "default_model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
+        "dir_name": "classifiers",
     },
 }
 
@@ -239,6 +253,17 @@ GENERATOR_MANIFEST_FILES = [
     "special_tokens_map.json",
     "config.json",
     "generation_config.json",
+]
+
+# Files for classifier models (Zero-Shot Classification / NLI)
+CLASSIFIER_MANIFEST_FILES = [
+    "model.onnx",
+    "model.onnx_data",
+    "tokenizer.json",
+    "config.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "zsc_config.json",
 ]
 
 
@@ -345,6 +370,7 @@ def get_ort_model_class(model_type: ModelType):
         "embedder": ORTModelForFeatureExtraction,
         "reranker": ORTModelForSequenceClassification,
         "chunker": ORTModelForTokenClassification,
+        "classifier": ORTModelForSequenceClassification,
     }
     return classes[model_type]
 
@@ -804,6 +830,117 @@ def export_rebel_model(
     return output_dir
 
 
+def export_classifier_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+    from_onnx: bool = False,
+) -> Path:
+    """
+    Export a Zero-Shot Classification model (NLI-based) to ONNX format.
+
+    Uses Hugging Face's Optimum library to export models like mDeBERTa-mnli-xnli.
+    Creates a zsc_config.json file with classification-specific settings.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., MoritzLaurer/mDeBERTa-v3-base-mnli-xnli)
+        output_dir: Directory to save the model
+        variants: List of variant types to create (e.g., ["f16", "i8"])
+        from_onnx: If True, load pre-exported ONNX model (e.g., Xenova/bart-large-mnli)
+    """
+    from transformers import AutoTokenizer, AutoConfig
+    from optimum.onnxruntime import ORTModelForSequenceClassification
+    from optimum.onnxruntime import ORTQuantizer
+    from optimum.onnxruntime.configuration import AutoQuantizationConfig
+
+    variants = variants or []
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if from_onnx:
+        logger.info(f"Loading pre-exported ONNX classifier: {model_id}")
+    else:
+        logger.info(f"Exporting zero-shot classifier: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Load model config first to check label mapping
+    logger.info("Loading model configuration...")
+    config = AutoConfig.from_pretrained(model_id)
+
+    # Load or export to ONNX
+    # When from_onnx=True, Optimum will download existing ONNX files from the repo
+    # When from_onnx=False, Optimum will convert PyTorch model to ONNX
+    if from_onnx:
+        logger.info("Downloading pre-exported ONNX model...")
+        ort_model = ORTModelForSequenceClassification.from_pretrained(model_id, export=False)
+    else:
+        logger.info("Converting to ONNX format...")
+        ort_model = ORTModelForSequenceClassification.from_pretrained(model_id, export=True)
+    ort_model.save_pretrained(output_dir)
+
+    # Save tokenizer
+    logger.info("Saving tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer.save_pretrained(output_dir)
+
+    # Create int8 quantized variant if requested
+    if "i8" in variants:
+        logger.info("Applying dynamic quantization (int8)...")
+        try:
+            quantizer = ORTQuantizer.from_pretrained(output_dir)
+            dqconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
+            quantizer.quantize(save_dir=output_dir, quantization_config=dqconfig)
+            # Rename the quantized file
+            old_quantized = output_dir / "model_quantized.onnx"
+            new_quantized = output_dir / "model_i8.onnx"
+            if old_quantized.exists():
+                shutil.move(str(old_quantized), str(new_quantized))
+                logger.info(f"  Created: model_i8.onnx")
+        except Exception as e:
+            logger.warning(f"Quantization failed: {e}")
+
+    # Create zsc_config.json for Termite
+    logger.info("Creating zsc_config.json...")
+
+    # Detect the NLI label mapping (entailment index)
+    id2label = config.id2label if hasattr(config, 'id2label') else {}
+    label2id = config.label2id if hasattr(config, 'label2id') else {}
+
+    # Find the entailment label (case-insensitive)
+    entailment_id = None
+    for label_id, label_name in id2label.items():
+        if 'entail' in label_name.lower():
+            entailment_id = int(label_id)
+            break
+
+    # Default hypothesis template for NLI zero-shot classification
+    hypothesis_template = "This example is {}."
+
+    # Check for multilingual models and adjust template
+    model_id_lower = model_id.lower()
+    if "xnli" in model_id_lower or "multilingual" in model_id_lower:
+        hypothesis_template = "This example is {}."  # Works well for multilingual
+
+    zsc_config = {
+        "model_id": model_id,
+        "model_type": "zero-shot-classification",
+        "hypothesis_template": hypothesis_template,
+        "multi_label": False,
+        "threshold": 0.0,
+        "entailment_id": entailment_id if entailment_id is not None else 2,
+        "contradiction_id": 0,
+        "neutral_id": 1,
+        "id2label": {str(k): v for k, v in id2label.items()},
+        "label2id": label2id,
+    }
+
+    zsc_config_path = output_dir / "zsc_config.json"
+    with open(zsc_config_path, "w") as f:
+        json.dump(zsc_config, f, indent=2)
+    logger.info("  Saved: zsc_config.json")
+
+    return output_dir
+
+
 def export_seq2seq_model(
     model_id: str,
     output_dir: Path,
@@ -1147,6 +1284,7 @@ def generate_manifest(
     # Use appropriate file list based on model type and capabilities
     is_multimodal = capabilities and "multimodal" in capabilities
     is_generator = model_type == "generator"
+    is_classifier = model_type == "classifier"
     is_gliner = recognizer_arch == "gliner"
     is_rebel = recognizer_arch == "rebel"
 
@@ -1154,6 +1292,8 @@ def generate_manifest(
         file_list = MULTIMODAL_MANIFEST_FILES
     elif model_type == "rewriter":
         file_list = SEQ2SEQ_MANIFEST_FILES
+    elif is_classifier:
+        file_list = CLASSIFIER_MANIFEST_FILES
     elif is_gliner:
         file_list = GLINER_MANIFEST_FILES
     elif is_rebel:
@@ -1875,6 +2015,9 @@ def test_model(
     if model_type == "generator":
         return test_generator_model(model_dir)
 
+    if model_type == "classifier":
+        return test_classifier_model(model_dir)
+
     if recognizer_arch == "gliner":
         return test_gliner_model(model_dir)
 
@@ -1921,6 +2064,46 @@ def test_model(
             outputs = model(**inputs)
             assert outputs.logits is not None
             logger.info(f"  Logits shape: {outputs.logits.shape}")
+
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        return False
+
+
+def test_classifier_model(model_dir: Path) -> bool:
+    """Test a zero-shot classification model."""
+    try:
+        from transformers import AutoTokenizer
+        from optimum.onnxruntime import ORTModelForSequenceClassification
+
+        logger.info("Loading zero-shot classifier...")
+        model = ORTModelForSequenceClassification.from_pretrained(model_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_dir)
+
+        # Test with NLI-style input (premise, hypothesis)
+        premise = "This is a test about technology."
+        hypothesis = "This example is about computers."
+
+        inputs = tokenizer(
+            premise,
+            hypothesis,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        outputs = model(**inputs)
+        assert outputs.logits is not None
+        logger.info(f"  Logits shape: {outputs.logits.shape}")
+        logger.info(f"  Logits: {outputs.logits}")
+
+        # Check for expected 3-class output (entailment, neutral, contradiction)
+        if outputs.logits.shape[-1] == 3:
+            import torch
+            probs = torch.softmax(outputs.logits, dim=-1)
+            logger.info(f"  Probabilities: entail={probs[0][2]:.3f}, neutral={probs[0][1]:.3f}, contradiction={probs[0][0]:.3f}")
 
         logger.info("Test passed!")
         return True
@@ -2339,15 +2522,23 @@ def cmd_export(args):
     logger.info(f"Variants:    {', '.join(args.variants) if args.variants else 'none'}")
     logger.info(f"Capabilities:{', '.join(capabilities) if capabilities else 'none'}")
     logger.info(f"Backends:    {', '.join(args.backends) if args.backends else 'none'}")
+    logger.info(f"From ONNX:   {args.from_onnx}")
     logger.info("=" * 60)
 
     # Export model using appropriate function
-    logger.info("\n[1/4] Exporting model to ONNX...")
     hf_token = getattr(args, "hf_token", None)
+
+    if args.from_onnx:
+        logger.info("\n[1/4] Loading pre-exported ONNX model...")
+    else:
+        logger.info("\n[1/4] Exporting model to ONNX...")
+
     if args.model_type == "rewriter":
         export_seq2seq_model(model_id, model_dir, args.variants)
     elif args.model_type == "generator":
         export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
+    elif args.model_type == "classifier":
+        export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
     elif recognizer_arch == "gliner":
         export_gliner_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "rebel":
@@ -2472,6 +2663,15 @@ Examples:
   # Export a generative LLM with CUDA-optimized INT4
   %(prog)s generator google/gemma-3-1b-it --variants i4-cuda
 
+  # Export a zero-shot classifier (mDeBERTa-MNLI)
+  %(prog)s classifier MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
+
+  # Export BART-MNLI classifier
+  %(prog)s classifier facebook/bart-large-mnli
+
+  # Pull pre-exported ONNX classifier from Xenova (no conversion needed)
+  %(prog)s classifier Xenova/bart-large-mnli --from-onnx
+
   # Garbage collect orphaned blobs and index entries (dry run)
   %(prog)s gc
 
@@ -2524,7 +2724,7 @@ Environment Variables:
     )
 
     # Export subcommands (one for each model type)
-    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator"]:
+    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier"]:
         export_parser = subparsers.add_parser(
             model_type,
             help=f"Export a {model_type} model to ONNX",
@@ -2599,6 +2799,12 @@ Environment Variables:
         export_parser.add_argument(
             "--hf-token",
             help="HuggingFace API token for gated models (or set HF_TOKEN env var)",
+        )
+        export_parser.add_argument(
+            "--from-onnx",
+            action="store_true",
+            help="Pull pre-exported ONNX model from HuggingFace instead of converting "
+                 "(e.g., Xenova/bart-large-mnli). Downloads existing ONNX files directly.",
         )
         # Store the model type for later
         export_parser.set_defaults(model_type=model_type)

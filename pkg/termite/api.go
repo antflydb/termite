@@ -34,6 +34,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
@@ -89,6 +90,11 @@ func (t *TermiteAPI) RewriteText(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRewrite(w, r)
 }
 
+// ClassifyText implements ServerInterface
+func (t *TermiteAPI) ClassifyText(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiClassify(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -99,6 +105,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Recognizers: []string{},
 		Extractors:  []string{},
 		Rewriters:   []string{},
+		Classifiers: []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -139,6 +146,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.seq2seqRegistry != nil {
 		resp.Rewriters = t.node.seq2seqRegistry.List()
+	}
+
+	if t.node.classifierRegistry != nil {
+		resp.Classifiers = t.node.classifierRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1334,6 +1345,121 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	resp := RewriteResponse{
 		Model: req.Model,
 		Texts: output.Texts,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleApiClassify handles zero-shot text classification requests
+func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if classification is available
+	if ln.classifierRegistry == nil || len(ln.classifierRegistry.List()) == 0 {
+		http.Error(w, "classification not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request
+	var req ClassifyRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Texts) == 0 {
+		http.Error(w, "texts are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Labels) == 0 {
+		http.Error(w, "labels are required for zero-shot classification", http.StatusBadRequest)
+		return
+	}
+
+	// Get model from registry
+	classifier, err := ln.classifierRegistry.Get(req.Model)
+	if err != nil {
+		ln.logger.Error("failed to get classifier model",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to load model %s: %v", req.Model, err), http.StatusInternalServerError)
+		return
+	}
+
+	// Perform classification
+	var classifyResults [][]classification.Classification
+	var classifyErr error
+
+	// Use custom hypothesis template if provided, otherwise use default
+	if req.HypothesisTemplate != "" {
+		classifyResults, classifyErr = classifier.ClassifyWithHypothesis(r.Context(), req.Texts, req.Labels, req.HypothesisTemplate)
+	} else if req.MultiLabel {
+		classifyResults, classifyErr = classifier.MultiLabelClassify(r.Context(), req.Texts, req.Labels)
+	} else {
+		classifyResults, classifyErr = classifier.Classify(r.Context(), req.Texts, req.Labels)
+	}
+
+	if classifyErr != nil {
+		ln.logger.Error("classification failed",
+			zap.String("model", req.Model),
+			zap.Int("num_texts", len(req.Texts)),
+			zap.Strings("labels", req.Labels),
+			zap.Error(classifyErr))
+		http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to API response format
+	results := make([][]ClassifyResult, len(classifyResults))
+	for i, textResults := range classifyResults {
+		results[i] = make([]ClassifyResult, len(textResults))
+		for j, c := range textResults {
+			results[i][j] = ClassifyResult{
+				Label: c.Label,
+				Score: c.Score,
+			}
+		}
+	}
+
+	ln.logger.Info("classify request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_texts", len(req.Texts)),
+		zap.Int("num_labels", len(req.Labels)))
+
+	// Send response
+	resp := ClassifyResponse{
+		Model:           req.Model,
+		Classifications: results,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
