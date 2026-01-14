@@ -124,6 +124,53 @@ termite list --remote
 
 Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `reranker_models_dir`.
 
+### Available Models
+
+#### Embedders
+
+| Model | Size | Variants |
+|-------|------|----------|
+| `bge-small-en-v1.5` | 128MB | f16, i8 |
+| `all-MiniLM-L6-v2` | 87MB | f32, f16, i8 |
+| `all-mpnet-base-v2` | 418MB | f32, f16, i8 |
+| `clip-vit-base-patch32` | 584MB | f16, i8 |
+
+#### Rerankers
+
+| Model | Size | Variants |
+|-------|------|----------|
+| `mxbai-rerank-base-v1` | 713MB | f16, i8 |
+
+#### Chunkers
+
+| Model | Size | Variants |
+|-------|------|----------|
+| `chonky-mmbert-small-multilingual-1` | 570MB | f16, i8 |
+
+#### Recognizers (NER)
+
+| Model | Size | Variants | Capabilities |
+|-------|------|----------|--------------|
+| `bert-base-NER` | 413MB | f32, f16, i8 | labels |
+| `bert-large-NER` | 1.3GB | f32, f16, i8 | labels |
+| `gliner_small-v2.1` | 199MB | f32, f16, i8 | labels, zeroshot |
+| `gliner-multitask-large-v0.5` | 1.3GB | f32, f16, i8 | labels, zeroshot, relations, answers |
+| `rebel-large` | 3.0GB | - | relations |
+
+#### Rewriters
+
+| Model | Size | Variants |
+|-------|------|----------|
+| `flan-t5-small-squad-qg` | 569MB | - |
+| `pegasus_paraphrase` | 4.5GB | - |
+
+#### Generators
+
+| Model | Size | Variants |
+|-------|------|----------|
+| `functiongemma-270m-it` | 1.1GB | - |
+| `gemma-3-1b-it` | 3.7GB | - |
+
 ### Model Variants
 
 Models support multiple precision variants for different performance/accuracy tradeoffs:

@@ -47,7 +47,6 @@ func discoverModelVariants(modelPath string) map[string]string {
 			usedFilenames[filename] = true
 		}
 	}
-
 	return variants
 }
 
