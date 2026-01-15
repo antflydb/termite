@@ -7,8 +7,10 @@ import (
 )
 
 // Florence-2 Task Types
-// Florence-2 uses natural language prompts for each task type.
-// The model's processor converts task tokens to these prompts internally.
+// Florence-2 was trained on natural language prompts, not task tokens.
+// The HuggingFace processor converts task tokens (like <OCR>) to natural language
+// prompts internally before tokenization. In ONNX mode without that processor,
+// we use the natural language prompts directly.
 
 // FlorenceTask represents a Florence-2 task type
 type FlorenceTask string
@@ -131,8 +133,11 @@ func (t FlorenceTask) String() string {
 	return string(t)
 }
 
-// FlorenceTaskFromString converts a string to a FlorenceTask
-// Accepts both uppercase (correct) and lowercase (legacy) formats.
+// FlorenceTaskFromString converts a string to a FlorenceTask.
+// Accepts task token formats (e.g., "<OCR>", "<ocr>") for convenience, but note
+// that Florence-2 was trained on natural language prompts. The HuggingFace processor
+// converts task tokens to prompts internally; in ONNX mode, use the natural language
+// prompts from FlorencePrompt() directly.
 func FlorenceTaskFromString(s string) (FlorenceTask, error) {
 	switch s {
 	case "<CAPTION>", "<cap>":
