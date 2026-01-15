@@ -97,17 +97,17 @@ func newPooledHugotReaderInternal(modelPath string, poolSize int, sharedSession 
 	} else if sessionManager != nil {
 		// Use SessionManager for backend selection
 		var err error
-		session, backendUsed, err = sessionManager.GetOrCreateSession(modelBackends)
+		session, backendUsed, err = sessionManager.GetSessionForModel(modelBackends)
 		if err != nil {
 			return nil, "", fmt.Errorf("getting session from manager: %w", err)
 		}
 		sessionShared = true // Session is managed by SessionManager
 	} else {
-		// Create our own ONNX session
+		// Create our own session using the default backend
 		var err error
-		session, err = hugot.NewORTSession(logger)
+		session, err = hugot.NewSession()
 		if err != nil {
-			return nil, "", fmt.Errorf("creating ONNX session: %w", err)
+			return nil, "", fmt.Errorf("creating session: %w", err)
 		}
 		backendUsed = hugot.BackendONNX
 		sessionShared = false
@@ -191,9 +191,8 @@ func (r *PooledHugotReader) Read(ctx context.Context, images []image.Image, prom
 	pipeline := r.pipelines[idx%uint64(r.poolSize)]
 
 	// Set max tokens if specified
-	var opts []khugot.Vision2SeqOption
 	if maxTokens > 0 {
-		opts = append(opts, pipelines.WithVision2SeqMaxTokens(maxTokens))
+		pipeline.MaxNewTokens = maxTokens
 	}
 
 	// Run inference
@@ -201,9 +200,9 @@ func (r *PooledHugotReader) Read(ctx context.Context, images []image.Image, prom
 	var err error
 
 	if prompt != "" {
-		output, err = pipeline.RunWithPrompt(images, prompt, opts...)
+		output, err = pipeline.RunWithPrompt(images, prompt)
 	} else {
-		output, err = pipeline.RunWithImages(images, opts...)
+		output, err = pipeline.RunWithImages(images)
 	}
 
 	if err != nil {

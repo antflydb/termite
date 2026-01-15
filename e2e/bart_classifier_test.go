@@ -161,10 +161,10 @@ func testBartClassifyText(t *testing.T, ctx context.Context, c *client.TermiteCl
 	require.NoError(t, err, "Classify failed")
 
 	assert.Equal(t, bartMnliLocalName, resp.Model)
-	assert.Len(t, resp.Results, len(texts), "Should have results for each input text")
+	assert.Len(t, resp.Classifications, len(texts), "Should have results for each input text")
 
 	// Log the classification results
-	for i, textResults := range resp.Results {
+	for i, textResults := range resp.Classifications {
 		t.Logf("Text %d classifications:", i)
 		for _, result := range textResults {
 			t.Logf("  - %q: %.4f", result.Label, result.Score)
@@ -172,12 +172,12 @@ func testBartClassifyText(t *testing.T, ctx context.Context, c *client.TermiteCl
 	}
 
 	// The text about iPhone should classify as technology
-	assert.NotEmpty(t, resp.Results[0], "First text should have classification results")
+	assert.NotEmpty(t, resp.Classifications[0], "First text should have classification results")
 
 	// Find the top label (highest score)
 	topLabel := ""
 	topScore := float32(0.0)
-	for _, result := range resp.Results[0] {
+	for _, result := range resp.Classifications[0] {
 		if result.Score > topScore {
 			topScore = result.Score
 			topLabel = result.Label
@@ -210,13 +210,13 @@ func testBartClassifyMultipleTexts(t *testing.T, ctx context.Context, c *client.
 			require.NoError(t, err, "Classify failed")
 
 			assert.Equal(t, bartMnliLocalName, resp.Model)
-			assert.Len(t, resp.Results, 1, "Should have results for the input text")
+			assert.Len(t, resp.Classifications, 1, "Should have results for the input text")
 
 			// Log classifications
 			t.Logf("Text: %q", tc.text[:50])
 			topLabel := ""
 			topScore := float32(0.0)
-			for _, result := range resp.Results[0] {
+			for _, result := range resp.Classifications[0] {
 				t.Logf("  - %q: %.4f", result.Label, result.Score)
 				if result.Score > topScore {
 					topScore = result.Score
@@ -244,17 +244,17 @@ func testBartClassifyMultiLabel(t *testing.T, ctx context.Context, c *client.Ter
 	require.NoError(t, err, "ClassifyMultiLabel failed")
 
 	assert.Equal(t, bartMnliLocalName, resp.Model)
-	assert.Len(t, resp.Results, len(texts), "Should have results for each input text")
+	assert.Len(t, resp.Classifications, len(texts), "Should have results for each input text")
 
 	// Log the multi-label results
 	t.Logf("Multi-label classification results:")
-	for _, result := range resp.Results[0] {
+	for _, result := range resp.Classifications[0] {
 		t.Logf("  - %q: %.4f", result.Label, result.Score)
 	}
 
 	// In multi-label mode, both technology and business should have relatively high scores
 	var techScore, bizScore float32
-	for _, result := range resp.Results[0] {
+	for _, result := range resp.Classifications[0] {
 		if result.Label == "technology" {
 			techScore = result.Score
 		}
