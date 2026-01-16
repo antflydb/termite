@@ -3,7 +3,6 @@
 // Happy Path E2E Test for PooledHugotEmbedder
 //
 // This test verifies normal usage patterns work correctly.
-// It should PASS both before and after the bugfixes.
 //
 // Run:
 //   export ONNXRUNTIME_ROOT=$PWD/onnxruntime
