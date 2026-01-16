@@ -18,12 +18,17 @@
 package termite
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/http"
 	"runtime"
 	"time"
@@ -38,6 +43,7 @@ import (
 	"github.com/bytedance/sonic/decoder"
 	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
+	_ "golang.org/x/image/webp"
 )
 
 // NOTE: SerializeFloatArrays is in codec.go in this package
@@ -95,6 +101,11 @@ func (t *TermiteAPI) ClassifyText(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiClassify(w, r)
 }
 
+// ReadImages implements ServerInterface
+func (t *TermiteAPI) ReadImages(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiRead(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -106,6 +117,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Extractors:  []string{},
 		Rewriters:   []string{},
 		Classifiers: []string{},
+		Readers:     []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -150,6 +162,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.classifierRegistry != nil {
 		resp.Classifiers = t.node.classifierRegistry.List()
+	}
+
+	if t.node.readerRegistry != nil {
+		resp.Readers = t.node.readerRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1468,4 +1484,146 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// handleApiRead handles reading/OCR requests using Vision2Seq models
+func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if reading is available
+	if ln.readerRegistry == nil || len(ln.readerRegistry.List()) == 0 {
+		http.Error(w, "reading not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request using generated types
+	var req ReadRequest
+	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Images) == 0 {
+		http.Error(w, "images are required", http.StatusBadRequest)
+		return
+	}
+
+	// Get reader model from registry
+	reader, err := ln.readerRegistry.Get(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Download and decode images
+	images, err := downloadAndDecodeImages(r.Context(), req.Images, ln.contentSecurityConfig, ln.s3Credentials)
+	if err != nil {
+		ln.logger.Error("failed to download images",
+			zap.String("model", req.Model),
+			zap.Int("num_images", len(req.Images)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to download images: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Get optional parameters
+	prompt := req.Prompt // empty string if not provided
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 256 // default
+	}
+
+	// Wrap reader with caching for deduplicated requests
+	cachedReader := ln.readingCache.WrapReader(reader, req.Model)
+
+	// Read images (with caching and singleflight deduplication)
+	results, err := cachedReader.Read(r.Context(), images, prompt, maxTokens)
+	if err != nil {
+		ln.logger.Error("reading failed",
+			zap.String("model", req.Model),
+			zap.Int("num_images", len(images)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("reading failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record metrics
+	RecordReaderRequest(req.Model)
+
+	ln.logger.Info("read request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_images", len(images)),
+		zap.Int("num_results", len(results)))
+
+	// Convert to API response format
+	apiResults := make([]ReadResult, len(results))
+	for i, r := range results {
+		apiResults[i] = ReadResult{
+			Text:   r.Text,
+			Fields: r.Fields,
+		}
+	}
+
+	// Send response
+	resp := ReadResponse{
+		Model:   req.Model,
+		Results: apiResults,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// downloadAndDecodeImages downloads images from URLs and decodes them to image.Image
+func downloadAndDecodeImages(ctx context.Context, imageURLs []ImageURL, secConfig *scraping.ContentSecurityConfig, s3Creds *s3.Credentials) ([]image.Image, error) {
+	images := make([]image.Image, 0, len(imageURLs))
+
+	for _, imgURL := range imageURLs {
+		// Download image data - returns (mimeType, data []byte, error)
+		// scraping.DownloadContent handles data:, http://, https://, file://, s3:// URLs
+		// and returns already-decoded bytes (base64 decoding for data: URLs is handled internally)
+		_, imageData, err := scraping.DownloadContent(ctx, imgURL.Url, secConfig, s3Creds)
+		if err != nil {
+			return nil, fmt.Errorf("downloading image %s: %w", imgURL.Url, err)
+		}
+
+		// Decode image from bytes
+		img, _, err := image.Decode(bytes.NewReader(imageData))
+		if err != nil {
+			return nil, fmt.Errorf("decoding image %s: %w", imgURL.Url, err)
+		}
+
+		images = append(images, img)
+	}
+
+	return images, nil
 }

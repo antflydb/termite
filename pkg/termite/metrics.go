@@ -111,6 +111,16 @@ var (
 		[]string{"model"},
 	)
 
+	readerRequestOps = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "antfly",
+			Subsystem: "termite",
+			Name:      "reader_request_ops_total",
+			Help:      "The total number of reader (OCR/Vision2Seq) requests.",
+		},
+		[]string{"model"},
+	)
+
 	modelLoadDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "antfly",
@@ -212,6 +222,7 @@ func init() {
 	prometheus.MustRegister(tokenGenerationOps)
 	prometheus.MustRegister(nerRequestOps)
 	prometheus.MustRegister(nerCreationOps)
+	prometheus.MustRegister(readerRequestOps)
 	prometheus.MustRegister(modelLoadDuration)
 	prometheus.MustRegister(requestDuration)
 	prometheus.MustRegister(cacheHits)
@@ -302,4 +313,9 @@ func RecordNERRequest(model string) {
 // RecordNERCreation records the number of entities extracted
 func RecordNERCreation(model string, count int) {
 	nerCreationOps.WithLabelValues(model).Add(float64(count))
+}
+
+// RecordReaderRequest increments the reader request counter
+func RecordReaderRequest(model string) {
+	readerRequestOps.WithLabelValues(model).Inc()
 }

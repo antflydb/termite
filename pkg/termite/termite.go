@@ -48,10 +48,14 @@ type TermiteNode struct {
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
 
-	// Caches for embeddings, reranking, and NER
+	// Reader registry (lazy loading with TTL-based unloading)
+	readerRegistry *ReaderRegistry
+
+	// Caches for embeddings, reranking, NER, and reading
 	embeddingCache *EmbeddingCache
 	rerankingCache *RerankingCache
 	nerCache       *NERCache
+	readingCache   *ReadingCache
 }
 
 // corsMiddleware adds permissive CORS headers for the Termite API
@@ -143,12 +147,13 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Compute model subdirectory paths from models_dir
-	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir string
+	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir, readerModelsDir string
 	if config.ModelsDir != "" {
 		embedderModelsDir = filepath.Join(config.ModelsDir, "embedders")
 		chunkerModelsDir = filepath.Join(config.ModelsDir, "chunkers")
 		rerankerModelsDir = filepath.Join(config.ModelsDir, "rerankers")
 		generatorModelsDir = filepath.Join(config.ModelsDir, "generators")
+		readerModelsDir = filepath.Join(config.ModelsDir, "readers")
 	}
 
 	// Create session manager for multi-backend support
@@ -376,6 +381,33 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	}
 
+	// Initialize reader registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var readerRegistry *ReaderRegistry
+	if readerModelsDir != "" {
+		readerRegistry, err = NewReaderRegistry(
+			ReaderConfig{
+				ModelsDir:       readerModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+				PoolSize:        config.PoolSize,
+			},
+			sessionManager,
+			zl.Named("reader"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize reader registry", zap.Error(err))
+		}
+		defer func() { _ = readerRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := readerRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some reader models", zap.Error(err))
+			}
+		}
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -415,7 +447,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		RequestTimeout:        requestTimeout,
 	}, zl.Named("queue"))
 
-	// Initialize caches for embeddings, reranking, and NER
+	// Initialize caches for embeddings, reranking, NER, and reading
 	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
@@ -424,6 +456,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	nerCache := NewNERCache(zl.Named("ner-cache"))
 	defer nerCache.Close()
+
+	readingCache := NewReadingCache(zl.Named("reading-cache"))
+	defer readingCache.Close()
 
 	// Build S3 credentials from config (optional)
 	var s3Creds *s3.Credentials
@@ -441,12 +476,14 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		nerRegistry:           nerRegistry,
 		seq2seqRegistry:       seq2seqRegistry,
 		classifierRegistry:    classifierRegistry,
+		readerRegistry:        readerRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
+		readingCache:          readingCache,
 
 		client: client,
 	}

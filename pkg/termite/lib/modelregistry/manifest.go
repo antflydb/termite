@@ -39,6 +39,7 @@ const (
 	ModelTypeRecognizer ModelType = "recognizer"
 	ModelTypeRewriter   ModelType = "rewriter"
 	ModelTypeClassifier ModelType = "classifier"
+	ModelTypeReader     ModelType = "reader"
 )
 
 // Model capabilities
@@ -83,8 +84,10 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeRewriter, nil
 	case "classifier", "classifiers":
 		return ModelTypeClassifier, nil
+	case "reader", "readers":
+		return ModelTypeReader, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, generator, recognizer, rewriter, classifier)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, generator, recognizer, rewriter, classifier, reader)", s)
 	}
 }
 
@@ -110,6 +113,8 @@ func (t ModelType) DirName() string {
 		return "rewriters"
 	case ModelTypeClassifier:
 		return "classifiers"
+	case ModelTypeReader:
+		return "readers"
 	default:
 		return string(t) + "s"
 	}

@@ -603,11 +603,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /read:
+    post:
+      summary: Read text from images (OCR/document understanding)
+      description: |
+        Extracts text from images using Vision2Seq models like TrOCR, Donut, or Florence-2.
+
+        ## Models
+
+        Models are auto-discovered from `models_dir/readers/` at startup.
+        Use the `/api/models` endpoint to list available models.
+
+        - **TrOCR**: Pure OCR for printed/handwritten text
+        - **Donut**: Document understanding with structured output (receipts, forms)
+        - **Florence-2**: Multi-task vision model (OCR, captioning, VQA)
+
+        ## Task Prompts
+
+        Some models support task prompts for different extraction modes:
+
+        - **Donut CORD**: `<s_cord-v2>` for receipt parsing
+        - **Donut DocVQA**: `<s_docvqa><s_question>...</s_question><s_answer>` for visual QA
+        - **Florence-2 OCR**: `<OCR>` for text extraction
+        - **Florence-2 Caption**: `<CAPTION>` for image description
+
+        ## Example
+
+        ```json
+        {
+          "model": "microsoft/trocr-base-printed",
+          "images": [
+            {"url": "data:image/png;base64,iVBORw0KGgo..."}
+          ],
+          "max_tokens": 256
+        }
+        ```
+
+        With Donut for receipt parsing:
+        ```json
+        {
+          "model": "naver-clova-ix/donut-base-finetuned-cord-v2",
+          "images": [{"url": "data:image/png;base64,..."}],
+          "prompt": "<s_cord-v2>"
+        }
+        ```
+      operationId: readImages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadRequest'
+      responses:
+        '200':
+          description: Images read successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Reader service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, reranking, generator, NER, and rewriter models.
+        Returns lists of available embedding, chunking, reranking, generator, NER, rewriter, and reader models.
 
         ## Embedders
 
@@ -638,6 +720,11 @@ paths:
 
         - Seq2Seq models from `models_dir/rewriters/`
         - T5, FLAN-T5, BART, and LMQG question generation models
+
+        ## Readers
+
+        - Vision2Seq models from `models_dir/readers/`
+        - TrOCR, Donut, Florence-2 for OCR and document understanding
 
         Models are discovered at service startup and cached.
       operationId: listModels
@@ -1168,6 +1255,75 @@ components:
           description: |
             Array of classification results (one per input text).
             Each result is an array of ClassifyResult sorted by score descending.
+    ReadRequest:
+      type: object
+      required:
+        - model
+        - images
+      properties:
+        model:
+          type: string
+          description: Name of reader model from models_dir/readers/
+          example: microsoft/trocr-base-printed
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageURL'
+          description: |
+            Images to read text from. Supports:
+            - Data URIs: `data:image/png;base64,...`
+            - URLs (if content_security allows)
+          example:
+            - url: data:image/png;base64,iVBORw0KGgo...
+        prompt:
+          type: string
+          description: |
+            Optional task prompt for document understanding models.
+            - TrOCR: Not used (pure OCR)
+            - Donut CORD: "<s_cord-v2>" for receipt parsing
+            - Donut DocVQA: "<s_docvqa><s_question>What is the total?</s_question><s_answer>"
+            - Florence-2: "<OCR>" for OCR, "<CAPTION>" for captioning
+          example: <s_cord-v2>
+        max_tokens:
+          type: integer
+          description: Maximum tokens to generate
+          default: 256
+          example: 256
+    ReadResult:
+      type: object
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          description: Extracted text from the image
+          example: 'Invoice Total: $123.45'
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Structured fields extracted by document understanding models (Donut, Florence-2).
+            Fields are flattened with dot notation for nested structures.
+            Only present for models that output structured data.
+          example:
+            menu.nm: Coffee
+            menu.price: $3.50
+            total: $123.45
+    ReadResponse:
+      type: object
+      required:
+        - model
+        - results
+      properties:
+        model:
+          type: string
+          description: Name of model used for reading
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReadResult'
+          description: Array of read results (one per input image)
     ModelsResponse:
       type: object
       required:
@@ -1178,6 +1334,7 @@ components:
         - recognizers
         - rewriters
         - classifiers
+        - readers
       properties:
         chunkers:
           type: array
@@ -1242,6 +1399,14 @@ components:
           example:
             - lmqg/flan-t5-small-squad-qg
             - lmqg/flan-t5-base-squad-qg
+        readers:
+          type: array
+          items:
+            type: string
+          description: Available reader/OCR models from models_dir/readers/
+          example:
+            - microsoft/trocr-base-printed
+            - naver-clova-ix/donut-base-finetuned-cord-v2
         recognizer_info:
           type: object
           additionalProperties:

@@ -73,6 +73,7 @@ const (
 	ModelTypeRecognizer ModelType = "recognizers"
 	ModelTypeGenerator  ModelType = "generators"
 	ModelTypeClassifier ModelType = "classifiers"
+	ModelTypeReader     ModelType = "readers"
 )
 
 // ensureRegistryModel downloads a model from the Antfly model registry if not present.
@@ -179,6 +180,8 @@ func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType Mode
 		regModelType = modelregistry.ModelTypeGenerator
 	case ModelTypeClassifier:
 		regModelType = modelregistry.ModelTypeClassifier
+	case ModelTypeReader:
+		regModelType = modelregistry.ModelTypeReader
 	default:
 		regModelType = modelregistry.ModelTypeEmbedder
 	}
