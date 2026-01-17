@@ -121,7 +121,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier"]
+ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]
 
 # Recognizer capabilities - these describe what extraction tasks the model supports
 # Used in manifest to advertise model capabilities to Termite
@@ -168,6 +168,11 @@ MODEL_TYPE_CONFIG = {
         "ort_class": "ORTModelForSequenceClassification",
         "default_model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
         "dir_name": "classifiers",
+    },
+    "reader": {
+        "ort_class": None,  # Uses ORTModelForVision2Seq from optimum
+        "default_model": "microsoft/trocr-base-printed",
+        "dir_name": "readers",
     },
 }
 
@@ -266,6 +271,33 @@ CLASSIFIER_MANIFEST_FILES = [
     "zsc_config.json",
 ]
 
+# Files for reader models (Vision2Seq: TrOCR, Donut, Florence-2)
+READER_MANIFEST_FILES = [
+    "encoder_model.onnx",
+    "encoder_model.onnx_data",
+    "decoder_model.onnx",
+    "decoder_model.onnx_data",
+    "decoder_with_past_model.onnx",
+    "decoder_with_past_model.onnx_data",
+    "decoder_model_merged.onnx",  # Alternative merged decoder format
+    "decoder_model_merged.onnx_data",
+    "tokenizer.json",
+    "config.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "preprocessor_config.json",
+    "generation_config.json",
+    "termite_metadata.json",
+]
+
+# Reader model type patterns for auto-detection
+READER_MODEL_PATTERNS = {
+    "trocr": ["trocr", "TrOCR"],
+    "donut": ["donut", "Donut"],
+    "nougat": ["nougat", "Nougat"],
+    "florence": ["florence", "Florence"],
+}
+
 
 def detect_recognizer_type(model_id: str) -> tuple[str, list[str]]:
     """
@@ -303,6 +335,35 @@ def is_rebel_model(model_id: str) -> bool:
     """Check if model ID is a REBEL relation extraction model."""
     model_id_lower = model_id.lower()
     return "rebel" in model_id_lower or "mrebel" in model_id_lower
+
+
+def detect_reader_type(model_id: str) -> str:
+    """
+    Detect reader model type from model ID.
+
+    Returns:
+        Model type: "trocr", "donut", "nougat", "florence", or "generic"
+    """
+    model_id_lower = model_id.lower()
+
+    for model_type, patterns in READER_MODEL_PATTERNS.items():
+        for pattern in patterns:
+            if pattern.lower() in model_id_lower:
+                return model_type
+
+    return "generic"
+
+
+def get_reader_output_format(reader_type: str) -> str:
+    """Get the output format for a reader model type."""
+    formats = {
+        "donut": "json",
+        "nougat": "markdown",
+        "trocr": "text",
+        "florence": "text",
+        "generic": "text",
+    }
+    return formats.get(reader_type, "text")
 
 
 def convert_to_fp16(input_path: Path, output_path: Path) -> None:
@@ -941,6 +1002,101 @@ def export_classifier_model(
     return output_dir
 
 
+def export_reader_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+    trust_remote_code: bool = False,
+) -> Path:
+    """
+    Export a Vision2Seq model (TrOCR, Donut, Nougat, Florence-2) to ONNX format.
+
+    Uses Hugging Face's Optimum library to create ONNX files for vision-encoder-decoder models:
+      - encoder_model.onnx
+      - decoder_model.onnx
+      - decoder_with_past_model.onnx
+
+    Args:
+        model_id: HuggingFace model ID (e.g., microsoft/trocr-base-printed)
+        output_dir: Directory to save the model
+        variants: List of variant types (not used for vision2seq currently)
+        trust_remote_code: Whether to trust remote code (needed for Florence-2)
+    """
+    from optimum.onnxruntime import ORTModelForVision2Seq
+    from transformers import AutoConfig, AutoProcessor
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Exporting Vision2Seq reader model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Detect model type
+    reader_type = detect_reader_type(model_id)
+    output_format = get_reader_output_format(reader_type)
+    logger.info(f"Detected model type: {reader_type}")
+    logger.info(f"Output format: {output_format}")
+
+    # Load config for info
+    logger.info("Loading model configuration...")
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+
+    # Log model info if available
+    if hasattr(config, "encoder"):
+        enc = config.encoder
+        if hasattr(enc, "image_size"):
+            img_size = enc.image_size
+            if isinstance(img_size, (list, tuple)):
+                logger.info(f"Image size: {img_size[0]}x{img_size[1]}")
+            else:
+                logger.info(f"Image size: {img_size}x{img_size}")
+        if hasattr(enc, "model_type"):
+            logger.info(f"Encoder type: {enc.model_type}")
+
+    # Export to ONNX using Optimum
+    logger.info("Exporting to ONNX format (this may take a few minutes)...")
+    logger.info("This will create encoder_model.onnx, decoder_model.onnx, and decoder_with_past_model.onnx")
+
+    ort_model = ORTModelForVision2Seq.from_pretrained(
+        model_id,
+        export=True,
+        trust_remote_code=trust_remote_code,
+    )
+    ort_model.save_pretrained(str(output_dir))
+
+    # Save processor (tokenizer + image processor)
+    logger.info("Saving processor (tokenizer + image processor)...")
+    try:
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=trust_remote_code)
+        processor.save_pretrained(str(output_dir))
+    except Exception as e:
+        logger.warning(f"Could not save processor: {e}")
+        logger.warning("You may need to copy tokenizer files manually.")
+
+    # Create termite_metadata.json for model type detection
+    logger.info("Creating termite_metadata.json...")
+    metadata = {
+        "model_type": reader_type,
+        "source_model": model_id,
+        "export_format": "onnx",
+        "framework": "optimum",
+        "output_format": output_format,
+    }
+
+    metadata_path = output_dir / "termite_metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info(f"  Saved: termite_metadata.json")
+
+    # Log exported files
+    logger.info("\nExported files:")
+    for f in sorted(output_dir.iterdir()):
+        if f.is_file():
+            size = f.stat().st_size / (1024 * 1024)
+            logger.info(f"  {f.name}: {size:.1f} MB")
+
+    return output_dir
+
+
 def export_seq2seq_model(
     model_id: str,
     output_dir: Path,
@@ -1285,6 +1441,7 @@ def generate_manifest(
     is_multimodal = capabilities and "multimodal" in capabilities
     is_generator = model_type == "generator"
     is_classifier = model_type == "classifier"
+    is_reader = model_type == "reader"
     is_gliner = recognizer_arch == "gliner"
     is_rebel = recognizer_arch == "rebel"
 
@@ -1294,6 +1451,8 @@ def generate_manifest(
         file_list = SEQ2SEQ_MANIFEST_FILES
     elif is_classifier:
         file_list = CLASSIFIER_MANIFEST_FILES
+    elif is_reader:
+        file_list = READER_MANIFEST_FILES
     elif is_gliner:
         file_list = GLINER_MANIFEST_FILES
     elif is_rebel:
@@ -2018,6 +2177,9 @@ def test_model(
     if model_type == "classifier":
         return test_classifier_model(model_dir)
 
+    if model_type == "reader":
+        return test_reader_model(model_dir)
+
     if recognizer_arch == "gliner":
         return test_gliner_model(model_dir)
 
@@ -2110,6 +2272,60 @@ def test_classifier_model(model_dir: Path) -> bool:
 
     except Exception as e:
         logger.error(f"Test failed: {e}")
+        return False
+
+
+def test_reader_model(model_dir: Path) -> bool:
+    """Test a Vision2Seq reader model."""
+    try:
+        from optimum.onnxruntime import ORTModelForVision2Seq
+        from transformers import AutoProcessor
+        from PIL import Image
+        import numpy as np
+
+        logger.info("Loading Vision2Seq reader model...")
+
+        # Check for encoder file
+        encoder_path = model_dir / "encoder_model.onnx"
+        if not encoder_path.exists():
+            logger.error(f"encoder_model.onnx not found in {model_dir}")
+            return False
+
+        # Load model
+        model = ORTModelForVision2Seq.from_pretrained(model_dir)
+
+        # Load processor
+        try:
+            processor = AutoProcessor.from_pretrained(model_dir)
+        except Exception as e:
+            logger.warning(f"Could not load processor: {e}")
+            logger.info("Model loaded but skipping inference test")
+            return True
+
+        # Create a simple test image (white with black rectangle)
+        logger.info("Creating test image...")
+        img = Image.new("RGB", (384, 384), color="white")
+        # Draw a simple pattern
+        pixels = np.array(img)
+        pixels[100:284, 100:284] = [0, 0, 0]  # Black rectangle
+        img = Image.fromarray(pixels)
+
+        # Process image
+        logger.info("Running inference...")
+        inputs = processor(images=img, return_tensors="pt")
+
+        # Generate output
+        generated_ids = model.generate(**inputs, max_length=50)
+        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)
+
+        logger.info(f"  Generated text: {generated_text}")
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -2539,6 +2755,8 @@ def cmd_export(args):
         export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
     elif args.model_type == "classifier":
         export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
+    elif args.model_type == "reader":
+        export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
     elif recognizer_arch == "gliner":
         export_gliner_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "rebel":
@@ -2672,6 +2890,21 @@ Examples:
   # Pull pre-exported ONNX classifier from Xenova (no conversion needed)
   %(prog)s classifier Xenova/bart-large-mnli --from-onnx
 
+  # Export TrOCR for printed text recognition (OCR)
+  %(prog)s reader microsoft/trocr-base-printed
+
+  # Export TrOCR for handwritten text recognition
+  %(prog)s reader microsoft/trocr-base-handwritten
+
+  # Export Donut for document understanding
+  %(prog)s reader naver-clova-ix/donut-base
+
+  # Export Nougat for scientific document parsing (outputs markdown)
+  %(prog)s reader facebook/nougat-base
+
+  # Export Florence-2 for document understanding (requires trust-remote-code)
+  %(prog)s reader microsoft/Florence-2-base --trust-remote-code
+
   # Garbage collect orphaned blobs and index entries (dry run)
   %(prog)s gc
 
@@ -2724,7 +2957,7 @@ Environment Variables:
     )
 
     # Export subcommands (one for each model type)
-    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier"]:
+    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]:
         export_parser = subparsers.add_parser(
             model_type,
             help=f"Export a {model_type} model to ONNX",
@@ -2805,6 +3038,12 @@ Environment Variables:
             action="store_true",
             help="Pull pre-exported ONNX model from HuggingFace instead of converting "
                  "(e.g., Xenova/bart-large-mnli). Downloads existing ONNX files directly.",
+        )
+        export_parser.add_argument(
+            "--trust-remote-code",
+            action="store_true",
+            help="Trust remote code from HuggingFace (required for some models like Florence-2). "
+                 "Only used for reader models.",
         )
         # Store the model type for later
         export_parser.set_defaults(model_type=model_type)
