@@ -191,6 +191,8 @@ func findModelPath(t *testing.T) string {
 
 	// Check common locations
 	paths := []string{
+		filepath.Join(os.Getenv("HOME"), ".termite/models/embedders/BAAI/bge-small-en-v1.5"),
+		filepath.Join(os.Getenv("HOME"), ".termite/models/embedders/bge-small-en-v1.5"),
 		filepath.Join(os.Getenv("HOME"), ".cache/termite/models/BAAI--bge-small-en-v1.5"),
 		"./models/BAAI--bge-small-en-v1.5",
 		"../../../../../models/embedders/BAAI/bge-small-en-v1.5",

@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
@@ -511,7 +512,16 @@ type PooledHugotGenerator struct {
 	imageToken     string     // image placeholder token from model's special_tokens_map.json
 	toolParser     ToolParser // tool call parser (from genai_config.json)
 	toolCallFormat string     // the tool call format name (e.g., "functiongemma")
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new operations after Close()
+	wg        sync.WaitGroup // Waits for in-flight operations to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
+
+// ErrGeneratorClosed is returned when Generate is called on a closed generator.
+var ErrGeneratorClosed = errors.New("generator is closed")
 
 // NewPooledHugotGenerator creates a new pooled generator using the Hugot runtime.
 // poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
@@ -647,6 +657,20 @@ func (p *PooledHugotGenerator) convertMessages(messages []Message) []backends.Me
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 // Uses the streaming pipeline internally and collects all tokens into the response.
 func (p *PooledHugotGenerator) Generate(ctx context.Context, messages []Message, opts GenerateOptions) (*GenerateResult, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrGeneratorClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrGeneratorClosed
+	}
+
 	if len(messages) == 0 {
 		return nil, errors.New("messages are required")
 	}
@@ -715,12 +739,28 @@ func (p *PooledHugotGenerator) Generate(ctx context.Context, messages []Message,
 // GenerateStream produces tokens one at a time via channels.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 func (p *PooledHugotGenerator) GenerateStream(ctx context.Context, messages []Message, opts GenerateOptions) (<-chan TokenDelta, <-chan error, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, nil, ErrGeneratorClosed
+	}
+
+	// Note: wg.Done() is called in the goroutine when streaming completes
+	p.wg.Add(1)
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		p.wg.Done()
+		return nil, nil, ErrGeneratorClosed
+	}
+
 	if len(messages) == 0 {
+		p.wg.Done()
 		return nil, nil, errors.New("messages are required")
 	}
 
 	// Acquire semaphore slot (blocks if all pipelines busy)
 	if err := p.sem.Acquire(ctx, 1); err != nil {
+		p.wg.Done()
 		return nil, nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
 
@@ -737,6 +777,7 @@ func (p *PooledHugotGenerator) GenerateStream(ctx context.Context, messages []Me
 	output, err := pipeline.RunMessages(ctx, [][]backends.Message{hugotMessages})
 	if err != nil {
 		p.sem.Release(1)
+		p.wg.Done()
 		p.logger.Error("Streaming pipeline generation failed",
 			zap.Int("pipelineIndex", idx),
 			zap.Error(err))
@@ -748,7 +789,8 @@ func (p *PooledHugotGenerator) GenerateStream(ctx context.Context, messages []Me
 	errChan := make(chan error, 1)
 
 	go func() {
-		defer p.sem.Release(1) // Release semaphore when done streaming
+		defer p.wg.Done()         // Signal completion to WaitGroup
+		defer p.sem.Release(1)    // Release semaphore when done streaming
 		defer close(tokenChan)
 		defer close(errChan)
 
@@ -777,12 +819,23 @@ func (p *PooledHugotGenerator) GenerateStream(ctx context.Context, messages []Me
 
 // Close releases resources.
 // Only destroys the session if it was created by this generator (not shared).
+// Thread-safe: waits for in-flight operations to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotGenerator) Close() error {
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled generator)")
-		return p.session.Destroy()
-	} else if p.sessionShared {
-		p.logger.Debug("Skipping session destruction (shared session)")
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new operations
+		p.closed.Store(true)
+
+		// Wait for all in-flight operations to complete
+		p.wg.Wait()
+
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled generator)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }

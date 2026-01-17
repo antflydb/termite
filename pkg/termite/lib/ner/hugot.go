@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
@@ -316,7 +317,16 @@ type PooledHugotNER struct {
 	logger        *zap.Logger
 	sessionShared bool
 	poolSize      int
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new operations after Close()
+	wg        sync.WaitGroup // Waits for in-flight operations to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
+
+// ErrNERClosed is returned when Recognize is called on a closed NER model.
+var ErrNERClosed = errors.New("NER model is closed")
 
 // NewPooledHugotNER creates a new pooled NER model using the Hugot ONNX runtime.
 // poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
@@ -516,6 +526,20 @@ func NewPooledHugotNERWithSessionManager(modelPath string, onnxFilename string, 
 // Recognize extracts named entities from the given texts.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 func (p *PooledHugotNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrNERClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrNERClosed
+	}
+
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -603,14 +627,25 @@ func (p *PooledHugotNER) parseEntities(text string, pipelineEntities []pipelines
 
 // Close releases resources.
 // Only destroys the session if it was created by this NER model (not shared).
+// Thread-safe: waits for in-flight operations to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotNER) Close() error {
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled NER model)")
-		return p.session.Destroy()
-	} else if p.sessionShared {
-		p.logger.Debug("Skipping session destruction (shared session)")
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new operations
+		p.closed.Store(true)
+
+		// Wait for all in-flight operations to complete
+		p.wg.Wait()
+
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled NER model)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }
 
 // countEntities returns the total number of entities across all texts.
