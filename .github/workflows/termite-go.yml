@@ -66,6 +66,11 @@ jobs:
       - name: Clone antfly-go (for OpenAPI refs)
         run: git clone --depth 1 https://github.com/antflydb/antfly-go.git ../antfly-go
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -174,6 +179,11 @@ jobs:
 
       - name: Clone antfly-go (for OpenAPI refs)
         run: git clone --depth 1 https://github.com/antflydb/antfly-go.git ../antfly-go
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
       - name: Set up Go
         uses: actions/setup-go@v6
