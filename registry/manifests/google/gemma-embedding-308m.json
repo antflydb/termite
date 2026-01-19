@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "gemma-embedding-308m",
+  "owner": "google",
+  "type": "embedder",
+  "description": "Compact multilingual embeddings optimized for edge deployment. 100+ languages, runs on less than 200MB RAM with quantization.",
+  "source": "google/gemma-embedding-308m",
+  "files": [],
+  "variants": {}
+}
