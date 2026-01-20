@@ -28,76 +28,163 @@ import (
 	"go.uber.org/zap/zaptest"
 )
 
-// New embedding model specifications
-const (
-	// nomic-embed-text-v1.5: Matryoshka embeddings with task prefixes
-	// Downloaded from HuggingFace: nomic-ai/nomic-embed-text-v1.5
-	nomicHFRepo       = "nomic-ai/nomic-embed-text-v1.5"
-	nomicLocalName    = "nomic-embed-text-v1.5"
-	nomicModelName    = "nomic-ai/nomic-embed-text-v1.5"
-	nomicEmbeddingDim = 768
-	nomicMaxSeqLen    = 8192
+// embeddingModelSpec defines the configuration for testing an embedding model.
+type embeddingModelSpec struct {
+	// Model identification
+	name        string // Human-readable name for test output
+	hfRepo      string // HuggingFace repository (e.g., "nomic-ai/nomic-embed-text-v1.5")
+	localName   string // Local directory name after download
+	modelName   string // Full model name used in API calls
 
-	// bge-m3: Multilingual embeddings supporting 100+ languages
-	// Downloaded from HuggingFace: BAAI/bge-m3
-	bgeM3HFRepo       = "BAAI/bge-m3"
-	bgeM3LocalName    = "bge-m3"
-	bgeM3ModelName    = "BAAI/bge-m3"
-	bgeM3EmbeddingDim = 1024
-	bgeM3MaxSeqLen    = 8192
+	// Model properties
+	embeddingDim int // Expected embedding dimension
 
-	// gte-Qwen2-1.5B-instruct: Instruction-following embeddings
-	// Downloaded from HuggingFace: Alibaba-NLP/gte-Qwen2-1.5B-instruct
-	gteQwenHFRepo       = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-	gteQwenLocalName    = "gte-Qwen2-1.5B-instruct"
-	gteQwenModelName    = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-	gteQwenEmbeddingDim = 1536
-	gteQwenMaxSeqLen    = 32768
+	// Test configuration
+	isLargeModel  bool // If true, requires RUN_LARGE_MODEL_TESTS=true
+	isMultilingual bool // If true, run multilingual similarity tests
 
-	// snowflake-arctic-embed-l-v2.0: Retrieval-optimized with Matryoshka
-	// Downloaded from HuggingFace: Snowflake/snowflake-arctic-embed-l-v2.0
-	arcticHFRepo       = "Snowflake/snowflake-arctic-embed-l-v2.0"
-	arcticLocalName    = "snowflake-arctic-embed-l-v2.0"
-	arcticModelName    = "Snowflake/snowflake-arctic-embed-l-v2.0"
-	arcticEmbeddingDim = 1024
-	arcticMaxSeqLen    = 8192
+	// Timeouts (optional - defaults provided)
+	testTimeout  time.Duration // Overall test timeout (default: 5m)
+	readyTimeout time.Duration // Server ready timeout (default: 60s)
+}
 
-	// stella_en_1.5B_v5: Premium English embeddings
-	// Downloaded from HuggingFace: dunzhang/stella_en_1.5B_v5
-	stellaHFRepo       = "dunzhang/stella_en_1.5B_v5"
-	stellaLocalName    = "stella_en_1.5B_v5"
-	stellaModelName    = "dunzhang/stella_en_1.5B_v5"
-	stellaEmbeddingDim = 1024
-	stellaMaxSeqLen    = 8192
+// embeddingModels defines all embedding models to test.
+var embeddingModels = []embeddingModelSpec{
+	{
+		name:           "nomic-embed-text-v1.5",
+		hfRepo:         "nomic-ai/nomic-embed-text-v1.5",
+		localName:      "nomic-embed-text-v1.5",
+		modelName:      "nomic-ai/nomic-embed-text-v1.5",
+		embeddingDim:   768,
+		isMultilingual: false,
+	},
+	{
+		name:           "bge-m3",
+		hfRepo:         "BAAI/bge-m3",
+		localName:      "bge-m3",
+		modelName:      "BAAI/bge-m3",
+		embeddingDim:   1024,
+		isMultilingual: true,
+	},
+	{
+		name:           "gte-Qwen2-1.5B-instruct",
+		hfRepo:         "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+		localName:      "gte-Qwen2-1.5B-instruct",
+		modelName:      "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+		embeddingDim:   1536,
+		isLargeModel:   true,
+		isMultilingual: false,
+		testTimeout:    10 * time.Minute,
+		readyTimeout:   120 * time.Second,
+	},
+	{
+		name:           "snowflake-arctic-embed-l-v2.0",
+		hfRepo:         "Snowflake/snowflake-arctic-embed-l-v2.0",
+		localName:      "snowflake-arctic-embed-l-v2.0",
+		modelName:      "Snowflake/snowflake-arctic-embed-l-v2.0",
+		embeddingDim:   1024,
+		isMultilingual: false,
+	},
+	{
+		name:           "stella_en_1.5B_v5",
+		hfRepo:         "dunzhang/stella_en_1.5B_v5",
+		localName:      "stella_en_1.5B_v5",
+		modelName:      "dunzhang/stella_en_1.5B_v5",
+		embeddingDim:   1024,
+		isLargeModel:   true,
+		isMultilingual: false,
+		testTimeout:    10 * time.Minute,
+		readyTimeout:   120 * time.Second,
+	},
+	{
+		name:           "embeddinggemma-300m-ONNX",
+		hfRepo:         "onnx-community/embeddinggemma-300m-ONNX",
+		localName:      "embeddinggemma-300m-ONNX",
+		modelName:      "onnx-community/embeddinggemma-300m-ONNX",
+		embeddingDim:   768,
+		isMultilingual: true,
+	},
+}
 
-	// embeddinggemma-300m: Compact multilingual embeddings
-	// Downloaded from HuggingFace: onnx-community/embeddinggemma-300m-ONNX
-	// Note: We use the ONNX community version which has pre-exported ONNX files
-	// The original google/embeddinggemma-300m only has safetensors format
-	gemmaEmbedHFRepo       = "onnx-community/embeddinggemma-300m-ONNX"
-	gemmaEmbedLocalName    = "embeddinggemma-300m-ONNX"
-	gemmaEmbedModelName    = "onnx-community/embeddinggemma-300m-ONNX"
-	gemmaEmbedEmbeddingDim = 768
-	gemmaEmbedMaxSeqLen    = 2048
-)
-
-// TestNomicEmbedTextV15E2E tests the nomic-embed-text-v1.5 embedding model.
+// TestEmbeddingModels runs E2E tests for all configured embedding models.
+// Each model is tested as a subtest, allowing individual model tests to be run with:
 //
-// nomic-embed-text-v1.5 is a high-quality embedding model that:
-// - Maps sentences to 768-dimensional dense vectors (Matryoshka: 64-768)
-// - Supports up to 8192 tokens (long context)
-// - Uses task prefixes for optimal retrieval (search_query, search_document)
-// - Outperforms OpenAI text-embedding-3-small
-func TestNomicEmbedTextV15E2E(t *testing.T) {
+//	go test -run TestEmbeddingModels/nomic-embed-text-v1.5 -tags="onnx,ORT" ./e2e/
+//	go test -run TestEmbeddingModels/bge-m3 -tags="onnx,ORT" ./e2e/
+func TestEmbeddingModels(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
+		t.Skip("Skipping E2E tests in short mode")
 	}
 
-	// Ensure model is downloaded from HuggingFace (lazy download)
-	ensureHuggingFaceModel(t, nomicLocalName, nomicHFRepo, ModelTypeEmbedder)
+	for _, model := range embeddingModels {
+		model := model // capture range variable
+		t.Run(model.name, func(t *testing.T) {
+			runEmbeddingModelTest(t, model)
+		})
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+// runEmbeddingModelTest executes the full E2E test suite for a single embedding model.
+func runEmbeddingModelTest(t *testing.T, spec embeddingModelSpec) {
+	// Skip large models unless explicitly enabled
+	if spec.isLargeModel && os.Getenv("RUN_LARGE_MODEL_TESTS") != "true" {
+		t.Skip("Skipping large model test. Set RUN_LARGE_MODEL_TESTS=true to run.")
+	}
+
+	// Apply default timeouts
+	testTimeout := spec.testTimeout
+	if testTimeout == 0 {
+		testTimeout = 5 * time.Minute
+	}
+	readyTimeout := spec.readyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = 60 * time.Second
+	}
+
+	// Ensure model is downloaded
+	ensureHuggingFaceModel(t, spec.localName, spec.hfRepo, ModelTypeEmbedder)
+
+	// Setup context and server
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
+
+	termiteClient, serverCancel, serverDone := startTestServer(t, ctx, readyTimeout)
+	defer func() {
+		serverCancel()
+		<-serverDone
+	}()
+
+	// Run test suite
+	t.Run("ListModels", func(t *testing.T) {
+		testListModelsContains(t, ctx, termiteClient, spec.modelName)
+	})
+
+	t.Run("TextEmbedding", func(t *testing.T) {
+		testTextEmbeddingWithDim(t, ctx, termiteClient, spec.modelName, spec.embeddingDim)
+	})
+
+	t.Run("SemanticSimilarity", func(t *testing.T) {
+		testSemanticSimilarity(t, ctx, termiteClient, spec.modelName)
+	})
+
+	if spec.isMultilingual {
+		t.Run("MultilingualSimilarity", func(t *testing.T) {
+			testMultilingualSimilarity(t, ctx, termiteClient, spec.modelName)
+		})
+	}
+
+	t.Run("BatchEmbedding", func(t *testing.T) {
+		testBatchEmbedding(t, ctx, termiteClient, spec.modelName, spec.embeddingDim)
+	})
+}
+
+// startTestServer starts a Termite server for testing and returns a client,
+// cancel function, and done channel. The caller should defer cleanup:
+//
+//	client, cancel, done := startTestServer(t, ctx, readyTimeout)
+//	defer func() { cancel(); <-done }()
+func startTestServer(t *testing.T, ctx context.Context, readyTimeout time.Duration) (*client.TermiteClient, context.CancelFunc, <-chan struct{}) {
+	t.Helper()
 
 	logger := zaptest.NewLogger(t)
 	modelsDir := getTestModelsDir()
@@ -113,7 +200,6 @@ func TestNomicEmbedTextV15E2E(t *testing.T) {
 	}
 
 	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
 
 	readyC := make(chan struct{})
 	serverDone := make(chan struct{})
@@ -126,409 +212,18 @@ func TestNomicEmbedTextV15E2E(t *testing.T) {
 	select {
 	case <-readyC:
 		t.Log("Server is ready")
-	case <-time.After(60 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
+	case <-time.After(readyTimeout):
+		serverCancel()
+		t.Fatalf("Timeout waiting for server to be ready after %v", readyTimeout)
 	}
 
 	termiteClient, err := client.NewTermiteClient(serverURL, nil)
 	if err != nil {
+		serverCancel()
 		t.Fatalf("Failed to create client: %v", err)
 	}
 
-	t.Run("ListModels", func(t *testing.T) {
-		testListModelsContains(t, ctx, termiteClient, nomicModelName)
-	})
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, nomicModelName, nomicEmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, nomicModelName)
-	})
-
-	t.Run("BatchEmbedding", func(t *testing.T) {
-		testBatchEmbedding(t, ctx, termiteClient, nomicModelName, nomicEmbeddingDim)
-	})
-
-	t.Log("Shutting down server...")
-	serverCancel()
-
-	select {
-	case <-serverDone:
-		t.Log("Server shutdown complete")
-	case <-time.After(30 * time.Second):
-		t.Error("Timeout waiting for server shutdown")
-	}
-}
-
-// TestBGEM3MultilingualE2E tests the BAAI/bge-m3 multilingual embedding model.
-//
-// bge-m3 is a state-of-the-art multilingual model that:
-// - Maps sentences to 1024-dimensional dense vectors
-// - Supports 100+ languages
-// - Supports up to 8192 tokens
-// - Achieves best-in-class results on cross-lingual retrieval benchmarks
-func TestBGEM3MultilingualE2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	ensureHuggingFaceModel(t, bgeM3LocalName, bgeM3HFRepo, ModelTypeEmbedder)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	logger := zaptest.NewLogger(t)
-	modelsDir := getTestModelsDir()
-	t.Logf("Using models directory: %s", modelsDir)
-
-	port := findAvailablePort(t)
-	serverURL := fmt.Sprintf("http://localhost:%d", port)
-	t.Logf("Starting server on %s", serverURL)
-
-	config := termite.Config{
-		ApiUrl:    serverURL,
-		ModelsDir: modelsDir,
-	}
-
-	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
-
-	readyC := make(chan struct{})
-	serverDone := make(chan struct{})
-
-	go func() {
-		defer close(serverDone)
-		termite.RunAsTermite(serverCtx, logger, config, readyC)
-	}()
-
-	select {
-	case <-readyC:
-		t.Log("Server is ready")
-	case <-time.After(60 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
-	}
-
-	termiteClient, err := client.NewTermiteClient(serverURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-
-	t.Run("ListModels", func(t *testing.T) {
-		testListModelsContains(t, ctx, termiteClient, bgeM3ModelName)
-	})
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, bgeM3ModelName, bgeM3EmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, bgeM3ModelName)
-	})
-
-	t.Run("MultilingualSimilarity", func(t *testing.T) {
-		testMultilingualSimilarity(t, ctx, termiteClient, bgeM3ModelName)
-	})
-
-	t.Run("BatchEmbedding", func(t *testing.T) {
-		testBatchEmbedding(t, ctx, termiteClient, bgeM3ModelName, bgeM3EmbeddingDim)
-	})
-
-	t.Log("Shutting down server...")
-	serverCancel()
-
-	select {
-	case <-serverDone:
-		t.Log("Server shutdown complete")
-	case <-time.After(30 * time.Second):
-		t.Error("Timeout waiting for server shutdown")
-	}
-}
-
-// TestGTEQwen2InstructE2E tests the Alibaba-NLP/gte-Qwen2-1.5B-instruct model.
-//
-// gte-Qwen2-1.5B-instruct is an instruction-following embedding model that:
-// - Maps sentences to 1536-dimensional dense vectors
-// - Supports up to 32768 tokens (very long context)
-// - Uses instruction-following for better task-specific embeddings
-// - Best for long document retrieval
-//
-// Note: This test is skipped by default due to large model size (~6GB).
-// Run with: go test -run TestGTEQwen2InstructE2E -tags="onnx,ORT" ./e2e/
-func TestGTEQwen2InstructE2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	// Skip by default due to large model size
-	if os.Getenv("RUN_LARGE_MODEL_TESTS") != "true" {
-		t.Skip("Skipping large model test. Set RUN_LARGE_MODEL_TESTS=true to run.")
-	}
-
-	ensureHuggingFaceModel(t, gteQwenLocalName, gteQwenHFRepo, ModelTypeEmbedder)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	logger := zaptest.NewLogger(t)
-	modelsDir := getTestModelsDir()
-
-	port := findAvailablePort(t)
-	serverURL := fmt.Sprintf("http://localhost:%d", port)
-
-	config := termite.Config{
-		ApiUrl:    serverURL,
-		ModelsDir: modelsDir,
-	}
-
-	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
-
-	readyC := make(chan struct{})
-	serverDone := make(chan struct{})
-
-	go func() {
-		defer close(serverDone)
-		termite.RunAsTermite(serverCtx, logger, config, readyC)
-	}()
-
-	select {
-	case <-readyC:
-		t.Log("Server is ready")
-	case <-time.After(120 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
-	}
-
-	termiteClient, err := client.NewTermiteClient(serverURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, gteQwenModelName, gteQwenEmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, gteQwenModelName)
-	})
-
-	serverCancel()
-	<-serverDone
-}
-
-// TestSnowflakeArcticEmbedE2E tests the Snowflake/snowflake-arctic-embed-l-v2.0 model.
-//
-// snowflake-arctic-embed-l-v2.0 is a retrieval-optimized model that:
-// - Maps sentences to 1024-dimensional dense vectors (Matryoshka: 256-1024)
-// - Supports up to 8192 tokens
-// - Optimized specifically for retrieval tasks
-func TestSnowflakeArcticEmbedE2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	ensureHuggingFaceModel(t, arcticLocalName, arcticHFRepo, ModelTypeEmbedder)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	logger := zaptest.NewLogger(t)
-	modelsDir := getTestModelsDir()
-
-	port := findAvailablePort(t)
-	serverURL := fmt.Sprintf("http://localhost:%d", port)
-
-	config := termite.Config{
-		ApiUrl:    serverURL,
-		ModelsDir: modelsDir,
-	}
-
-	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
-
-	readyC := make(chan struct{})
-	serverDone := make(chan struct{})
-
-	go func() {
-		defer close(serverDone)
-		termite.RunAsTermite(serverCtx, logger, config, readyC)
-	}()
-
-	select {
-	case <-readyC:
-		t.Log("Server is ready")
-	case <-time.After(60 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
-	}
-
-	termiteClient, err := client.NewTermiteClient(serverURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-
-	t.Run("ListModels", func(t *testing.T) {
-		testListModelsContains(t, ctx, termiteClient, arcticModelName)
-	})
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, arcticModelName, arcticEmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, arcticModelName)
-	})
-
-	t.Run("BatchEmbedding", func(t *testing.T) {
-		testBatchEmbedding(t, ctx, termiteClient, arcticModelName, arcticEmbeddingDim)
-	})
-
-	serverCancel()
-	<-serverDone
-}
-
-// TestStellaEnglishE2E tests the dunzhang/stella_en_1.5B_v5 model.
-//
-// stella_en_1.5B_v5 is a premium English embedding model that:
-// - Maps sentences to 1024-dimensional dense vectors (Matryoshka support)
-// - Supports up to 8192 tokens
-// - Top-tier MTEB scores for English
-//
-// Note: This test is skipped by default due to large model size (~6GB).
-func TestStellaEnglishE2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	// Skip by default due to large model size
-	if os.Getenv("RUN_LARGE_MODEL_TESTS") != "true" {
-		t.Skip("Skipping large model test. Set RUN_LARGE_MODEL_TESTS=true to run.")
-	}
-
-	ensureHuggingFaceModel(t, stellaLocalName, stellaHFRepo, ModelTypeEmbedder)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	logger := zaptest.NewLogger(t)
-	modelsDir := getTestModelsDir()
-
-	port := findAvailablePort(t)
-	serverURL := fmt.Sprintf("http://localhost:%d", port)
-
-	config := termite.Config{
-		ApiUrl:    serverURL,
-		ModelsDir: modelsDir,
-	}
-
-	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
-
-	readyC := make(chan struct{})
-	serverDone := make(chan struct{})
-
-	go func() {
-		defer close(serverDone)
-		termite.RunAsTermite(serverCtx, logger, config, readyC)
-	}()
-
-	select {
-	case <-readyC:
-		t.Log("Server is ready")
-	case <-time.After(120 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
-	}
-
-	termiteClient, err := client.NewTermiteClient(serverURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, stellaModelName, stellaEmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, stellaModelName)
-	})
-
-	serverCancel()
-	<-serverDone
-}
-
-// TestGemmaEmbedding308ME2E tests the google/gemma-embedding-308m model.
-//
-// gemma-embedding-308m is a compact multilingual model that:
-// - Maps sentences to 2048-dimensional dense vectors (Matryoshka: 128-2048)
-// - Supports 100+ languages
-// - Optimized for edge deployment (<200MB with quantization)
-// - #1 on MTEB multilingual leaderboard for models under 500M params
-func TestGemmaEmbedding308ME2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	ensureHuggingFaceModel(t, gemmaEmbedLocalName, gemmaEmbedHFRepo, ModelTypeEmbedder)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	logger := zaptest.NewLogger(t)
-	modelsDir := getTestModelsDir()
-
-	port := findAvailablePort(t)
-	serverURL := fmt.Sprintf("http://localhost:%d", port)
-
-	config := termite.Config{
-		ApiUrl:    serverURL,
-		ModelsDir: modelsDir,
-	}
-
-	serverCtx, serverCancel := context.WithCancel(ctx)
-	defer serverCancel()
-
-	readyC := make(chan struct{})
-	serverDone := make(chan struct{})
-
-	go func() {
-		defer close(serverDone)
-		termite.RunAsTermite(serverCtx, logger, config, readyC)
-	}()
-
-	select {
-	case <-readyC:
-		t.Log("Server is ready")
-	case <-time.After(60 * time.Second):
-		t.Fatal("Timeout waiting for server to be ready")
-	}
-
-	termiteClient, err := client.NewTermiteClient(serverURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to create client: %v", err)
-	}
-
-	t.Run("ListModels", func(t *testing.T) {
-		testListModelsContains(t, ctx, termiteClient, gemmaEmbedModelName)
-	})
-
-	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbeddingWithDim(t, ctx, termiteClient, gemmaEmbedModelName, gemmaEmbedEmbeddingDim)
-	})
-
-	t.Run("SemanticSimilarity", func(t *testing.T) {
-		testSemanticSimilarity(t, ctx, termiteClient, gemmaEmbedModelName)
-	})
-
-	t.Run("MultilingualSimilarity", func(t *testing.T) {
-		testMultilingualSimilarity(t, ctx, termiteClient, gemmaEmbedModelName)
-	})
-
-	t.Run("BatchEmbedding", func(t *testing.T) {
-		testBatchEmbedding(t, ctx, termiteClient, gemmaEmbedModelName, gemmaEmbedEmbeddingDim)
-	})
-
-	serverCancel()
-	<-serverDone
+	return termiteClient, serverCancel, serverDone
 }
 
 // testMultilingualSimilarity verifies that the model can find similarity across languages.
