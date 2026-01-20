@@ -132,6 +132,16 @@ RECOGNIZER_CAPABILITIES = {
     "answers",    # Extractive question answering (GLiNER multitask)
 }
 
+# Models that require trust_remote_code=True for ONNX export
+# Most embedding models have pre-exported ONNX on HuggingFace and can be pulled directly.
+# This list is only needed when exporting models that don't have ONNX exports.
+TRUST_REMOTE_CODE_MODELS = {
+    "nomic-ai/nomic-embed-text-v1.5",
+    "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+    "dunzhang/stella_en_1.5B_v5",
+    "google/embeddinggemma-300m",  # Gated model, also requires HF_TOKEN
+}
+
 # Model type to ORT class mapping
 MODEL_TYPE_CONFIG = {
     "embedder": {
@@ -471,17 +481,22 @@ def export_model(
     logger.info(f"Exporting {model_type}: {model_id}")
     logger.info(f"Output: {output_dir}")
 
+    # Check if model requires trust_remote_code
+    trust_remote_code = model_id in TRUST_REMOTE_CODE_MODELS
+    if trust_remote_code:
+        logger.info("Model requires trust_remote_code=True")
+
     # Get the appropriate ORT class
     ort_class = get_ort_model_class(model_type)
 
     # Load and export
     logger.info("Converting to ONNX format...")
-    ort_model = ort_class.from_pretrained(model_id, export=True)
+    ort_model = ort_class.from_pretrained(model_id, export=True, trust_remote_code=trust_remote_code)
     ort_model.save_pretrained(output_dir)
 
     # Save tokenizer
     logger.info("Saving tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
     tokenizer.save_pretrained(output_dir)
 
     # Create int8 quantized variant if requested (must be done BEFORE fp16 to avoid multi-file issue)

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "embeddinggemma-300m-ONNX",
+  "owner": "onnx-community",
+  "type": "embedder",
+  "description": "Compact multilingual embeddings optimized for edge deployment. 100+ languages, 768 dims with Matryoshka support. Community ONNX export of Google's EmbeddingGemma.",
+  "source": "onnx-community/embeddinggemma-300m-ONNX",
+  "files": [],
+  "variants": {}
+}

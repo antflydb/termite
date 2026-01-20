@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "gte-Qwen2-1.5B-instruct",
+  "owner": "Alibaba-NLP",
+  "type": "embedder",
+  "description": "Instruction-following embeddings with 32K context window. Best for long document retrieval and instruction-tuned tasks.",
+  "source": "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+  "files": [],
+  "variants": {}
+}
