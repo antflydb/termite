@@ -98,29 +98,6 @@ func TestQueueTOCTOU_BUG001(t *testing.T) {
 	t.Logf("Max queue depth observed: %d (limit: %d)", maxObserved.Load(), maxQueueSize)
 }
 
-// TestEmbedderRegistryPinRace_BUG002 demonstrates the race condition in Pin()
-// where two goroutines can both pass the "already pinned" check, both call Get()
-// (potentially loading the model twice), and both write to the pinned map.
-// This causes one embedder reference to be orphaned (memory/resource leak).
-func TestEmbedderRegistryPinRace_BUG002(t *testing.T) {
-	// This test verifies that concurrent Pin() calls don't cause duplicate model loading.
-	// We can't easily test with real models, but we can verify the locking behavior
-	// by checking that concurrent Pin() calls only result in one entry in the pinned map.
-
-	// Create a mock embedder that tracks how many times it was created
-	var loadCount atomic.Int32
-
-	// The test works by verifying the fix:
-	// With the fix (single Lock scope with double-check), concurrent Pin() calls
-	// should result in exactly one load.
-	t.Log("BUG-002 test: Verifying Pin() race fix through locking semantics")
-
-	// Note: Full verification requires integration test with real registry.
-	// This unit test validates the fix is in place by checking the code structure
-	// is correct (double-check pattern under single lock).
-	_ = loadCount
-}
-
 // TestQueueTOCTOU_StressTest runs many iterations to catch the race
 func TestQueueTOCTOU_StressTest(t *testing.T) {
 	if testing.Short() {
