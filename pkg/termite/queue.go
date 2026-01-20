@@ -122,20 +122,28 @@ func (q *RequestQueue) Acquire(ctx context.Context) (release func(), err error) 
 		// Need to queue
 	}
 
-	// Check queue capacity before waiting
+	// Atomically reserve a queue slot using CAS loop to prevent TOCTOU race
+	// where multiple goroutines could all pass the capacity check before any increments
 	if q.maxQueueSize > 0 {
-		queued := q.currentQueued.Load()
-		if queued >= q.maxQueueSize {
-			q.totalRejected.Add(1)
-			q.logger.Warn("Request rejected: queue full",
-				zap.Int64("queued", queued),
-				zap.Int64("max_queue", q.maxQueueSize))
-			return nil, ErrQueueFull
+		for {
+			queued := q.currentQueued.Load()
+			if queued >= q.maxQueueSize {
+				q.totalRejected.Add(1)
+				q.logger.Warn("Request rejected: queue full",
+					zap.Int64("queued", queued),
+					zap.Int64("max_queue", q.maxQueueSize))
+				return nil, ErrQueueFull
+			}
+			// Atomically increment only if the value hasn't changed
+			if q.currentQueued.CompareAndSwap(queued, queued+1) {
+				break
+			}
+			// CAS failed - another goroutine modified the counter, retry
 		}
+	} else {
+		// No queue limit, just increment
+		q.currentQueued.Add(1)
 	}
-
-	// Enter queue
-	q.currentQueued.Add(1)
 	queueStart := time.Now()
 
 	q.logger.Debug("Request queued",

@@ -454,26 +454,29 @@ func (r *EmbedderRegistry) Unload(modelName string) {
 // in the cache, it is moved to the pinned map. If not loaded, it will be loaded
 // first. Pinned models survive TTL expiration and LRU eviction.
 func (r *EmbedderRegistry) Pin(modelName string) error {
-	// Check if already pinned
-	r.pinnedMu.RLock()
+	// Use single lock scope with double-check to prevent race where multiple
+	// goroutines could pass the "already pinned" check, all call Get() and
+	// load the model, causing resource leaks from orphaned model instances.
+	r.pinnedMu.Lock()
+	defer r.pinnedMu.Unlock()
+
+	// Double-check after acquiring lock
 	if r.pinned[modelName] != nil {
-		r.pinnedMu.RUnlock()
 		r.logger.Debug("Model already pinned",
 			zap.String("model", modelName))
 		return nil
 	}
-	r.pinnedMu.RUnlock()
 
 	// Get the model (may load it if not already loaded)
+	// Note: We hold pinnedMu while calling Get(), which is safe because
+	// Get() uses r.mu (different lock) and the cache is thread-safe.
 	embedder, err := r.Get(modelName)
 	if err != nil {
 		return fmt.Errorf("pin model %s: %w", modelName, err)
 	}
 
 	// Move from cache to pinned map
-	r.pinnedMu.Lock()
 	r.pinned[modelName] = embedder
-	r.pinnedMu.Unlock()
 
 	// Remove from cache (without triggering close callback - we moved it)
 	// We use DeleteAll pattern with a filter, but simpler is to just delete

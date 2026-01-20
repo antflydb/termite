@@ -233,6 +233,15 @@ func (r *Seq2SeqRegistry) GetQuestionGenerator(modelName string) (seq2seq.Questi
 
 // loadModel loads a Seq2Seq model from disk
 func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent duplicate loading
+	// when multiple goroutines race to load the same model
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading Seq2Seq model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))

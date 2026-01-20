@@ -365,6 +365,15 @@ func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
 
 // loadModel loads a NER model from disk
 func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent duplicate loading
+	// when multiple goroutines race to load the same model
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading NER model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path),

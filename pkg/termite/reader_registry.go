@@ -245,6 +245,15 @@ func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 
 // loadModel loads a reader model from disk
 func (r *ReaderRegistry) loadModel(info *ReaderModelInfo) (reading.Reader, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent duplicate loading
+	// when multiple goroutines race to load the same model
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))

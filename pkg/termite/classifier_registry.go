@@ -266,6 +266,15 @@ func (r *ClassifierRegistry) getLoaded(modelName string) (*loadedClassifier, err
 
 // loadModel loads a classifier model from disk
 func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent duplicate loading
+	// when multiple goroutines race to load the same model
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading classifier model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))

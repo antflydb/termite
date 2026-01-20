@@ -246,6 +246,15 @@ func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Gene
 
 // loadModelFromPath loads a generator model from a specific path
 func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (generation.Generator, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent duplicate loading
+	// when multiple goroutines race to load the same model
+	if item := r.cache.Get(cacheKey); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading generator model on demand",
 		zap.String("cacheKey", cacheKey),
 		zap.String("path", modelPath))
