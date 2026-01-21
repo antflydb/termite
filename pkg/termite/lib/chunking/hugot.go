@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
@@ -67,7 +68,16 @@ type PooledHugotChunker struct {
 	logger        *zap.Logger
 	sessionShared bool
 	poolSize      int
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new operations after Close()
+	wg        sync.WaitGroup // Waits for in-flight operations to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
+
+// ErrChunkerClosed is returned when Chunk is called on a closed chunker.
+var ErrChunkerClosed = errors.New("chunker is closed")
 
 // NewPooledHugotChunker creates a new pooled chunker using the Hugot ONNX runtime.
 // poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
@@ -216,6 +226,20 @@ func newPooledHugotChunkerInternal(config HugotChunkerConfig, modelPath string, 
 // Chunk splits text using neural token classification with per-request config overrides.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 func (p *PooledHugotChunker) Chunk(ctx context.Context, text string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrChunkerClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrChunkerClosed
+	}
+
 	if text == "" {
 		p.logger.Debug("Chunk called with empty text")
 		return nil, nil
@@ -436,12 +460,23 @@ func (p *PooledHugotChunker) aggregateByTargetTokens(chunks []chunking.Chunk, co
 
 // Close releases the Hugot session and resources.
 // Only destroys the session if it was created by this chunker (not shared).
+// Thread-safe: waits for in-flight operations to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotChunker) Close() error {
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled chunker)")
-		return p.session.Destroy()
-	} else if p.sessionShared {
-		p.logger.Debug("Skipping session destruction (shared session)")
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new operations
+		p.closed.Store(true)
+
+		// Wait for all in-flight operations to complete
+		p.wg.Wait()
+
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled chunker)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }

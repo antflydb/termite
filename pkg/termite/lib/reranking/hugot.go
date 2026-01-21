@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/reranking"
@@ -70,7 +71,16 @@ type PooledHugotReranker struct {
 	logger        *zap.Logger
 	sessionShared bool
 	poolSize      int
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new operations after Close()
+	wg        sync.WaitGroup // Waits for in-flight operations to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
+
+// ErrRerankerClosed is returned when Rerank is called on a closed reranker.
+var ErrRerankerClosed = errors.New("reranker is closed")
 
 // NewPooledHugotReranker creates a new pooled reranker using the Hugot ONNX runtime.
 // poolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
@@ -203,6 +213,20 @@ func newPooledHugotRerankerInternal(modelPath string, onnxFilename string, poolS
 // Rerank scores pre-rendered prompts based on relevance to the query.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 func (p *PooledHugotReranker) Rerank(ctx context.Context, query string, prompts []string) ([]float32, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrRerankerClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrRerankerClosed
+	}
+
 	if len(prompts) == 0 {
 		return []float32{}, nil
 	}
@@ -251,12 +275,23 @@ func (p *PooledHugotReranker) Rerank(ctx context.Context, query string, prompts 
 
 // Close releases resources.
 // Only destroys the session if it was created by this reranker (not shared).
+// Thread-safe: waits for in-flight operations to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotReranker) Close() error {
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled reranker)")
-		return p.session.Destroy()
-	} else if p.sessionShared {
-		p.logger.Debug("Skipping session destruction (shared session)")
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new operations
+		p.closed.Store(true)
+
+		// Wait for all in-flight operations to complete
+		p.wg.Wait()
+
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled reranker)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }

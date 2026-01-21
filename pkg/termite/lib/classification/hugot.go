@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/hugot"
@@ -55,7 +56,16 @@ type PooledHugotClassifier struct {
 	sessionShared bool
 	poolSize      int
 	config        Config
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new operations after Close()
+	wg        sync.WaitGroup // Waits for in-flight operations to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
+
+// ErrClassifierClosed is returned when Classify is called on a closed classifier.
+var ErrClassifierClosed = errors.New("classifier is closed")
 
 // NewHugotClassifier creates a new zero-shot classifier using the Hugot ONNX runtime.
 func NewHugotClassifier(modelPath string, logger *zap.Logger) (*HugotClassifier, error) {
@@ -491,6 +501,20 @@ func (p *PooledHugotClassifier) Classify(ctx context.Context, texts []string, la
 
 // ClassifyWithHypothesis classifies texts using a custom hypothesis template.
 func (p *PooledHugotClassifier) ClassifyWithHypothesis(ctx context.Context, texts []string, labels []string, hypothesisTemplate string) ([][]Classification, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrClassifierClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrClassifierClosed
+	}
+
 	if len(texts) == 0 {
 		return [][]Classification{}, nil
 	}
@@ -538,6 +562,20 @@ func (p *PooledHugotClassifier) ClassifyWithHypothesis(ctx context.Context, text
 
 // MultiLabelClassify classifies texts allowing multiple labels per text.
 func (p *PooledHugotClassifier) MultiLabelClassify(ctx context.Context, texts []string, labels []string) ([][]Classification, error) {
+	// Check if closed before starting
+	if p.closed.Load() {
+		return nil, ErrClassifierClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrClassifierClosed
+	}
+
 	if len(texts) == 0 {
 		return [][]Classification{}, nil
 	}
@@ -591,12 +629,25 @@ func (p *PooledHugotClassifier) MultiLabelClassify(ctx context.Context, texts []
 }
 
 // Close releases resources.
+// Thread-safe: waits for in-flight operations to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotClassifier) Close() error {
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled ZSC)")
-		return p.session.Destroy()
-	}
-	return nil
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new operations
+		p.closed.Store(true)
+
+		// Wait for all in-flight operations to complete
+		p.wg.Wait()
+
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled ZSC)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }
 
 // Config returns the classifier configuration.

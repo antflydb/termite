@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"sync"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -79,6 +80,12 @@ type PooledHugotEmbedder struct {
 	poolSize      int
 	caps          embeddings.EmbedderCapabilities
 	batchSize     int
+
+	// Synchronization for safe Close() behavior
+	closed    atomic.Bool    // Prevents new Embed() calls after Close()
+	wg        sync.WaitGroup // Waits for in-flight Embed() calls to complete
+	closeOnce sync.Once      // Ensures Close() runs exactly once
+	closeErr  error          // Stores error from Close()
 }
 
 // NewPooledHugotEmbedder creates a new pooled embedder using the Hugot ONNX runtime.
@@ -290,10 +297,27 @@ func (p *PooledHugotEmbedder) Capabilities() embeddings.EmbedderCapabilities {
 	return p.caps
 }
 
+// ErrEmbedderClosed is returned when Embed is called on a closed embedder.
+var ErrEmbedderClosed = errors.New("embedder is closed")
+
 // Embed generates embeddings for the given content.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
 // Processes texts in batches to avoid memory explosion on CoreML.
 func (p *PooledHugotEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart) ([][]float32, error) {
+	// Check if embedder is closed before starting
+	if p.closed.Load() {
+		return nil, ErrEmbedderClosed
+	}
+
+	// Track this in-flight operation so Close() waits for us
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	// Double-check after registration (handles race with Close())
+	if p.closed.Load() {
+		return nil, ErrEmbedderClosed
+	}
+
 	if len(contents) == 0 {
 		return [][]float32{}, nil
 	}
@@ -375,23 +399,34 @@ func (p *PooledHugotEmbedder) Embed(ctx context.Context, contents [][]ai.Content
 // Close releases resources.
 // Properly closes each pipeline to remove it from the session, then destroys
 // the session if it was created by this embedder (not shared).
+// Thread-safe: waits for in-flight Embed() calls to complete before destroying.
+// Safe to call multiple times (only the first call takes effect).
 func (p *PooledHugotEmbedder) Close() error {
-	// Close each pipeline to remove it from the session
-	for _, pipeline := range p.pipelines {
-		if pipeline != nil {
-			name := pipeline.PipelineName
-			if err := khugot.ClosePipeline[*pipelines.FeatureExtractionPipeline](p.session, name); err != nil {
-				p.logger.Warn("Failed to close pipeline", zap.String("name", name), zap.Error(err))
+	p.closeOnce.Do(func() {
+		// Set closed flag to prevent new Embed() calls
+		p.closed.Store(true)
+
+		// Wait for all in-flight Embed() calls to complete
+		p.wg.Wait()
+
+		// Close each pipeline to remove it from the session
+		for _, pipeline := range p.pipelines {
+			if pipeline != nil {
+				name := pipeline.PipelineName
+				if err := khugot.ClosePipeline[*pipelines.FeatureExtractionPipeline](p.session, name); err != nil {
+					p.logger.Warn("Failed to close pipeline", zap.String("name", name), zap.Error(err))
+				}
 			}
 		}
-	}
-	p.pipelines = nil
+		p.pipelines = nil
 
-	if p.session != nil && !p.sessionShared {
-		p.logger.Info("Destroying Hugot session (owned by this pooled embedder)")
-		return p.session.Destroy()
-	} else if p.sessionShared {
-		p.logger.Debug("Skipping session destruction (shared session)")
-	}
-	return nil
+		// Now safe to destroy the session
+		if p.session != nil && !p.sessionShared {
+			p.logger.Info("Destroying Hugot session (owned by this pooled embedder)")
+			p.closeErr = p.session.Destroy()
+		} else if p.sessionShared {
+			p.logger.Debug("Skipping session destruction (shared session)")
+		}
+	})
+	return p.closeErr
 }
