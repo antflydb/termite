@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "snowflake-arctic-embed-l-v2.0",
+  "owner": "Snowflake",
+  "type": "embedder",
+  "description": "Retrieval-optimized embeddings with Matryoshka support. 1024 dimensions with excellent retrieval benchmarks.",
+  "source": "Snowflake/snowflake-arctic-embed-l-v2.0",
+  "files": [],
+  "variants": {}
+}

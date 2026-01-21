@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "bge-m3",
+  "owner": "BAAI",
+  "type": "embedder",
+  "description": "Multilingual embeddings supporting 100+ languages with 8K context. State-of-the-art for cross-lingual retrieval tasks.",
+  "source": "BAAI/bge-m3",
+  "files": [],
+  "variants": {}
+}

@@ -128,12 +128,18 @@ Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `rerank
 
 #### Embedders
 
-| Model | Size | Variants |
-|-------|------|----------|
-| `bge-small-en-v1.5` | 128MB | f16, i8 |
-| `all-MiniLM-L6-v2` | 87MB | f32, f16, i8 |
-| `all-mpnet-base-v2` | 418MB | f32, f16, i8 |
-| `clip-vit-base-patch32` | 584MB | f16, i8 |
+| Model | Size | Dims | Variants | Notes |
+|-------|------|------|----------|-------|
+| `bge-small-en-v1.5` | 128MB | 384 | f16, i8 | Fast English embeddings |
+| `all-MiniLM-L6-v2` | 87MB | 384 | f32, f16, i8 | Fastest, good quality |
+| `all-mpnet-base-v2` | 418MB | 768 | f32, f16, i8 | Best sentence-transformers accuracy |
+| `clip-vit-base-patch32` | 584MB | 512 | f16, i8 | Multimodal (text + images) |
+| `nomic-embed-text-v1.5` | 548MB | 768 | f16, i8 | 8K context, Matryoshka dims |
+| `bge-m3` | 2.2GB | 1024 | f16, i8 | 100+ languages, 8K context |
+| `gte-Qwen2-1.5B-instruct` | 6GB | 1536 | f16 | 32K context, instruction-following |
+| `snowflake-arctic-embed-l-v2.0` | 1.3GB | 1024 | f16, i8 | Retrieval-optimized, Matryoshka |
+| `stella_en_1.5B_v5` | 6GB | 1024 | f16 | Premium English, top MTEB scores |
+| `embeddinggemma-300m-ONNX` | 1.2GB | 768 | f16, q4, q4f16 | Multilingual, edge-optimized |
 
 #### Rerankers
 

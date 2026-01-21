@@ -214,6 +214,96 @@
       "source": "google/gemma-3-1b-it",
       "size": 4000000000,
       "variants": []
+    },
+    {
+      "name": "nomic-embed-text-v1.5",
+      "owner": "nomic-ai",
+      "type": "embedder",
+      "description": "Long-context embeddings with Matryoshka support. Flexible dimensions (64-768) and 8K token context. Outperforms OpenAI text-embedding-3-small.",
+      "source": "nomic-ai/nomic-embed-text-v1.5",
+      "size": 548000000,
+      "variants": [
+        "f16",
+        "i8"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "bge-m3",
+      "owner": "BAAI",
+      "type": "embedder",
+      "description": "Multilingual embeddings supporting 100+ languages with 8K context. State-of-the-art for cross-lingual retrieval tasks.",
+      "source": "BAAI/bge-m3",
+      "size": 2270000000,
+      "variants": [
+        "f16",
+        "i8"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "gte-Qwen2-1.5B-instruct",
+      "owner": "Alibaba-NLP",
+      "type": "embedder",
+      "description": "Instruction-following embeddings with 32K context window. Best for long document retrieval and instruction-tuned tasks.",
+      "source": "Alibaba-NLP/gte-Qwen2-1.5B-instruct",
+      "size": 6000000000,
+      "variants": [
+        "f16"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "snowflake-arctic-embed-l-v2.0",
+      "owner": "Snowflake",
+      "type": "embedder",
+      "description": "Retrieval-optimized embeddings with Matryoshka support. 1024 dimensions with excellent retrieval benchmarks.",
+      "source": "Snowflake/snowflake-arctic-embed-l-v2.0",
+      "size": 1340000000,
+      "variants": [
+        "f16",
+        "i8"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "stella_en_1.5B_v5",
+      "owner": "dunzhang",
+      "type": "embedder",
+      "description": "Premium English embeddings with Matryoshka support. Top-tier MTEB scores with excellent quality-to-size ratio.",
+      "source": "dunzhang/stella_en_1.5B_v5",
+      "size": 6000000000,
+      "variants": [
+        "f16"
+      ],
+      "backends": [
+        "onnx"
+      ]
+    },
+    {
+      "name": "embeddinggemma-300m-ONNX",
+      "owner": "onnx-community",
+      "type": "embedder",
+      "description": "Compact multilingual embeddings optimized for edge deployment. 100+ languages, 768 dims with Matryoshka support. Community ONNX export of Google's EmbeddingGemma.",
+      "source": "onnx-community/embeddinggemma-300m-ONNX",
+      "size": 1270000000,
+      "variants": [
+        "f16",
+        "q4",
+        "q4f16",
+        "quantized"
+      ],
+      "backends": [
+        "onnx"
+      ]
     }
   ]
 }
