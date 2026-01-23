@@ -22,7 +22,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -35,13 +34,12 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
+	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
-	"github.com/antflydb/termite/pkg/termite/lib/classification"
-	"github.com/bytedance/sonic/decoder"
-	"github.com/bytedance/sonic/encoder"
 	"go.uber.org/zap"
 	_ "golang.org/x/image/webp"
 )
@@ -169,7 +167,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		t.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -186,7 +184,7 @@ func (t *TermiteAPI) GetVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		t.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -227,7 +225,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 
 	// Decode the request using generated types
 	var req EmbedRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -288,7 +286,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 			Embeddings: embeds,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			ln.logger.Error("encoding JSON response", zap.Error(err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -432,7 +430,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	UpdateQueueMetrics(ln.requestQueue.Stats())
 
 	var req ChunkRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -478,7 +476,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -521,7 +519,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 		Query   string   `json:"query"`   // Query text
 		Prompts []string `json:"prompts"` // Pre-rendered document texts to rerank
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -590,7 +588,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -634,7 +632,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		Labels         []string `json:"labels"`          // Custom labels for GLiNER models (optional)
 		RelationLabels []string `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -789,7 +787,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(nerResp); err != nil {
+	if err := json.NewEncoder(w).Encode(nerResp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -899,7 +897,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 
 	// Decode request
 	var req GenerateRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ln.logger.Error("Failed to decode generate request",
 			zap.Error(err))
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
@@ -1145,7 +1143,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1319,7 +1317,7 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		Model  string   `json:"model"`  // Model name to use (required)
 		Inputs []string `json:"inputs"` // Input texts to rewrite
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1364,7 +1362,7 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1403,7 +1401,7 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Decode request
 	var req ClassifyRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1479,7 +1477,7 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1518,7 +1516,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 
 	// Decode request using generated types
 	var req ReadRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -1596,7 +1594,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

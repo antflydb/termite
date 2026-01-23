@@ -11,10 +11,10 @@ replace github.com/knights-analytics/hugot => github.com/ajroetker/hugot v0.0.0-
 replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260102002309-90abcfc27670
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260105234922-f6ed1eb6788d
-	github.com/bytedance/sonic v1.14.2
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260119040111-36db55706c38
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/getkin/kin-openapi v0.133.0
+	github.com/goccy/go-json v0.10.2
 	github.com/gomlx/go-huggingface v0.3.1
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/hugot v0.6.1
@@ -36,9 +36,6 @@ require (
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic/loader v0.4.0 // indirect
-	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/daulet/tokenizers v1.24.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
@@ -94,7 +91,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
-	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/viant/afs v1.30.0 // indirect
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
@@ -103,7 +99,6 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	golang.org/x/mod v0.31.0 // indirect
