@@ -2,10 +2,9 @@
 
 The `backends` package provides a unified interface for ML inference with multiple backend support:
 
-- **ONNX Runtime**: Fastest inference, supports CPU/CUDA/CoreML (requires `onnx,ORT` build tags)
-- **GoMLX**: Pure Go inference with optional XLA acceleration (always available)
-  - **simplego**: Pure Go engine, always available, no dependencies
-  - **xla**: Hardware accelerated (CUDA, TPU, optimized CPU) via PJRT
+- **ONNX Runtime** (`onnx`): Fastest inference, supports CPU/CUDA/CoreML (requires `onnx,ORT` build tags)
+- **XLA** (`xla`): Hardware accelerated (CUDA, TPU, optimized CPU) via PJRT (requires `xla,XLA` build tags)
+- **Go** (`go`): Pure Go inference, always available, no external dependencies
 
 ## Architecture
 
@@ -54,13 +53,13 @@ defer manager.Close()
 // Configure priority
 manager.SetPriority([]backends.BackendSpec{
     {Backend: backends.BackendONNX, Device: backends.DeviceCUDA},
-    {Backend: backends.BackendGoMLX, Device: backends.DeviceAuto}, // auto-selects xla or simplego
-    {Backend: backends.BackendONNX, Device: backends.DeviceCPU},
+    {Backend: backends.BackendXLA, Device: backends.DeviceAuto},
+    {Backend: backends.BackendGo, Device: backends.DeviceCPU},
 })
 
 // Load model with backend selection
 model, backendUsed, err := manager.LoadModel(modelPath,
-    []string{"onnx", "gomlx"}, // Supported backends
+    []string{"onnx", "xla", "go"}, // Supported backends
     backends.WithONNXFile("model_f16.onnx"))
 ```
 
@@ -81,16 +80,24 @@ embeddings, err := pipeline.Embed(ctx, []string{"Hello", "World"})
 
 | Tags | Backends Available | Use Case |
 |------|-------------------|----------|
-| (none) | GoMLX (simplego) | Development, cross-platform |
-| `onnx,ORT` | GoMLX + ONNX | Production CPU/GPU |
+| (none) | Go | Development, cross-platform |
+| `xla,XLA` | Go + XLA | Hardware-accelerated inference |
+| `onnx,ORT` | Go + ONNX | Production CPU/GPU |
+| `onnx,ORT,xla,XLA` | Go + XLA + ONNX | Full backend support |
 
-The GoMLX backend automatically detects available engines:
-- If XLA/PJRT is available, uses hardware acceleration
-- Otherwise falls back to pure Go (simplego)
-
-Build example:
+Build examples:
 ```bash
+# Pure Go only (no CGO required)
+go build ./cmd/termite
+
+# With XLA acceleration
+go build -tags="xla,XLA" ./cmd/termite
+
+# With ONNX Runtime
 go build -tags="onnx,ORT" ./cmd/termite
+
+# All backends
+go build -tags="onnx,ORT,xla,XLA" ./cmd/termite
 ```
 
 ## Model Interface
@@ -126,7 +133,6 @@ model, err := loader.Load(path,
     backends.WithNormalization(true),
     backends.WithPooling("mean"),      // "mean", "cls", "max", "none"
     backends.WithGPUMode(backends.GPUModeAuto),
-    backends.WithGoMLXBackend(backends.GoMLXBackendXLA), // or GoMLXBackendSimpleGo
     backends.WithBatchSize(32),
     backends.WithNumThreads(4),
 )
@@ -138,7 +144,7 @@ model, err := loader.Load(path,
 |----------|-------------|
 | `ONNXRUNTIME_ROOT` | ONNX Runtime library directory |
 | `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` | Library search paths |
-| `GOMLX_BACKEND` | GoMLX engine override (e.g., `xla`, `simplego`) |
+| `GOMLX_BACKEND` | GoMLX engine override (e.g., `xla`, `simplego`) - deprecated, use build tags |
 | `PJRT_PLUGIN_LIBRARY_PATH` | PJRT plugin location for XLA |
 | `TERMITE_FORCE_COREML` | Force CoreML on macOS (experimental) |
 | `TERMITE_GPU` | GPU mode override (auto/cuda/tpu/coreml/off) |
@@ -147,16 +153,17 @@ model, err := loader.Load(path,
 
 ```
 lib/backends/
-├── backend.go           # Registry and backend interface
-├── backend_onnx.go      # ONNX Runtime (Linux/Windows)
+├── backend.go              # Registry and backend interface
+├── backend_onnx.go         # ONNX Runtime (Linux/Windows)
 ├── backend_onnx_darwin.go  # ONNX Runtime (macOS/CoreML)
-├── backend_gomlx.go     # GoMLX (HuggingFace + ONNX models, xla/simplego engines)
-├── gpu.go               # GPU detection utilities
-├── model.go             # Model interfaces, options, pooling utilities
-├── pipeline.go          # Pipeline types (tokenizer + model)
-├── session_manager.go   # Multi-backend session management
-├── types.go             # Common types
-└── README.md            # This file
+├── backend_gomlx.go        # Go backend (pure Go, always available)
+├── backend_xla.go          # XLA backend (requires xla,XLA build tags)
+├── gpu.go                  # GPU detection utilities
+├── model.go                # Model interfaces, options, pooling utilities
+├── pipeline.go             # Pipeline types (tokenizer + model)
+├── session_manager.go      # Multi-backend session management
+├── types.go                # Common types
+└── README.md               # This file
 ```
 
 ## Migration from hugot

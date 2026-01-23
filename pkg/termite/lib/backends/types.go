@@ -42,9 +42,13 @@ const (
 	// BackendONNX is the ONNX Runtime backend - fast CPU/GPU inference
 	BackendONNX BackendType = "onnx"
 
-	// BackendGoMLX is the GoMLX backend - supports XLA (TPU/CUDA) or simplego (pure Go)
-	// Always available, auto-detects best engine
-	BackendGoMLX BackendType = "gomlx"
+	// BackendXLA is the GoMLX backend with XLA engine (hardware accelerated via PJRT)
+	// Supports TPU, CUDA, and optimized CPU. Requires XLA/PJRT runtime.
+	BackendXLA BackendType = "xla"
+
+	// BackendGo is the GoMLX backend with pure Go engine (no CGO)
+	// Always available, slower than XLA but no external dependencies.
+	BackendGo BackendType = "go"
 )
 
 // DeviceType identifies the hardware device for inference

@@ -34,7 +34,8 @@ import (
 )
 
 func init() {
-	RegisterBackend(&gomlxBackend{})
+	// Register Go backend (always available)
+	RegisterBackend(newGomlxBackend(BackendGo, "simplego"))
 }
 
 // gomlxBackend implements Backend using GoMLX for inference.
@@ -43,31 +44,62 @@ func init() {
 //   - HuggingFace: SafeTensors + config.json (via huggingface-gomlx)
 //   - ONNX: .onnx model files (via onnx-gomlx)
 //
-// And multiple inference engines:
-//   - simplego: Pure Go, always available, slower
-//   - xla: Hardware accelerated (CUDA, TPU, optimized CPU), requires XLA/PJRT
-//
-// The model format and inference engine are auto-detected by default,
-// but can be overridden via LoadOptions.
+// Two backends are registered:
+//   - BackendGo: Pure Go engine (simplego), always available, slower
+//   - BackendXLA: XLA engine, hardware accelerated (CUDA, TPU, optimized CPU), requires XLA/PJRT build tags
 type gomlxBackend struct {
-	engineMgr *engineManager
+	backendType BackendType
+	engineType  string // "simplego" or "xla"
+	engineMgr   *engineManager
+	available   *bool // cached availability check
+}
+
+// newGomlxBackend creates a new GoMLX backend with the specified type and engine.
+func newGomlxBackend(backendType BackendType, engineType string) *gomlxBackend {
+	return &gomlxBackend{
+		backendType: backendType,
+		engineType:  engineType,
+	}
 }
 
 func (b *gomlxBackend) Type() BackendType {
-	return BackendGoMLX
+	return b.backendType
 }
 
 func (b *gomlxBackend) Name() string {
-	return "GoMLX"
+	switch b.backendType {
+	case BackendXLA:
+		return "GoMLX (XLA)"
+	case BackendGo:
+		return "GoMLX (Go)"
+	default:
+		return "GoMLX"
+	}
 }
 
 func (b *gomlxBackend) Available() bool {
-	return true
+	if b.available != nil {
+		return *b.available
+	}
+
+	// Test if we can create an engine of this type
+	_, err := backends.NewWithConfig(b.engineType)
+	result := err == nil
+	b.available = &result
+	return result
 }
 
 func (b *gomlxBackend) Priority() int {
-	// Lower priority than direct ONNX Runtime, but always available
-	return 30
+	switch b.backendType {
+	case BackendXLA:
+		// XLA has higher priority than Go (lower number = higher priority)
+		return 20
+	case BackendGo:
+		// Go is always available fallback
+		return 100
+	default:
+		return 50
+	}
 }
 
 func (b *gomlxBackend) Loader() ModelLoader {
@@ -155,9 +187,10 @@ func (l *gomlxModelLoader) loadHuggingFace(path string, config *LoadConfig, engi
 	}
 
 	return &gomlxModelWrapper{
-		hfModel: hfModel,
-		path:    path,
-		config:  config,
+		hfModel:     hfModel,
+		path:        path,
+		config:      config,
+		backendType: l.backend.backendType,
 	}, nil
 }
 
@@ -180,9 +213,10 @@ func (l *gomlxModelLoader) loadONNX(path string, config *LoadConfig, engine back
 	}
 
 	return &gomlxModelWrapper{
-		onnxModel: onnxModel,
-		path:      path,
-		config:    config,
+		onnxModel:   onnxModel,
+		path:        path,
+		config:      config,
+		backendType: l.backend.backendType,
 	}, nil
 }
 
@@ -192,7 +226,7 @@ func (l *gomlxModelLoader) SupportsModel(path string) bool {
 }
 
 func (l *gomlxModelLoader) Backend() BackendType {
-	return BackendGoMLX
+	return l.backend.backendType
 }
 
 // detectGoMLXModelFormat auto-detects the model format from files present.
@@ -223,10 +257,11 @@ func detectGoMLXModelFormat(path string) ModelFormat {
 
 // gomlxModelWrapper wraps hfModel or onnxModel to implement the backends.Model interface.
 type gomlxModelWrapper struct {
-	hfModel   *hfModel
-	onnxModel *onnxModel
-	path      string
-	config    *LoadConfig
+	hfModel     *hfModel
+	onnxModel   *onnxModel
+	path        string
+	config      *LoadConfig
+	backendType BackendType
 }
 
 func (m *gomlxModelWrapper) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
@@ -254,7 +289,7 @@ func (m *gomlxModelWrapper) Name() string {
 }
 
 func (m *gomlxModelWrapper) Backend() BackendType {
-	return BackendGoMLX
+	return m.backendType
 }
 
 // =============================================================================
