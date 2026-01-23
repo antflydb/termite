@@ -7,3 +7,6 @@
 # Registry - track manifests/index, ignore large binaries
 /registry/blobs/
 /registry/models/
+# Go workspace files (contain local paths)
+go.work
+go.work.sum

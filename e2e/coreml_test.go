@@ -28,8 +28,8 @@ import (
 	"github.com/antflydb/termite/pkg/client"
 	"github.com/antflydb/termite/pkg/client/oapi"
 	"github.com/antflydb/termite/pkg/termite"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/cli"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -60,7 +60,7 @@ func testCoreMLBackendAvailability(t *testing.T) {
 	t.Helper()
 
 	// Check ONNX backend is registered
-	backend, ok := hugot.GetBackend(hugot.BackendONNX)
+	backend, ok := backends.GetBackend(backends.BackendONNX)
 	require.True(t, ok, "ONNX backend should be registered")
 
 	// Verify it's available
@@ -72,7 +72,7 @@ func testCoreMLBackendAvailability(t *testing.T) {
 	assert.Contains(t, name, "CoreML", "Backend name should indicate CoreML on macOS")
 
 	// List all available backends
-	available := hugot.ListAvailable()
+	available := backends.ListAvailable()
 	t.Logf("Available backends: %d", len(available))
 	for _, b := range available {
 		t.Logf("  - %s (%s): priority=%d", b.Name(), b.Type(), b.Priority())
@@ -80,7 +80,7 @@ func testCoreMLBackendAvailability(t *testing.T) {
 
 	// ONNX should be highest priority
 	if len(available) > 0 {
-		assert.Equal(t, hugot.BackendONNX, available[0].Type(),
+		assert.Equal(t, backends.BackendONNX, available[0].Type(),
 			"ONNX should be the highest priority backend")
 	}
 }
@@ -89,25 +89,22 @@ func testCoreMLBackendAvailability(t *testing.T) {
 func testCoreMLGPUModeConfiguration(t *testing.T) {
 	t.Helper()
 
-	// Get the default GPU mode
-	mode := hugot.GetGPUMode()
-	t.Logf("Default GPU mode: %s", mode)
+	// Test GPU mode constants exist and are correct
+	assert.Equal(t, backends.GPUMode("auto"), backends.GPUModeAuto, "GPUModeAuto should be 'auto'")
+	assert.Equal(t, backends.GPUMode("coreml"), backends.GPUModeCoreML, "GPUModeCoreML should be 'coreml'")
 
-	// Default should be auto
-	assert.Equal(t, hugot.GPUModeAuto, mode,
-		"Default GPU mode should be auto")
+	// Test ShouldUseGPU with different modes
+	assert.True(t, backends.ShouldUseGPU(backends.GPUModeAuto),
+		"ShouldUseGPU(Auto) should be true on macOS (CoreML available)")
+	assert.True(t, backends.ShouldUseGPU(backends.GPUModeCoreML),
+		"ShouldUseGPU(CoreML) should be true")
+	assert.False(t, backends.ShouldUseGPU(backends.GPUModeOff),
+		"ShouldUseGPU(Off) should be false")
 
-	// Test setting CoreML mode explicitly
-	hugot.SetGPUMode(hugot.GPUModeCoreML)
-	mode = hugot.GetGPUMode()
-	assert.Equal(t, hugot.GPUModeCoreML, mode,
-		"GPU mode should be coreml after setting")
-
-	// Reset to auto
-	hugot.SetGPUMode(hugot.GPUModeAuto)
-	mode = hugot.GetGPUMode()
-	assert.Equal(t, hugot.GPUModeAuto, mode,
-		"GPU mode should be auto after reset")
+	// Verify GPU detection returns CoreML type on macOS
+	gpuInfo := backends.DetectGPU()
+	assert.True(t, gpuInfo.Available, "GPU should be available on macOS")
+	assert.Equal(t, "coreml", gpuInfo.Type, "GPU type should be 'coreml' on macOS")
 }
 
 // testGeneratorWithCoreML runs a generator with CoreML and verifies it works
@@ -248,13 +245,11 @@ func TestCoreMLDebugLogging(t *testing.T) {
 	t.Log("TERMITE_DEBUG=1 set - CoreML will log compute plan profiling")
 
 	// Run a simple backend check with debug enabled
-	backend, ok := hugot.GetBackend(hugot.BackendONNX)
+	backend, ok := backends.GetBackend(backends.BackendONNX)
 	require.True(t, ok, "ONNX backend should be registered")
 
 	t.Logf("Backend: %s", backend.Name())
 	t.Log("Check stdout for [DEBUG] messages showing CoreML options flow")
 
-	// The debug logging added to hugot's model_ort.go will output:
-	// [DEBUG] createORTGenerativeSession: CoreMLOptions = map[MLComputeUnits:ALL ProfileComputePlan:1]
-	// [DEBUG] createORTGenerativeSession: providers = [CoreML], providerOptions = map[CoreML:map[...]]
+	// The debug logging added to backends will output CoreML configuration details
 }
