@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 	"github.com/jellydator/ttlcache/v3"
@@ -39,7 +39,7 @@ type ReaderModelInfo struct {
 // ReaderRegistry manages reader models with lazy loading and TTL-based unloading
 type ReaderRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -66,7 +66,7 @@ type ReaderConfig struct {
 // NewReaderRegistry creates a new lazy-loading reader registry
 func NewReaderRegistry(
 	config ReaderConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*ReaderRegistry, error) {
 	if logger == nil {
@@ -249,9 +249,13 @@ func (r *ReaderRegistry) loadModel(info *ReaderModelInfo) (reading.Reader, error
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Pass model path and session manager to pooled reader
-	model, backendUsed, err := reading.NewPooledHugotReaderWithSessionManager(
-		info.Path, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based reader
+	cfg := &reading.PooledReaderConfig{
+		ModelPath: info.Path,
+		PoolSize:  info.PoolSize,
+		Logger:    r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := reading.NewPooledReader(cfg, r.sessionManager, nil)
 	if err != nil {
 		return nil, fmt.Errorf("loading reader model %s: %w", info.Name, err)
 	}

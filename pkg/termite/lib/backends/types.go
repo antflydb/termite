@@ -1,0 +1,323 @@
+// Copyright 2025 Antfly, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package backends provides a unified interface for creating ML inference sessions
+// with multi-backend support. It replaces the hugot dependency with a custom stack:
+//
+//   - go-huggingface: Hub download, tokenizers, safetensors parsing
+//   - huggingface-gomlx: Model architectures, GoMLX inference
+//   - onnx-gomlx: ONNX model execution via GoMLX
+//   - onnxruntime_go: Direct ONNX Runtime inference
+//
+// Available backends:
+//   - GoMLX: Always available, supports HuggingFace and ONNX model formats
+//     Engine options: "simplego" (pure Go) or "xla" (hardware accelerated via PJRT)
+//   - ONNX Runtime: Fastest inference, requires -tags="onnx,ORT"
+//
+// Build example:
+//
+//	go build -tags="onnx,ORT" ./cmd/termite
+//
+// Backend selection at runtime follows a configurable priority order (default: ONNX > GoMLX).
+// Models can restrict which backends they support via their manifest.
+package backends
+
+import "fmt"
+
+// BackendType identifies the inference backend
+type BackendType string
+
+const (
+	// BackendONNX is the ONNX Runtime backend - fast CPU/GPU inference
+	BackendONNX BackendType = "onnx"
+
+	// BackendGoMLX is the GoMLX backend - supports XLA (TPU/CUDA) or simplego (pure Go)
+	// Always available, auto-detects best engine
+	BackendGoMLX BackendType = "gomlx"
+)
+
+// DeviceType identifies the hardware device for inference
+type DeviceType string
+
+const (
+	// DeviceAuto auto-detects the best available device (default)
+	DeviceAuto DeviceType = "auto"
+
+	// DeviceCUDA uses NVIDIA CUDA GPU
+	DeviceCUDA DeviceType = "cuda"
+
+	// DeviceCoreML uses Apple CoreML (macOS only)
+	DeviceCoreML DeviceType = "coreml"
+
+	// DeviceTPU uses Google TPU
+	DeviceTPU DeviceType = "tpu"
+
+	// DeviceCPU forces CPU-only inference
+	DeviceCPU DeviceType = "cpu"
+)
+
+// GPUMode controls how GPU acceleration is enabled.
+// Values must match the GPUMode enum in openapi.yaml.
+type GPUMode string
+
+const (
+	GPUModeAuto   GPUMode = "auto"   // Auto-detect GPU availability
+	GPUModeTpu    GPUMode = "tpu"    // Force TPU
+	GPUModeCuda   GPUMode = "cuda"   // Force CUDA
+	GPUModeCoreML GPUMode = "coreml" // Force CoreML (macOS only)
+	GPUModeOff    GPUMode = "off"    // CPU only
+)
+
+// ToGPUMode converts DeviceType to GPUMode.
+func (d DeviceType) ToGPUMode() GPUMode {
+	switch d {
+	case DeviceAuto:
+		return GPUModeAuto
+	case DeviceCUDA:
+		return GPUModeCuda
+	case DeviceCoreML:
+		return GPUModeCoreML
+	case DeviceTPU:
+		return GPUModeTpu
+	case DeviceCPU:
+		return GPUModeOff
+	default:
+		return GPUModeAuto
+	}
+}
+
+// BackendSpec combines a backend type with a device specification.
+// Used for configuring backend priority with device preferences.
+type BackendSpec struct {
+	Backend BackendType
+	Device  DeviceType
+}
+
+// String returns the string representation (e.g., "onnx:cuda" or "go")
+func (s BackendSpec) String() string {
+	if s.Device == DeviceAuto || s.Device == "" {
+		return string(s.Backend)
+	}
+	return string(s.Backend) + ":" + string(s.Device)
+}
+
+// GPUInfo contains information about the detected GPU
+type GPUInfo struct {
+	Available   bool   `json:"available"`
+	Type        string `json:"type"` // "cuda", "coreml", "tpu", "none"
+	DeviceName  string `json:"device_name,omitempty"`
+	DriverVer   string `json:"driver_version,omitempty"`
+	CUDAVersion string `json:"cuda_version,omitempty"`
+}
+
+// ModelInputs contains the inputs for model inference.
+// Different model types use different subsets of fields.
+type ModelInputs struct {
+	// Text inputs (encoder-only, generative, seq2seq)
+	InputIDs      [][]int32 // Token IDs [batch, seq]
+	AttentionMask [][]int32 // Attention mask [batch, seq]
+	TokenTypeIDs  [][]int32 // Optional: token type IDs for BERT-style models [batch, seq]
+
+	// Image inputs (vision models)
+	ImagePixels   []float32 // Preprocessed image data [batch, channels, height, width]
+	ImageBatch    int       // Batch size for images
+	ImageChannels int       // Number of channels (typically 3)
+	ImageHeight   int       // Image height
+	ImageWidth    int       // Image width
+
+	// For encoder-decoder models (seq2seq, vision2seq)
+	EncoderOutput *EncoderOutput // Output from encoder to pass to decoder
+
+	// For autoregressive models (generative, seq2seq decoder, vision2seq decoder)
+	PastKeyValues *KVCache // KV-cache from previous steps
+}
+
+// Shape represents tensor dimensions.
+type Shape []int64
+
+// String returns a string representation of the shape.
+func (s Shape) String() string {
+	return fmt.Sprintf("%v", []int64(s))
+}
+
+// ValuesInt converts the shape to an int slice.
+func (s Shape) ValuesInt() []int {
+	result := make([]int, len(s))
+	for i, d := range s {
+		result[i] = int(d)
+	}
+	return result
+}
+
+// NewShape returns a Shape with the given dimensions.
+func NewShape(dimensions ...int64) Shape {
+	return dimensions
+}
+
+// InputOutputInfo describes the shape and type of a model input or output.
+type InputOutputInfo struct {
+	Name       string
+	Dimensions Shape
+	DataType   string // "float32", "int64", "int32", etc.
+}
+
+// PoolingStrategy defines how to pool hidden states into embeddings.
+type PoolingStrategy string
+
+const (
+	PoolingMean PoolingStrategy = "mean"
+	PoolingCLS  PoolingStrategy = "cls"
+	PoolingMax  PoolingStrategy = "max"
+	PoolingNone PoolingStrategy = "none"
+)
+
+// ModelOutput contains the outputs from a forward pass.
+// Different model types populate different subsets of fields.
+type ModelOutput struct {
+	// For encoder models (text or vision)
+	LastHiddenState [][][]float32  // [batch, seq, hidden]
+	EncoderOutput   *EncoderOutput // Structured encoder output for decoder consumption
+
+	// For embedding models
+	Embeddings [][]float32 // [batch, hidden] (after pooling)
+
+	// For classification and generative models
+	Logits [][]float32 // [batch, num_classes] or [batch, vocab_size]
+
+	// For autoregressive models
+	PastKeyValues *KVCache // Updated KV-cache for next step
+}
+
+// EncoderOutput holds the output of a vision or text encoder.
+type EncoderOutput struct {
+	// HiddenStates are the encoder's hidden states.
+	// For vision encoders: [batch, num_patches, hidden]
+	// For text encoders: [batch, seq, hidden]
+	HiddenStates []float32
+	// Shape holds the tensor dimensions [batch, seq, hidden].
+	Shape [3]int
+}
+
+// KVCache holds the key-value cache for autoregressive decoding.
+// Used to avoid recomputing attention for previously generated tokens.
+type KVCache struct {
+	// Keys holds the key cache. Shape depends on model architecture.
+	// Typically [num_layers, batch, num_heads, seq, head_dim] or similar.
+	Keys []float32
+	// Values holds the value cache, same shape as Keys.
+	Values []float32
+	// SeqLen is the current sequence length in the cache.
+	SeqLen int
+	// NumLayers is the number of decoder layers.
+	NumLayers int
+	// NumHeads is the number of attention heads.
+	NumHeads int
+	// HeadDim is the dimension of each attention head.
+	HeadDim int
+	// BatchSize is the batch size.
+	BatchSize int
+}
+
+// DecoderConfig holds decoder configuration for generation.
+type DecoderConfig struct {
+	// VocabSize is the size of the vocabulary.
+	VocabSize int
+	// MaxLength is the maximum generation length.
+	MaxLength int
+	// EOSTokenID is the end-of-sequence token ID.
+	EOSTokenID int32
+	// BOSTokenID is the beginning-of-sequence token ID.
+	BOSTokenID int32
+	// PadTokenID is the padding token ID.
+	PadTokenID int32
+	// DecoderStartTokenID is the token ID to start decoding with.
+	DecoderStartTokenID int32
+	// NumLayers is the number of decoder layers.
+	NumLayers int
+	// NumHeads is the number of attention heads per layer.
+	NumHeads int
+	// HeadDim is the dimension of each attention head.
+	HeadDim int
+}
+
+// ImageConfig holds configuration for image preprocessing.
+type ImageConfig struct {
+	// Width is the target image width.
+	Width int
+	// Height is the target image height.
+	Height int
+	// Channels is the number of color channels (typically 3 for RGB).
+	Channels int
+	// Mean is the per-channel mean for normalization.
+	Mean [3]float32
+	// Std is the per-channel standard deviation for normalization.
+	Std [3]float32
+	// RescaleFactor scales pixel values (e.g., 1/255 to convert 0-255 to 0-1).
+	RescaleFactor float32
+	// DoCenterCrop indicates whether to center crop before resize.
+	DoCenterCrop bool
+	// CropSize is the size for center cropping (if DoCenterCrop is true).
+	CropSize int
+}
+
+// DefaultImageConfig returns sensible defaults for image preprocessing.
+// These values are typical for ViT-based models.
+func DefaultImageConfig() *ImageConfig {
+	return &ImageConfig{
+		Width:         384,
+		Height:        384,
+		Channels:      3,
+		Mean:          [3]float32{0.5, 0.5, 0.5},
+		Std:           [3]float32{0.5, 0.5, 0.5},
+		RescaleFactor: 1.0 / 255.0,
+		DoCenterCrop:  false,
+	}
+}
+
+// GenerationConfig holds parameters for text generation.
+type GenerationConfig struct {
+	// MaxNewTokens is the maximum number of tokens to generate.
+	MaxNewTokens int
+	// MinLength is the minimum generation length.
+	MinLength int
+	// DoSample enables sampling (vs greedy decoding).
+	DoSample bool
+	// Temperature for sampling (higher = more random).
+	Temperature float32
+	// TopK limits sampling to top K tokens.
+	TopK int
+	// TopP (nucleus sampling) limits to tokens with cumulative probability <= TopP.
+	TopP float32
+	// RepetitionPenalty penalizes repeated tokens.
+	RepetitionPenalty float32
+	// NumBeams for beam search (1 = greedy/sampling).
+	NumBeams int
+	// EarlyStopping for beam search.
+	EarlyStopping bool
+}
+
+// DefaultGenerationConfig returns sensible defaults for generation.
+func DefaultGenerationConfig() *GenerationConfig {
+	return &GenerationConfig{
+		MaxNewTokens:      256,
+		MinLength:         1,
+		DoSample:          false, // greedy by default
+		Temperature:       1.0,
+		TopK:              50,
+		TopP:              1.0,
+		RepetitionPenalty: 1.0,
+		NumBeams:          1,
+		EarlyStopping:     false,
+	}
+}

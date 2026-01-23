@@ -154,8 +154,8 @@ func New(tokenizer tokenizers.Tokenizer, model backends.Model, opts ...PipelineO
 	}
 }
 
-// TokenOffset represents the character span of a token in the original text.
-type TokenOffset = api.TokenOffset
+// TokenSpan represents the byte span of a token in the original text.
+type TokenSpan = api.TokenSpan
 
 // EncodedBatch holds the result of encoding a batch of texts.
 type EncodedBatch struct {
@@ -171,9 +171,9 @@ type EncodedBatch struct {
 	// OriginalLengths contains the original (pre-padding) length of each sequence.
 	OriginalLengths []int
 
-	// Offsets contains character offsets for each token [batch, seq] (optional).
-	// Only populated when using EncodeWithOffsets.
-	Offsets [][]TokenOffset
+	// Spans contains byte spans for each token [batch, seq] (optional).
+	// Only populated when using EncodeWithSpans.
+	Spans [][]TokenSpan
 }
 
 // Encode tokenizes and encodes a batch of texts.
@@ -252,34 +252,34 @@ func (p *Pipeline) Encode(texts []string) (*EncodedBatch, error) {
 	return batch, nil
 }
 
-// EncodeWithOffsets tokenizes texts and returns token IDs with character offsets.
+// EncodeWithSpans tokenizes texts and returns token IDs with byte spans.
 // This is useful for token classification tasks where you need to map predictions
 // back to character positions in the original text.
-func (p *Pipeline) EncodeWithOffsets(texts []string) (*EncodedBatch, error) {
+func (p *Pipeline) EncodeWithSpans(texts []string) (*EncodedBatch, error) {
 	if len(texts) == 0 {
 		return &EncodedBatch{}, nil
 	}
 
-	// Check if tokenizer supports offsets
-	tokWithOffsets, hasOffsets := p.Tokenizer.(api.TokenizerWithOffsets)
+	// Check if tokenizer supports spans
+	tokWithSpans, hasSpans := p.Tokenizer.(api.TokenizerWithSpans)
 
 	// Tokenize all texts
 	type tokenResult struct {
-		ids     []int
-		offsets []TokenOffset
+		ids   []int
+		spans []TokenSpan
 	}
 	var allResults []tokenResult
 	maxLen := 0
 
 	for _, text := range texts {
 		var result tokenResult
-		if hasOffsets {
-			encoded := tokWithOffsets.EncodeWithOffsets(text)
+		if hasSpans {
+			encoded := tokWithSpans.EncodeWithSpans(text)
 			result.ids = encoded.IDs
-			result.offsets = encoded.Offsets
+			result.spans = encoded.Spans
 		} else {
 			result.ids = p.Tokenizer.Encode(text)
-			// No offsets available - leave nil
+			// No spans available - leave nil
 		}
 		allResults = append(allResults, result)
 		if len(result.ids) > maxLen {
@@ -313,21 +313,21 @@ func (p *Pipeline) EncodeWithOffsets(texts []string) (*EncodedBatch, error) {
 		AttentionMask:   make([][]int32, len(texts)),
 		OriginalLengths: make([]int, len(texts)),
 	}
-	if hasOffsets {
-		batch.Offsets = make([][]TokenOffset, len(texts))
+	if hasSpans {
+		batch.Spans = make([][]TokenSpan, len(texts))
 	}
 
 	for i, result := range allResults {
 		batch.OriginalLengths[i] = len(result.ids)
 
 		tokens := result.ids
-		offsets := result.offsets
+		spans := result.spans
 
 		// Truncate if needed
 		if len(tokens) > targetLen {
 			tokens = tokens[:targetLen]
-			if offsets != nil {
-				offsets = offsets[:targetLen]
+			if spans != nil {
+				spans = spans[:targetLen]
 			}
 		}
 
@@ -349,12 +349,12 @@ func (p *Pipeline) EncodeWithOffsets(texts []string) (*EncodedBatch, error) {
 		batch.InputIDs[i] = inputIDs
 		batch.AttentionMask[i] = attentionMask
 
-		// Handle offsets
-		if hasOffsets && offsets != nil {
-			paddedOffsets := make([]TokenOffset, targetLen)
-			copy(paddedOffsets, offsets)
-			// Padding tokens get zero offsets (already zeroed by make)
-			batch.Offsets[i] = paddedOffsets
+		// Handle spans
+		if hasSpans && spans != nil {
+			paddedSpans := make([]TokenSpan, targetLen)
+			copy(paddedSpans, spans)
+			// Padding tokens get zero spans (already zeroed by make)
+			batch.Spans[i] = paddedSpans
 		}
 	}
 

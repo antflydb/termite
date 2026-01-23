@@ -1,6 +1,6 @@
-// Package ocr provides utilities for working with OCR and document understanding models.
-// It supports multiple model architectures including Donut and Florence-2.
-package ocr
+// Package reading provides OCR and document understanding capabilities
+// using Vision2Seq models like TrOCR, Donut, and Florence-2.
+package reading
 
 import (
 	"fmt"
@@ -44,7 +44,7 @@ func DonutCleanOutput(text string) string {
 // Example:
 //
 //	input := "<s_menu><s_nm>Coffee</s_nm><s_price>$3.50</s_price></s_menu>"
-//	fields := ocr.DonutParseFields(input)
+//	fields := DonutParseFields(input)
 //	// fields = {"menu.nm": "Coffee", "menu.price": "$3.50"}
 func DonutParseFields(text string) map[string]string {
 	return donutParseFieldsWithPrefix(text, "")

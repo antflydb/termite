@@ -12,99 +12,74 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package seq2seq provides Seq2Seq text generation functionality using ONNX models.
 package seq2seq
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 )
 
-// GeneratedOutput represents the output from a seq2seq model.
-type GeneratedOutput struct {
-	// Texts contains the generated text sequences.
-	// For each input, multiple sequences may be returned (depending on NumReturnSequences).
-	Texts [][]string
-	// Tokens contains the token IDs for each generated sequence.
-	Tokens [][][]uint32
-}
-
-// Model is the interface for Seq2Seq text generation models.
-// This includes encoder-decoder models like T5, FLAN-T5, BART, etc.
+// Model is the interface for seq2seq text generation models.
 type Model interface {
-	// Generate runs the seq2seq model on the given inputs.
-	// Returns generated text sequences for each input.
 	Generate(ctx context.Context, inputs []string) (*GeneratedOutput, error)
-
-	// Close releases any resources held by the model.
+	Config() Config
 	Close() error
 }
 
-// QuestionGenerator extends Model with question generation capabilities.
-// This is specifically for LMQG-style models trained on SQuAD/QA datasets.
+// QuestionGenerator is the interface for models that generate questions from context.
 type QuestionGenerator interface {
-	Model
-
-	// GenerateQuestions generates questions given answer-context pairs.
-	// The model will generate questions where the answer is the correct response.
 	GenerateQuestions(ctx context.Context, pairs []AnswerContextPair) (*GeneratedOutput, error)
 }
 
-// Paraphraser extends Model with paraphrasing capabilities.
-// This is for models like PEGASUS fine-tuned for paraphrasing tasks.
+// Paraphraser is the interface for models that generate paraphrases.
 type Paraphraser interface {
-	Model
-
-	// Paraphrase generates paraphrases of the input texts.
-	// Returns multiple paraphrase variants for each input based on model configuration.
 	Paraphrase(ctx context.Context, texts []string) (*GeneratedOutput, error)
 }
 
-// AnswerContextPair holds an answer and its context for question generation.
+// Config holds seq2seq model configuration.
+type Config struct {
+	ModelID            string  `json:"model_id,omitempty"`
+	Task               string  `json:"task,omitempty"`
+	MaxLength          int     `json:"max_length,omitempty"`
+	NumBeams           int     `json:"num_beams,omitempty"`
+	NumReturnSequences int     `json:"num_return_sequences,omitempty"`
+	DoSample           bool    `json:"do_sample,omitempty"`
+	TopP               float32 `json:"top_p,omitempty"`
+	Temperature        float32 `json:"temperature,omitempty"`
+	InputFormat        string  `json:"input_format,omitempty"`
+}
+
+// GeneratedOutput holds the output from seq2seq generation.
+type GeneratedOutput struct {
+	// Texts[i][j] is the j-th generated sequence for the i-th input
+	Texts [][]string
+	// Tokens[i][j] is the token IDs for Texts[i][j]
+	Tokens [][][]uint32
+}
+
+// AnswerContextPair represents an answer-context pair for question generation.
 type AnswerContextPair struct {
-	// Answer is the text that should be the answer to the generated question.
-	Answer string
-	// Context is the passage containing the answer.
+	Answer  string
 	Context string
 }
 
-// Config holds configuration for seq2seq models.
-type Config struct {
-	// ModelID is the original HuggingFace model ID.
-	ModelID string `json:"model_id"`
-	// Task indicates the model's intended use (e.g., "question_generation", "query_generation").
-	Task string `json:"task"`
-	// MaxLength is the maximum number of tokens to generate.
-	MaxLength int `json:"max_length"`
-	// NumBeams is the number of beams for beam search (1 = greedy).
-	NumBeams int `json:"num_beams"`
-	// NumReturnSequences is how many sequences to return per input.
-	NumReturnSequences int `json:"num_return_sequences"`
-	// InputFormat describes the expected input format (e.g., "generate question: <hl> {answer} <hl> {context}").
-	InputFormat string `json:"input_format"`
-	// DoSample enables sampling instead of greedy/beam search.
-	DoSample bool `json:"do_sample"`
-	// TopP is the nucleus sampling probability (used when DoSample=true).
-	TopP float32 `json:"top_p"`
-	// Temperature controls randomness (used when DoSample=true).
-	Temperature float32 `json:"temperature"`
-}
-
-// FormatLMQGInput formats input for LMQG question generation models.
-// These models expect input in the format: "generate question: <hl> {answer} <hl> {context}"
-// where the answer is highlighted within the context.
-//
-// Example:
-//
-//	input := FormatLMQGInput("Beyonce", "Beyonce starred as Etta James in Cadillac Records.")
-//	// Returns: "generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."
+// FormatLMQGInput formats an answer-context pair for LMQG-style models.
 func FormatLMQGInput(answer, context string) string {
-	return "generate question: <hl> " + answer + " <hl> " + context
+	return fmt.Sprintf("generate question: <hl> %s <hl> %s", answer, context)
 }
 
-// FormatLMQGInputBatch formats multiple answer-context pairs for LMQG models.
+// FormatLMQGInputBatch formats multiple answer-context pairs for LMQG-style models.
 func FormatLMQGInputBatch(pairs []AnswerContextPair) []string {
 	inputs := make([]string, len(pairs))
 	for i, pair := range pairs {
@@ -113,42 +88,346 @@ func FormatLMQGInputBatch(pairs []AnswerContextPair) []string {
 	return inputs
 }
 
-// IsParaphraseModel checks if the model is configured for paraphrasing.
-// Returns true if the model's seq2seq_config.json indicates a paraphrase task
-// or if the model name contains paraphrase-related keywords.
+// IsParaphraseModel checks if the model path indicates a paraphrase model.
 func IsParaphraseModel(modelPath string) bool {
-	if !IsSeq2SeqModel(modelPath) {
-		return false
-	}
-
 	// Check config for task type
-	configPath := modelPath + "/seq2seq_config.json"
-	data, err := readFile(configPath)
+	configPath := filepath.Join(modelPath, "seq2seq_config.json")
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		// Check model name for hints
-		modelName := baseName(modelPath)
-		return containsAny(modelName, "paraphrase", "pegasus_paraphrase")
+		modelName := strings.ToLower(filepath.Base(modelPath))
+		return strings.Contains(modelName, "paraphrase") || strings.Contains(modelName, "pegasus")
 	}
 
 	var config Config
-	if err := parseJSON(data, &config); err != nil {
+	if err := json.Unmarshal(data, &config); err != nil {
 		return false
 	}
 
 	return config.Task == "paraphrase"
 }
 
-// readFile reads a file and returns its contents.
-func readFile(path string) ([]byte, error) {
-	return os.ReadFile(path)
+// containsAny checks if s contains any of the substrings (case-insensitive).
+func containsAny(s string, substrings ...string) bool {
+	sLower := strings.ToLower(filepath.Base(s))
+	for _, sub := range substrings {
+		if len(sub) > 0 && strings.Contains(sLower, sub) {
+			return true
+		}
+	}
+	return false
 }
 
-// baseName returns the base name of a path.
-func baseName(path string) string {
-	return filepath.Base(path)
+// Ensure PooledSeq2Seq implements the Model, QuestionGenerator, and Paraphraser interfaces
+var _ Model = (*PooledSeq2Seq)(nil)
+var _ QuestionGenerator = (*PooledSeq2Seq)(nil)
+var _ Paraphraser = (*PooledSeq2Seq)(nil)
+
+// PooledSeq2SeqConfig holds configuration for creating a PooledSeq2Seq.
+type PooledSeq2SeqConfig struct {
+	// ModelPath is the path to the model directory
+	ModelPath string
+
+	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count)
+	PoolSize int
+
+	// ModelBackends specifies which backends this model supports (nil = all backends)
+	ModelBackends []string
+
+	// Logger for logging (nil = no logging)
+	Logger *zap.Logger
 }
 
-// parseJSON parses JSON data into a Config struct.
-func parseJSON(data []byte, config *Config) error {
-	return json.Unmarshal(data, config)
+// PooledSeq2Seq manages multiple Seq2SeqPipeline instances for concurrent seq2seq generation.
+type PooledSeq2Seq struct {
+	pipelines    []*pipelines.Seq2SeqPipeline
+	sem          *semaphore.Weighted
+	nextPipeline atomic.Uint64
+	config       Config
+	logger       *zap.Logger
+	poolSize     int
+	backendType  backends.BackendType
+}
+
+// NewPooledSeq2Seq creates a new pooled seq2seq model.
+func NewPooledSeq2Seq(
+	cfg PooledSeq2SeqConfig,
+	sessionManager *backends.SessionManager,
+) (*PooledSeq2Seq, backends.BackendType, error) {
+	if cfg.ModelPath == "" {
+		return nil, "", fmt.Errorf("model path is required")
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	// Auto-detect pool size from CPU count if not specified
+	poolSize := cfg.PoolSize
+	if poolSize <= 0 {
+		poolSize = runtime.NumCPU()
+		if poolSize > 2 {
+			poolSize = 2 // Cap at 2 for seq2seq models (very memory intensive)
+		}
+	}
+
+	// Load seq2seq configuration
+	seq2seqConfig, err := LoadSeq2SeqConfig(cfg.ModelPath)
+	if err != nil {
+		logger.Warn("Failed to load seq2seq config, using defaults",
+			zap.String("modelPath", cfg.ModelPath),
+			zap.Error(err))
+		seq2seqConfig = &Config{
+			MaxLength:          64,
+			NumBeams:           1,
+			NumReturnSequences: 1,
+			DoSample:           false,
+			TopP:               0.9,
+			Temperature:        1.0,
+		}
+	}
+
+	logger.Info("Initializing pooled seq2seq model",
+		zap.String("modelPath", cfg.ModelPath),
+		zap.Int("poolSize", poolSize),
+		zap.String("task", seq2seqConfig.Task),
+		zap.Int("maxLength", seq2seqConfig.MaxLength))
+
+	// Create generation config
+	genConfig := &backends.GenerationConfig{
+		MaxNewTokens:      seq2seqConfig.MaxLength,
+		MinLength:         1,
+		Temperature:       seq2seqConfig.Temperature,
+		TopP:              seq2seqConfig.TopP,
+		TopK:              50,
+		DoSample:          seq2seqConfig.DoSample,
+		RepetitionPenalty: 1.0,
+	}
+
+	// Create N pipelines using LoadSeq2SeqPipeline
+	pipelinesList := make([]*pipelines.Seq2SeqPipeline, poolSize)
+	var backendUsed backends.BackendType
+
+	for i := 0; i < poolSize; i++ {
+		// Load pipeline (includes model, tokenizer, and generator)
+		pipeline, bt, err := pipelines.LoadSeq2SeqPipeline(
+			cfg.ModelPath,
+			sessionManager,
+			cfg.ModelBackends,
+			pipelines.WithSeq2SeqGenerationConfig(genConfig),
+		)
+		if err != nil {
+			// Clean up already-created pipelines
+			for j := 0; j < i; j++ {
+				if pipelinesList[j] != nil {
+					_ = pipelinesList[j].Close()
+				}
+			}
+			logger.Error("Failed to create pipeline",
+				zap.Int("index", i),
+				zap.Error(err))
+			return nil, "", fmt.Errorf("creating pipeline %d: %w", i, err)
+		}
+
+		pipelinesList[i] = pipeline
+		backendUsed = bt
+		logger.Debug("Created seq2seq pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+	}
+
+	logger.Info("Successfully created pooled seq2seq pipelines",
+		zap.Int("count", poolSize),
+		zap.String("backend", string(backendUsed)))
+
+	return &PooledSeq2Seq{
+		pipelines:   pipelinesList,
+		sem:         semaphore.NewWeighted(int64(poolSize)),
+		config:      *seq2seqConfig,
+		logger:      logger,
+		poolSize:    poolSize,
+		backendType: backendUsed,
+	}, backendUsed, nil
+}
+
+// BackendType returns the backend type used by this model
+func (p *PooledSeq2Seq) BackendType() backends.BackendType {
+	return p.backendType
+}
+
+// Generate runs the seq2seq model on the given inputs.
+// Thread-safe: uses semaphore to limit concurrent pipeline access.
+func (p *PooledSeq2Seq) Generate(ctx context.Context, inputs []string) (*GeneratedOutput, error) {
+	if len(inputs) == 0 {
+		return &GeneratedOutput{
+			Texts:  [][]string{},
+			Tokens: [][][]uint32{},
+		}, nil
+	}
+
+	// Acquire semaphore slot (blocks if all pipelines busy)
+	if err := p.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	}
+	defer p.sem.Release(1)
+
+	// Round-robin pipeline selection
+	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+	pipeline := p.pipelines[idx]
+
+	p.logger.Debug("Using pipeline for seq2seq generation",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_inputs", len(inputs)))
+
+	// Generate for each input using the pipeline
+	results := &GeneratedOutput{
+		Texts:  make([][]string, len(inputs)),
+		Tokens: make([][][]uint32, len(inputs)),
+	}
+
+	for i, input := range inputs {
+		result, err := pipeline.Generate(ctx, input)
+		if err != nil {
+			p.logger.Error("Generation failed for input",
+				zap.Int("index", i),
+				zap.Error(err))
+			return nil, fmt.Errorf("generating for input %d: %w", i, err)
+		}
+
+		// Convert result to output format
+		tokens := make([]uint32, len(result.TokenIDs))
+		for j, id := range result.TokenIDs {
+			tokens[j] = uint32(id)
+		}
+		results.Texts[i] = []string{result.Text}
+		results.Tokens[i] = [][]uint32{tokens}
+	}
+
+	p.logger.Debug("Seq2seq generation completed",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_inputs", len(inputs)))
+
+	return results, nil
+}
+
+// GenerateQuestions generates questions given answer-context pairs.
+// This is a convenience method for LMQG-style backends.
+func (p *PooledSeq2Seq) GenerateQuestions(ctx context.Context, pairs []AnswerContextPair) (*GeneratedOutput, error) {
+	if len(pairs) == 0 {
+		return &GeneratedOutput{
+			Texts:  [][]string{},
+			Tokens: [][][]uint32{},
+		}, nil
+	}
+
+	// Format inputs for LMQG models
+	inputs := FormatLMQGInputBatch(pairs)
+
+	return p.Generate(ctx, inputs)
+}
+
+// Paraphrase generates paraphrases of the input texts.
+// This is a convenience method for paraphrase models like PEGASUS.
+func (p *PooledSeq2Seq) Paraphrase(ctx context.Context, texts []string) (*GeneratedOutput, error) {
+	if len(texts) == 0 {
+		return &GeneratedOutput{
+			Texts:  [][]string{},
+			Tokens: [][][]uint32{},
+		}, nil
+	}
+
+	// Paraphrase models take raw text as input
+	return p.Generate(ctx, texts)
+}
+
+// Config returns the model configuration.
+func (p *PooledSeq2Seq) Config() Config {
+	return p.config
+}
+
+// Close releases resources.
+func (p *PooledSeq2Seq) Close() error {
+	var lastErr error
+	for i, pipeline := range p.pipelines {
+		if pipeline != nil {
+			if err := pipeline.Close(); err != nil {
+				p.logger.Warn("Failed to close pipeline",
+					zap.Int("index", i),
+					zap.Error(err))
+				lastErr = err
+			}
+		}
+	}
+	p.pipelines = nil
+	return lastErr
+}
+
+// LoadSeq2SeqConfig loads the seq2seq configuration from the model directory.
+func LoadSeq2SeqConfig(modelPath string) (*Config, error) {
+	configPath := filepath.Join(modelPath, "seq2seq_config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading seq2seq_config.json: %w", err)
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parsing seq2seq_config.json: %w", err)
+	}
+
+	// Set defaults for empty values
+	if config.MaxLength == 0 {
+		config.MaxLength = 64
+	}
+	if config.NumBeams == 0 {
+		config.NumBeams = 1
+	}
+	if config.NumReturnSequences == 0 {
+		config.NumReturnSequences = 1
+	}
+	if config.Temperature == 0 {
+		config.Temperature = 1.0
+	}
+	if config.TopP == 0 {
+		config.TopP = 0.9
+	}
+
+	return &config, nil
+}
+
+// IsSeq2SeqModel checks if the model path contains a seq2seq model
+// by looking for required ONNX files (encoder.onnx, decoder-init.onnx, decoder.onnx).
+func IsSeq2SeqModel(modelPath string) bool {
+	requiredFiles := []string{"encoder.onnx", "decoder-init.onnx", "decoder.onnx"}
+	for _, file := range requiredFiles {
+		filePath := filepath.Join(modelPath, file)
+		if _, err := os.Stat(filePath); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// IsQuestionGenerationModel checks if the model is configured for question generation.
+func IsQuestionGenerationModel(modelPath string) bool {
+	if !IsSeq2SeqModel(modelPath) {
+		return false
+	}
+
+	// Check config for task type
+	configPath := filepath.Join(modelPath, "seq2seq_config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		// Check model name for hints
+		modelName := strings.ToLower(filepath.Base(modelPath))
+		return strings.Contains(modelName, "qg") ||
+			strings.Contains(modelName, "question") ||
+			strings.Contains(modelName, "squad")
+	}
+
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false
+	}
+
+	return config.Task == "question_generation"
 }

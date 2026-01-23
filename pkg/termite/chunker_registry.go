@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
-	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
@@ -41,7 +41,7 @@ type ChunkerModelInfo struct {
 // ChunkerRegistry manages chunker models with lazy loading and TTL-based unloading
 type ChunkerRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -68,7 +68,7 @@ type ChunkerConfig struct {
 // NewChunkerRegistry creates a new lazy-loading chunker registry
 func NewChunkerRegistry(
 	config ChunkerConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*ChunkerRegistry, error) {
 	if logger == nil {
@@ -249,22 +249,23 @@ func (r *ChunkerRegistry) Get(modelName string) (chunking.Chunker, error) {
 func (r *ChunkerRegistry) loadModel(info *ChunkerModelInfo) (chunking.Chunker, error) {
 	r.logger.Info("Loading chunker model on demand",
 		zap.String("model", info.Name),
-		zap.String("path", info.Path),
-		zap.String("onnxFile", info.OnnxFilename))
+		zap.String("path", info.Path))
 
-	// Create chunker config for this model with sensible defaults
-	config := termchunking.DefaultHugotChunkerConfig()
-
-	// Pass model path, ONNX filename, and session manager to pooled chunker
-	chunker, backendUsed, err := termchunking.NewPooledHugotChunkerWithSessionManager(
-		config, info.Path, info.OnnxFilename, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based chunker
+	cfg := termchunking.PooledChunkerConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ChunkerConfig: termchunking.DefaultChunkerConfig(),
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.logger.Named(info.Name),
+	}
+	chunker, backendUsed, err := termchunking.NewPooledChunker(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading chunker model %s: %w", info.Name, err)
 	}
 
 	r.logger.Info("Successfully loaded chunker model",
 		zap.String("name", info.Name),
-		zap.String("onnxFile", info.OnnxFilename),
 		zap.String("backend", string(backendUsed)),
 		zap.Int("poolSize", info.PoolSize))
 

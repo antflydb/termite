@@ -24,11 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/termite/pkg/termite/lib/gliner"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
-	"github.com/antflydb/termite/pkg/termite/lib/rebel"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
@@ -55,16 +53,16 @@ type NERModelInfo struct {
 
 // loadedNERModel wraps both Model and optional Recognizer interfaces
 type loadedNERModel struct {
-	model       ner.Model
-	recognizer  ner.Recognizer // May be nil for standard NER models
-	modelType   NERModelType
+	model        ner.Model
+	recognizer   ner.Recognizer // May be nil for standard NER models
+	modelType    NERModelType
 	capabilities []string
 }
 
 // NERRegistry manages NER models with lazy loading and TTL-based unloading
 type NERRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -91,7 +89,7 @@ type NERConfig struct {
 // NewNERRegistry creates a new lazy-loading NER registry
 func NewNERRegistry(
 	config NERConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*NERRegistry, error) {
 	if logger == nil {
@@ -203,8 +201,8 @@ func (r *NERRegistry) discoverModels() error {
 		registryFullName := dm.FullName()
 
 		// Check model type: GLiNER, REBEL, or traditional NER
-		isGLiNER := gliner.IsGLiNERModel(modelPath)
-		isREBEL := rebel.IsREBELModel(modelPath)
+		isGLiNER := ner.IsGLiNERModel(modelPath)
+		isREBEL := ner.IsREBELModel(modelPath)
 
 		if isREBEL {
 			r.logger.Info("Discovered REBEL model (not loaded)",
@@ -374,14 +372,20 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 
 	switch info.ModelType {
 	case NERModelTypeREBEL:
-		model, backendUsed, err := rebel.NewHugotREBELWithSessionManager(
-			info.Path, r.sessionManager, r.logger.Named(info.Name))
+		cfg := ner.PooledREBELConfig{
+			ModelPath:     info.Path,
+			PoolSize:      info.PoolSize,
+			ModelBackends: nil, // Use all available backends
+			Logger:        r.logger.Named(info.Name),
+		}
+		model, backendUsed, err := ner.NewPooledREBEL(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading REBEL model %s: %w", info.Name, err)
 		}
 		r.logger.Info("Successfully loaded REBEL model",
 			zap.String("name", info.Name),
 			zap.String("backend", string(backendUsed)),
+			zap.Int("poolSize", info.PoolSize),
 			zap.Strings("capabilities", info.Capabilities))
 		loaded = &loadedNERModel{
 			model:        model,
@@ -391,8 +395,14 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		}
 
 	case NERModelTypeGLiNER:
-		model, backendUsed, err := gliner.NewHugotGLiNERWithSessionManager(
-			info.Path, info.Quantized, r.sessionManager, nil, r.logger.Named(info.Name))
+		cfg := ner.PooledGLiNERConfig{
+			ModelPath:     info.Path,
+			PoolSize:      info.PoolSize,
+			Quantized:     info.Quantized,
+			ModelBackends: nil, // Use all available backends
+			Logger:        r.logger.Named(info.Name),
+		}
+		model, backendUsed, err := ner.NewPooledGLiNER(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading GLiNER model %s: %w", info.Name, err)
 		}
@@ -408,6 +418,7 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 			zap.String("name", info.Name),
 			zap.Bool("quantized", info.Quantized),
 			zap.String("backend", string(backendUsed)),
+			zap.Int("poolSize", info.PoolSize),
 			zap.Strings("default_labels", model.Labels()),
 			zap.Strings("capabilities", caps))
 		loaded = &loadedNERModel{
@@ -418,14 +429,19 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		}
 
 	default: // NERModelTypeStandard
-		model, backendUsed, err := ner.NewPooledHugotNERWithSessionManager(
-			info.Path, info.OnnxFilename, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+		// Load using pipeline-based NER
+		cfg := ner.PooledNERConfig{
+			ModelPath:     info.Path,
+			PoolSize:      info.PoolSize,
+			ModelBackends: nil, // Use all available backends
+			Logger:        r.logger.Named(info.Name),
+		}
+		model, backendUsed, err := ner.NewPooledNER(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading NER model %s: %w", info.Name, err)
 		}
 		r.logger.Info("Successfully loaded NER model",
 			zap.String("name", info.Name),
-			zap.String("onnxFile", info.OnnxFilename),
 			zap.String("backend", string(backendUsed)),
 			zap.Int("poolSize", info.PoolSize),
 			zap.Strings("capabilities", info.Capabilities))

@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	"github.com/jellydator/ttlcache/v3"
@@ -37,7 +37,7 @@ type Seq2SeqModelInfo struct {
 // Seq2SeqRegistry manages Seq2Seq models with lazy loading and TTL-based unloading
 type Seq2SeqRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -62,19 +62,12 @@ type Seq2SeqConfig struct {
 // NewSeq2SeqRegistry creates a new lazy-loading Seq2Seq registry
 func NewSeq2SeqRegistry(
 	config Seq2SeqConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*Seq2SeqRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-
-	// Disable CoreML for seq2seq models because:
-	// 1. CoreML cannot handle dynamic batch sizes > 1
-	// 2. Large seq2seq models (like PEGASUS) exceed CoreML's model size limits
-	// Pure ONNX Runtime CPU handles all batch sizes and model sizes correctly.
-	// This must be set before any sessions are created.
-	hugot.SetGPUMode(hugot.GPUModeOff)
 
 	keepAlive := config.KeepAlive
 	if keepAlive == 0 {
@@ -237,12 +230,16 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Load the Seq2Seq model
+	// Load the Seq2Seq model using PooledSeq2Seq
 	// Restrict to ONNX backend only - CoreML cannot handle dynamic batch sizes > 1
 	// and large seq2seq models (like PEGASUS) exceed CoreML's model size limits.
-	onnxOnly := []string{"onnx"}
-	model, backendUsed, err := seq2seq.NewHugotSeq2SeqWithSessionManager(
-		info.Path, r.sessionManager, onnxOnly, r.logger.Named(info.Name))
+	cfg := seq2seq.PooledSeq2SeqConfig{
+		ModelPath:     info.Path,
+		PoolSize:      1, // Registry manages pooling at a higher level
+		ModelBackends: []string{"onnx"},
+		Logger:        r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := seq2seq.NewPooledSeq2Seq(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading Seq2Seq model %s: %w", info.Name, err)
 	}

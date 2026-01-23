@@ -854,25 +854,59 @@ func (p *Vision2SeqPipeline) encodePixels(ctx context.Context, pixels []float32)
 // Loader
 // =============================================================================
 
-// LoadVision2SeqPipeline loads a complete Vision2Seq pipeline from a model path.
-// It automatically discovers encoder/decoder ONNX files, loads the tokenizer,
-// and creates the pipeline.
-func LoadVision2SeqPipeline(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (*Vision2SeqPipeline, error) {
-	// Load the model
-	model, err := LoadVision2SeqModel(modelPath, factory, opts...)
+// Vision2SeqPipelineOption is a functional option for configuring Vision2SeqPipeline loading.
+type Vision2SeqPipelineOption func(*Vision2SeqConfig)
+
+// WithVision2SeqImageConfig sets the image config for the pipeline.
+func WithVision2SeqImageConfig(config *backends.ImageConfig) Vision2SeqPipelineOption {
+	return func(c *Vision2SeqConfig) {
+		c.ImageConfig = config
+	}
+}
+
+// WithVision2SeqGenerationConfig sets the generation config for the pipeline.
+func WithVision2SeqGenerationConfig(config *backends.GenerationConfig) Vision2SeqPipelineOption {
+	return func(c *Vision2SeqConfig) {
+		c.GenerationConfig = config
+	}
+}
+
+// LoadVision2SeqPipeline loads a complete Vision2Seq pipeline from a model directory.
+// It automatically loads the model, tokenizer, and creates the pipeline.
+// This signature matches the encoder-based pipeline loaders for consistency.
+func LoadVision2SeqPipeline(
+	modelPath string,
+	sessionManager *backends.SessionManager,
+	modelBackends []string,
+	opts ...Vision2SeqPipelineOption,
+) (*Vision2SeqPipeline, backends.BackendType, error) {
+	// Get session factory from manager
+	factory, backendType, err := sessionManager.GetSessionFactoryForModel(modelBackends)
 	if err != nil {
-		return nil, fmt.Errorf("loading vision2seq model: %w", err)
+		return nil, "", fmt.Errorf("getting session factory: %w", err)
 	}
 
-	// Load tokenizer
+	// Load the model
+	model, err := LoadVision2SeqModel(modelPath, factory)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading model: %w", err)
+	}
+
+	// Load the tokenizer
 	tokenizer, err := LoadTokenizer(modelPath)
 	if err != nil {
 		model.Close()
-		return nil, fmt.Errorf("loading tokenizer: %w", err)
+		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 
-	// Create pipeline with default config
-	pipeline := NewVision2SeqPipeline(model, tokenizer, nil)
+	// Apply options
+	config := &Vision2SeqConfig{}
+	for _, opt := range opts {
+		opt(config)
+	}
 
-	return pipeline, nil
+	// Create the pipeline
+	pipeline := NewVision2SeqPipeline(model, tokenizer, config)
+
+	return pipeline, backendType, nil
 }

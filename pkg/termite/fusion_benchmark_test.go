@@ -15,9 +15,12 @@
 package termite
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -42,28 +45,42 @@ func BenchmarkStaticQuantizedReranker(b *testing.B) {
 
 	b.Run("NonQuantized", func(b *testing.B) {
 		modelPath := filepath.Join("..", "..", "models", "rerankers", "mxbai-rerank-base-v1")
-		model, err := newNonQuantizedHugotModel(modelPath, logger)
-		require.NoError(b, err)
-		require.NotNil(b, model)
+		sessionManager := backends.NewSessionManager()
+		cfg := termreranking.PooledRerankerConfig{
+			ModelPath: modelPath,
+			PoolSize:  1,
+			Logger:    logger,
+		}
+		model, _, err := termreranking.NewPooledReranker(cfg, sessionManager)
+		if err != nil {
+			b.Skipf("Model not available: %v", err)
+		}
 		defer func() { _ = model.Close() }()
 
 		b.ResetTimer()
 		for b.Loop() {
-			_, err := model.Rerank(b.Context(), query, documents)
+			_, err := model.Rerank(context.Background(), query, documents)
 			require.NoError(b, err)
 		}
 	})
 
 	b.Run("StaticQuantized_WithFusion", func(b *testing.B) {
 		modelPath := filepath.Join("..", "..", "models", "rerankers", "reranker_onnx_static")
-		model, err := newQuantizedHugotModel(modelPath, logger)
-		require.NoError(b, err)
-		require.NotNil(b, model)
+		sessionManager := backends.NewSessionManager()
+		cfg := termreranking.PooledRerankerConfig{
+			ModelPath: modelPath,
+			PoolSize:  1,
+			Logger:    logger,
+		}
+		model, _, err := termreranking.NewPooledReranker(cfg, sessionManager)
+		if err != nil {
+			b.Skipf("Model not available: %v", err)
+		}
 		defer func() { _ = model.Close() }()
 
 		b.ResetTimer()
 		for b.Loop() {
-			_, err := model.Rerank(b.Context(), query, documents)
+			_, err := model.Rerank(context.Background(), query, documents)
 			require.NoError(b, err)
 		}
 	})

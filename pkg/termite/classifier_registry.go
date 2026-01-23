@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -46,7 +46,7 @@ type loadedClassifier struct {
 // ClassifierRegistry manages zero-shot classification models with lazy loading and TTL-based unloading
 type ClassifierRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -73,7 +73,7 @@ type ClassifierConfig struct {
 // NewClassifierRegistry creates a new lazy-loading classifier registry
 func NewClassifierRegistry(
 	config ClassifierConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*ClassifierRegistry, error) {
 	if logger == nil {
@@ -270,8 +270,14 @@ func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassi
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	model, backendUsed, err := classification.NewPooledHugotClassifierWithSessionManager(
-		info.Path, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based classifier
+	cfg := classification.PooledClassifierConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := classification.NewPooledClassifier(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading classifier model %s: %w", info.Name, err)
 	}

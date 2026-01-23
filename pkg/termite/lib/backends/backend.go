@@ -12,47 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package hugot provides a unified interface for creating Hugot sessions
-// with multi-backend support.
-//
-// Backends are selected based on build tags and availability:
-//   - Pure Go (goMLX): Always available, no CGO required
-//   - ONNX Runtime: Fastest inference, requires -tags="onnx,ORT"
-//   - XLA: TPU/CUDA support via PJRT, requires -tags="xla,XLA"
-//
-// Multiple backends can coexist in a single binary when built with combined tags:
-//
-//	go build -tags="onnx,ORT,xla,XLA" ./cmd/termite
-//
-// Backend selection at runtime follows a configurable priority order (default: ONNX > XLA > Go).
-// Models can restrict which backends they support via their manifest.
-package hugot
+package backends
 
 import (
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/knights-analytics/hugot"
-	"github.com/knights-analytics/hugot/options"
 )
 
-// BackendType identifies the inference backend
-type BackendType string
-
-const (
-	// BackendGo is the pure Go backend (goMLX) - always available, no CGO required
-	BackendGo BackendType = "go"
-
-	// BackendONNX is the ONNX Runtime backend - fast CPU/GPU inference
-	BackendONNX BackendType = "onnx"
-
-	// BackendXLA is the GoMLX XLA backend - supports TPU/CUDA/CPU via PJRT
-	BackendXLA BackendType = "xla"
-)
-
-// Backend represents an inference backend that can create Hugot sessions.
+// Backend represents an inference backend that can load models.
 // Backends self-register via init() functions in their respective files.
 type Backend interface {
 	// Type returns the backend type identifier
@@ -67,11 +36,11 @@ type Backend interface {
 
 	// Priority returns the default priority (lower = higher priority).
 	// Used when no explicit priority is configured.
-	// Recommended values: 10 for ONNX, 20 for XLA, 100 for Go (fallback)
+	// Recommended values: 10 for ONNX, 20 for XLA, 30 for GoMLX, 100 for Go (fallback)
 	Priority() int
 
-	// CreateSession creates a new Hugot session with the given options.
-	CreateSession(opts ...options.WithOption) (*hugot.Session, error)
+	// Loader returns the ModelLoader for this backend.
+	Loader() ModelLoader
 }
 
 var (
@@ -80,8 +49,8 @@ var (
 	registryMu sync.RWMutex
 
 	// priority defines the order to try backends when selecting default.
-	// Configurable via SetPriority(). Default: ONNX > XLA > Go
-	defaultPriority = []BackendType{BackendONNX, BackendXLA, BackendGo}
+	// Configurable via SetPriority(). Default: ONNX > GoMLX
+	defaultPriority = []BackendType{BackendONNX, BackendGoMLX}
 	configPriority  []BackendType
 	priorityMu      sync.RWMutex
 )
@@ -220,56 +189,38 @@ func GetBackendWithFallback(preferred BackendType) (Backend, BackendType, error)
 // ParseBackendType parses a string into BackendType.
 // Returns an error for unrecognized values.
 func ParseBackendType(s string) (BackendType, error) {
-	switch s {
-	case "onnx", "ONNX":
+	switch strings.ToLower(s) {
+	case "onnx":
 		return BackendONNX, nil
-	case "xla", "XLA":
-		return BackendXLA, nil
-	case "go", "Go", "pure-go", "gomlx":
-		return BackendGo, nil
+	case "gomlx", "go", "xla", "simplego":
+		// All Go-based backends map to GoMLX (which handles xla/simplego engine selection internally)
+		return BackendGoMLX, nil
 	default:
-		return "", fmt.Errorf("unknown backend type: %q (valid: onnx, xla, go)", s)
+		return "", fmt.Errorf("unknown backend type: %q (valid: onnx, gomlx)", s)
 	}
 }
 
 // BackendTypeStrings returns valid backend type strings for documentation/validation.
 func BackendTypeStrings() []string {
-	return []string{"onnx", "xla", "go"}
+	return []string{"onnx", "gomlx"}
 }
 
-// DeviceType identifies the hardware device for inference
-type DeviceType string
-
-const (
-	// DeviceAuto auto-detects the best available device (default)
-	DeviceAuto DeviceType = "auto"
-
-	// DeviceCUDA uses NVIDIA CUDA GPU
-	DeviceCUDA DeviceType = "cuda"
-
-	// DeviceCoreML uses Apple CoreML (macOS only)
-	DeviceCoreML DeviceType = "coreml"
-
-	// DeviceTPU uses Google TPU
-	DeviceTPU DeviceType = "tpu"
-
-	// DeviceCPU forces CPU-only inference
-	DeviceCPU DeviceType = "cpu"
-)
-
-// BackendSpec combines a backend type with a device specification.
-// Used for configuring backend priority with device preferences.
-type BackendSpec struct {
-	Backend BackendType
-	Device  DeviceType
-}
-
-// String returns the string representation (e.g., "onnx:cuda" or "go")
-func (s BackendSpec) String() string {
-	if s.Device == DeviceAuto || s.Device == "" {
-		return string(s.Backend)
+// ParseDeviceType parses a string into DeviceType.
+func ParseDeviceType(s string) (DeviceType, error) {
+	switch strings.ToLower(s) {
+	case "auto", "":
+		return DeviceAuto, nil
+	case "cuda", "gpu":
+		return DeviceCUDA, nil
+	case "coreml":
+		return DeviceCoreML, nil
+	case "tpu":
+		return DeviceTPU, nil
+	case "cpu", "off":
+		return DeviceCPU, nil
+	default:
+		return "", fmt.Errorf("unknown device type: %q (valid: auto, cuda, coreml, tpu, cpu)", s)
 	}
-	return string(s.Backend) + ":" + string(s.Device)
 }
 
 // ParseBackendSpec parses a "backend" or "backend:device" string.
@@ -295,24 +246,6 @@ func ParseBackendSpec(s string) (BackendSpec, error) {
 	return spec, nil
 }
 
-// ParseDeviceType parses a string into DeviceType.
-func ParseDeviceType(s string) (DeviceType, error) {
-	switch strings.ToLower(s) {
-	case "auto", "":
-		return DeviceAuto, nil
-	case "cuda", "gpu":
-		return DeviceCUDA, nil
-	case "coreml":
-		return DeviceCoreML, nil
-	case "tpu":
-		return DeviceTPU, nil
-	case "cpu", "off":
-		return DeviceCPU, nil
-	default:
-		return "", fmt.Errorf("unknown device type: %q (valid: auto, cuda, coreml, tpu, cpu)", s)
-	}
-}
-
 // ParseBackendPriority parses a list of backend:device strings into BackendSpecs.
 func ParseBackendPriority(priority []string) ([]BackendSpec, error) {
 	specs := make([]BackendSpec, 0, len(priority))
@@ -326,18 +259,18 @@ func ParseBackendPriority(priority []string) ([]BackendSpec, error) {
 	return specs, nil
 }
 
-// ToGPUMode converts DeviceType to the legacy GPUMode for backward compatibility.
-func (d DeviceType) ToGPUMode() GPUMode {
-	switch d {
-	case DeviceAuto:
+// ParseGPUMode parses a string into GPUMode.
+func ParseGPUMode(s string) GPUMode {
+	switch strings.ToLower(s) {
+	case "auto", "":
 		return GPUModeAuto
-	case DeviceCUDA:
-		return GPUModeCuda
-	case DeviceCoreML:
-		return GPUModeCoreML
-	case DeviceTPU:
+	case "tpu":
 		return GPUModeTpu
-	case DeviceCPU:
+	case "cuda":
+		return GPUModeCuda
+	case "coreml":
+		return GPUModeCoreML
+	case "off":
 		return GPUModeOff
 	default:
 		return GPUModeAuto

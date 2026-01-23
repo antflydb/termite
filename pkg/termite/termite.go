@@ -24,7 +24,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"go.uber.org/zap"
 )
 
@@ -90,24 +90,24 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Parse backend priority (supports "backend" or "backend:device" format)
-	var backendPriority []hugot.BackendSpec
+	var backendPriority []backends.BackendSpec
 	if len(config.BackendPriority) > 0 {
 		var err error
-		backendPriority, err = hugot.ParseBackendPriority(config.BackendPriority)
+		backendPriority, err = backends.ParseBackendPriority(config.BackendPriority)
 		if err != nil {
 			zl.Fatal("Invalid backend_priority configuration", zap.Error(err))
 		}
 		// Also set global priority for backward compatibility
-		globalPriority := make([]hugot.BackendType, 0, len(backendPriority))
+		globalPriority := make([]backends.BackendType, 0, len(backendPriority))
 		for _, spec := range backendPriority {
 			globalPriority = append(globalPriority, spec.Backend)
 		}
-		hugot.SetPriority(globalPriority)
+		backends.SetPriority(globalPriority)
 		zl.Info("Backend priority configured", zap.Any("priority", config.BackendPriority))
 	}
 
 	// Log available backends
-	availableBackends := hugot.ListAvailable()
+	availableBackends := backends.ListAvailable()
 	backendNames := make([]string, 0, len(availableBackends))
 	for _, b := range availableBackends {
 		backendNames = append(backendNames, b.Name())
@@ -115,7 +115,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	zl.Info("Available inference backends", zap.Strings("backends", backendNames))
 
 	// Detect and log GPU info, set metrics
-	gpuInfo := hugot.GetGPUInfo()
+	gpuInfo := backends.DetectGPU()
 	zl.Info("GPU detection complete",
 		zap.Bool("available", gpuInfo.Available),
 		zap.String("type", gpuInfo.Type),
@@ -160,11 +160,11 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// SessionManager handles backend selection per-model and manages sessions.
 	// IMPORTANT: ONNX Runtime backend allows only ONE session at a time.
 	// SessionManager enforces this by sharing sessions within each backend type.
-	var sessionManager *hugot.SessionManager
+	var sessionManager *backends.SessionManager
 	hasModels := config.ModelsDir != ""
 
 	if hasModels {
-		sessionManager = hugot.NewSessionManager()
+		sessionManager = backends.NewSessionManager()
 		defer func() { _ = sessionManager.Close() }()
 
 		// Configure session manager with backend priority (includes device preferences)
@@ -172,7 +172,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			sessionManager.SetPriority(backendPriority)
 		}
 
-		defaultBackend := hugot.GetDefaultBackend()
+		defaultBackend := backends.GetDefaultBackend()
 		if defaultBackend != nil {
 			zl.Info("Session manager initialized",
 				zap.String("default_backend", defaultBackend.Name()))

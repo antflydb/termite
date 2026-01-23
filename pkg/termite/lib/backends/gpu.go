@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package hugot
+package backends
 
 import (
 	"os"
@@ -23,18 +23,6 @@ import (
 	"sync"
 )
 
-// GPUMode controls how GPU acceleration is enabled.
-// Values must match the GPUMode enum in openapi.yaml.
-type GPUMode string
-
-const (
-	GPUModeAuto   GPUMode = "auto"   // Auto-detect GPU availability
-	GPUModeTpu    GPUMode = "tpu"    // Force TPU
-	GPUModeCuda   GPUMode = "cuda"   // Force CUDA
-	GPUModeCoreML GPUMode = "coreml" // Force CoreML (macOS only)
-	GPUModeOff    GPUMode = "off"    // CPU only
-)
-
 var (
 	// gpuAvailable caches the GPU detection result
 	gpuAvailable     bool
@@ -42,17 +30,8 @@ var (
 	gpuInfo          GPUInfo
 )
 
-// GPUInfo contains information about the detected GPU
-type GPUInfo struct {
-	Available   bool   `json:"available"`
-	Type        string `json:"type"` // "cuda", "coreml", "tpu", "none"
-	DeviceName  string `json:"device_name,omitempty"`
-	DriverVer   string `json:"driver_version,omitempty"`
-	CUDAVersion string `json:"cuda_version,omitempty"`
-}
-
-// DetectGPU checks if GPU acceleration is available
-// Results are cached after the first call
+// DetectGPU checks if GPU acceleration is available.
+// Results are cached after the first call.
 func DetectGPU() GPUInfo {
 	gpuAvailableOnce.Do(func() {
 		gpuInfo = detectGPUImpl()
@@ -61,13 +40,13 @@ func DetectGPU() GPUInfo {
 	return gpuInfo
 }
 
-// IsGPUAvailable returns true if GPU acceleration is available
+// IsGPUAvailable returns true if GPU acceleration is available.
 func IsGPUAvailable() bool {
 	DetectGPU()
 	return gpuAvailable
 }
 
-// detectGPUImpl performs actual GPU detection based on platform
+// detectGPUImpl performs actual GPU detection based on platform.
 func detectGPUImpl() GPUInfo {
 	// Check for TPU first (GKE TPU nodes)
 	if tpuInfo := detectTPU(); tpuInfo.Available {
@@ -88,8 +67,8 @@ func detectGPUImpl() GPUInfo {
 	}
 }
 
-// detectTPU checks for Google Cloud TPU availability
-// TPUs are available on GKE TPU node pools and Cloud TPU VMs
+// detectTPU checks for Google Cloud TPU availability.
+// TPUs are available on GKE TPU node pools and Cloud TPU VMs.
 func detectTPU() GPUInfo {
 	info := GPUInfo{Type: "none"}
 
@@ -101,7 +80,7 @@ func detectTPU() GPUInfo {
 		return info
 	}
 
-	// Method 3: Check for libtpu.so (available on GKE TPU nodes)
+	// Method 2: Check for libtpu.so (available on GKE TPU nodes)
 	if tpuLibsExist() {
 		info.Available = true
 		info.Type = "tpu"
@@ -109,7 +88,7 @@ func detectTPU() GPUInfo {
 		return info
 	}
 
-	// Method 4: Check for TPU metadata endpoint (GKE TPU nodes)
+	// Method 3: Check for TPU metadata endpoint (GKE TPU nodes)
 	if isGKETPUNode() {
 		info.Available = true
 		info.Type = "tpu"
@@ -120,7 +99,7 @@ func detectTPU() GPUInfo {
 	return info
 }
 
-// tpuLibsExist checks if TPU libraries are present
+// tpuLibsExist checks if TPU libraries are present.
 func tpuLibsExist() bool {
 	// Common TPU library paths
 	tpuPaths := []string{
@@ -151,7 +130,7 @@ func tpuLibsExist() bool {
 	return false
 }
 
-// isGKETPUNode checks if running on a GKE TPU node by looking for TPU-specific files
+// isGKETPUNode checks if running on a GKE TPU node by looking for TPU-specific files.
 func isGKETPUNode() bool {
 	// GKE TPU nodes have /dev/accel* devices
 	if matches, _ := filepath.Glob("/dev/accel*"); len(matches) > 0 {
@@ -166,13 +145,13 @@ func isGKETPUNode() bool {
 	return false
 }
 
-// IsTPUAvailable returns true if TPU acceleration is available
+// IsTPUAvailable returns true if TPU acceleration is available.
 func IsTPUAvailable() bool {
 	info := DetectGPU()
 	return info.Type == "tpu"
 }
 
-// detectCUDA checks for NVIDIA CUDA availability
+// detectCUDA checks for NVIDIA CUDA availability.
 func detectCUDA() GPUInfo {
 	info := GPUInfo{Type: "none"}
 
@@ -181,7 +160,7 @@ func detectCUDA() GPUInfo {
 		return nvidiaInfo
 	}
 
-	// Method 3: Check for CUDA libraries
+	// Method 2: Check for CUDA libraries
 	if cudaLibsExist() {
 		info.Available = true
 		info.Type = "cuda"
@@ -192,7 +171,7 @@ func detectCUDA() GPUInfo {
 	return info
 }
 
-// tryNvidiaSMI attempts to run nvidia-smi to detect GPU
+// tryNvidiaSMI attempts to run nvidia-smi to detect GPU.
 func tryNvidiaSMI() GPUInfo {
 	info := GPUInfo{Type: "none"}
 
@@ -229,7 +208,7 @@ func tryNvidiaSMI() GPUInfo {
 	return info
 }
 
-// cudaLibsExist checks if CUDA libraries are present
+// cudaLibsExist checks if CUDA libraries are present.
 func cudaLibsExist() bool {
 	// Common CUDA library paths
 	cudaPaths := []string{
@@ -254,7 +233,7 @@ func cudaLibsExist() bool {
 	return false
 }
 
-// ShouldUseGPU determines if GPU should be used based on mode and availability
+// ShouldUseGPU determines if GPU should be used based on mode and availability.
 func ShouldUseGPU(mode GPUMode) bool {
 	switch mode {
 	case GPUModeOff:
@@ -265,24 +244,5 @@ func ShouldUseGPU(mode GPUMode) bool {
 		return IsGPUAvailable()
 	default:
 		return IsGPUAvailable()
-	}
-}
-
-// ParseGPUMode parses a string into GPUMode.
-// Only accepts values from the GPUMode enum in openapi.yaml.
-func ParseGPUMode(s string) GPUMode {
-	switch strings.ToLower(s) {
-	case "auto", "":
-		return GPUModeAuto
-	case "tpu":
-		return GPUModeTpu
-	case "cuda":
-		return GPUModeCuda
-	case "coreml":
-		return GPUModeCoreML
-	case "off":
-		return GPUModeOff
-	default:
-		return GPUModeAuto
 	}
 }

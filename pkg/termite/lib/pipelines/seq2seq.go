@@ -170,13 +170,13 @@ func IsSeq2SeqModel(path string) bool {
 
 	// Check for seq2seq model types
 	seq2seqTypes := map[string]bool{
-		"t5":             true,
-		"mt5":            true,
-		"bart":           true,
-		"mbart":          true,
-		"pegasus":        true,
-		"longt5":         true,
-		"led":            true,
+		"t5":              true,
+		"mt5":             true,
+		"bart":            true,
+		"mbart":           true,
+		"pegasus":         true,
+		"longt5":          true,
+		"led":             true,
 		"bigbird_pegasus": true,
 	}
 
@@ -796,29 +796,52 @@ func (p *Seq2SeqPipeline) encodeText(ctx context.Context, input string) (*backen
 // Loader
 // ============================================================================
 
+// Seq2SeqPipelineOption is a functional option for configuring Seq2SeqPipeline loading.
+type Seq2SeqPipelineOption func(*Seq2SeqConfig)
+
+// WithSeq2SeqGenerationConfig sets the generation config for the pipeline.
+func WithSeq2SeqGenerationConfig(config *backends.GenerationConfig) Seq2SeqPipelineOption {
+	return func(c *Seq2SeqConfig) {
+		c.GenerationConfig = config
+	}
+}
+
 // LoadSeq2SeqPipeline loads a complete Seq2Seq pipeline from a model directory.
 // It automatically loads the model, tokenizer, and creates the pipeline.
+// This signature matches the encoder-based pipeline loaders for consistency.
 func LoadSeq2SeqPipeline(
 	modelPath string,
-	factory backends.SessionFactory,
-	config *Seq2SeqConfig,
-	opts ...backends.SessionOption,
-) (*Seq2SeqPipeline, error) {
-	// Load the model
-	model, err := LoadSeq2SeqModel(modelPath, factory, opts...)
+	sessionManager *backends.SessionManager,
+	modelBackends []string,
+	opts ...Seq2SeqPipelineOption,
+) (*Seq2SeqPipeline, backends.BackendType, error) {
+	// Get session factory from manager
+	factory, backendType, err := sessionManager.GetSessionFactoryForModel(modelBackends)
 	if err != nil {
-		return nil, fmt.Errorf("loading model: %w", err)
+		return nil, "", fmt.Errorf("getting session factory: %w", err)
+	}
+
+	// Load the model
+	model, err := LoadSeq2SeqModel(modelPath, factory)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading model: %w", err)
 	}
 
 	// Load the tokenizer
 	tokenizer, err := LoadTokenizer(modelPath)
 	if err != nil {
 		model.Close()
-		return nil, fmt.Errorf("loading tokenizer: %w", err)
+		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
+	}
+
+	// Apply options
+	config := &Seq2SeqConfig{}
+	for _, opt := range opts {
+		opt(config)
 	}
 
 	// Create the pipeline
 	pipeline := NewSeq2SeqPipeline(model, tokenizer, config)
 
-	return pipeline, nil
+	return pipeline, backendType, nil
 }

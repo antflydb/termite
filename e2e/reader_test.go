@@ -35,7 +35,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
-	"github.com/antflydb/termite/pkg/termite/lib/ocr"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 )
 
@@ -339,7 +338,7 @@ func TestDonutFieldParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ocr.DonutParseFields(tt.input)
+			result := reading.DonutParseFields(tt.input)
 			t.Logf("Input: %s", tt.input)
 			t.Logf("Parsed: %v", result)
 
@@ -374,7 +373,7 @@ func TestDonutExportedModel(t *testing.T) {
 	draw.Draw(testImg, testImg.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
 	ctx := context.Background()
-	results, err := reader.Read(ctx, []image.Image{testImg}, ocr.DonutCORDPrompt(), 512)
+	results, err := reader.Read(ctx, []image.Image{testImg}, reading.DonutCORDPrompt(), 512)
 	require.NoError(t, err)
 
 	t.Logf("Donut output: %s", results[0].Text)
@@ -414,7 +413,7 @@ func TestDonutWithPDFPage(t *testing.T) {
 	defer reader.Close()
 
 	ctx := context.Background()
-	results, err := reader.Read(ctx, []image.Image{img}, ocr.DonutCORDPrompt(), 512)
+	results, err := reader.Read(ctx, []image.Image{img}, reading.DonutCORDPrompt(), 512)
 	require.NoError(t, err)
 
 	t.Logf("Donut output: %q", results[0].Text)
@@ -466,7 +465,7 @@ func TestDocVQAWithPDFPage(t *testing.T) {
 
 	ctx := context.Background()
 	for _, question := range questions {
-		prompt := ocr.DonutDocVQAPrompt(question)
+		prompt := reading.DonutDocVQAPrompt(question)
 		results, err := reader.Read(ctx, []image.Image{img}, prompt, 128)
 		if err != nil {
 			t.Logf("Question %q: error: %v", question, err)
@@ -516,7 +515,7 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 	ctx := context.Background()
 
 	// Test OCR
-	ocrPrompt := ocr.FlorencePrompt(ocr.FlorenceOCR)
+	ocrPrompt := reading.FlorencePrompt(reading.FlorenceOCR)
 	t.Logf("Running Florence-2 OCR with prompt: %q", ocrPrompt)
 
 	results, err := reader.Read(ctx, []image.Image{img}, ocrPrompt, 512)
@@ -548,7 +547,7 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 		"OCR should find at least 50%% of expected key phrases, got %.1f%%", matchPercent)
 
 	// Test caption
-	captionPrompt := ocr.FlorencePrompt(ocr.FlorenceDetailedCaption)
+	captionPrompt := reading.FlorencePrompt(reading.FlorenceDetailedCaption)
 	results, err = reader.Read(ctx, []image.Image{img}, captionPrompt, 256)
 	if err != nil {
 		t.Logf("Caption failed: %v", err)

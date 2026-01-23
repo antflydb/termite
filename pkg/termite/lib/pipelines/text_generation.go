@@ -27,6 +27,88 @@ import (
 )
 
 // =============================================================================
+// Tool Parsing Support
+// =============================================================================
+
+// ToolParser handles prompt formatting and output parsing for tool calling.
+// Different model families implement this interface with their specific formats.
+// This interface mirrors the one in lib/generation for use by pipelines.
+type ToolParser interface {
+	// Name returns the parser identifier (e.g., "functiongemma", "json", "hermes")
+	Name() string
+
+	// FormatToolsPrompt creates tool declarations for the system prompt.
+	FormatToolsPrompt(tools []ToolDefinition) string
+
+	// Feed processes incoming tokens and detects complete tool calls.
+	// Returns newly completed tool calls (for real-time streaming emission).
+	Feed(token string) []ToolCall
+
+	// Finish completes parsing and returns all tool calls and remaining text.
+	Finish() (toolCalls []ToolCall, remainingText string)
+
+	// Reset clears parser state for reuse.
+	Reset()
+}
+
+// ToolDefinition describes a tool that the model can call.
+type ToolDefinition struct {
+	Type     string             `json:"type"` // "function"
+	Function FunctionDefinition `json:"function"`
+}
+
+// FunctionDefinition describes a function that can be called by the model.
+type FunctionDefinition struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"` // JSON Schema
+	Strict      bool                   `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
+}
+
+// ToolCall represents a tool call made by the model.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"` // "function"
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction contains the function name and arguments for a tool call.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON string
+}
+
+// ToolParserFactory creates a ToolParser for a given model path.
+type ToolParserFactory func(modelPath string) (ToolParser, error)
+
+// genAIConfig holds the config structure for genai_config.json files.
+type genAIConfig struct {
+	Model struct {
+		Type      string `json:"type"`
+		VocabSize int    `json:"vocab_size"`
+	} `json:"model"`
+
+	// Termite extension: tool calling format
+	ToolCallFormat string `json:"tool_call_format,omitempty"`
+}
+
+// readGenAIConfig reads the genai_config.json file from the model directory.
+func readGenAIConfig(modelPath string) *genAIConfig {
+	configPath := filepath.Join(modelPath, "genai_config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	var config genAIConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+
+	return &config
+}
+
+// =============================================================================
 // Config Types
 // =============================================================================
 
@@ -55,6 +137,13 @@ type GenerativeModelConfig struct {
 type TextGenerationConfig struct {
 	// GenerationConfig for text generation. If nil, uses defaults.
 	GenerationConfig *backends.GenerationConfig
+
+	// ToolParserFactory creates tool parsers for models that support tool calling.
+	// If nil, tool parser will be loaded automatically based on genai_config.json.
+	ToolParserFactory ToolParserFactory
+
+	// ModelPath is set internally by LoadTextGenerationPipeline.
+	ModelPath string
 }
 
 // =============================================================================
@@ -614,6 +703,11 @@ type TextGenerationPipeline struct {
 
 	// decoderConfig cached from model for generation
 	decoderConfig *backends.DecoderConfig
+
+	// Tool calling support
+	modelPath      string
+	toolParser     ToolParser
+	toolCallFormat string
 }
 
 // TextGenerationResult holds the result of text generation.
@@ -658,6 +752,7 @@ func NewTextGenerationPipeline(
 		Generator:        generator,
 		GenerationConfig: genConfig,
 		decoderConfig:    decoderConfig,
+		modelPath:        config.ModelPath,
 	}
 }
 
@@ -920,32 +1015,114 @@ func (p *TextGenerationPipeline) Close() error {
 	return p.Model.Close()
 }
 
+// SupportsTools returns true if this pipeline supports tool calling.
+func (p *TextGenerationPipeline) SupportsTools() bool {
+	return p.toolParser != nil
+}
+
+// ToolParser returns the tool parser for this pipeline, or nil if not supported.
+func (p *TextGenerationPipeline) GetToolParser() ToolParser {
+	return p.toolParser
+}
+
+// SetToolParser sets the tool parser for this pipeline.
+func (p *TextGenerationPipeline) SetToolParser(parser ToolParser) {
+	p.toolParser = parser
+}
+
+// ToolCallFormat returns the tool call format name (e.g., "functiongemma").
+func (p *TextGenerationPipeline) ToolCallFormat() string {
+	return p.toolCallFormat
+}
+
+// SetToolCallFormat sets the tool call format name.
+func (p *TextGenerationPipeline) SetToolCallFormat(format string) {
+	p.toolCallFormat = format
+}
+
+// ModelPath returns the path to the model directory.
+func (p *TextGenerationPipeline) ModelPath() string {
+	return p.modelPath
+}
+
+// SetModelPath sets the model path (used for tool parser loading).
+func (p *TextGenerationPipeline) SetModelPath(path string) {
+	p.modelPath = path
+}
+
 // =============================================================================
 // Loader
 // =============================================================================
 
-// LoadTextGenerationPipeline loads a complete text generation pipeline from a model path.
-// It loads the model configuration, creates a decoder model, loads the tokenizer,
-// and initializes the pipeline with the given generation config.
+// TextGenerationPipelineOption is a functional option for configuring TextGenerationPipeline loading.
+type TextGenerationPipelineOption func(*TextGenerationConfig)
+
+// WithTextGenerationConfig sets the generation config for the pipeline.
+func WithTextGenerationConfig(config *backends.GenerationConfig) TextGenerationPipelineOption {
+	return func(c *TextGenerationConfig) {
+		c.GenerationConfig = config
+	}
+}
+
+// WithToolParserFactory sets a custom tool parser factory for the pipeline.
+func WithToolParserFactory(factory ToolParserFactory) TextGenerationPipelineOption {
+	return func(c *TextGenerationConfig) {
+		c.ToolParserFactory = factory
+	}
+}
+
+// LoadTextGenerationPipeline loads a complete text generation pipeline from a model directory.
+// It automatically loads the model, tokenizer, and creates the pipeline.
+// If the model has a genai_config.json with tool_call_format, it will load the tool parser.
+// This signature matches the encoder-based pipeline loaders for consistency.
 func LoadTextGenerationPipeline(
 	modelPath string,
-	factory backends.SessionFactory,
-	config *TextGenerationConfig,
-	opts ...backends.SessionOption,
-) (*TextGenerationPipeline, error) {
-	// Load the generative model
-	model, err := LoadGenerativeModel(modelPath, factory, opts...)
+	sessionManager *backends.SessionManager,
+	modelBackends []string,
+	opts ...TextGenerationPipelineOption,
+) (*TextGenerationPipeline, backends.BackendType, error) {
+	// Get session factory from manager
+	factory, backendType, err := sessionManager.GetSessionFactoryForModel(modelBackends)
 	if err != nil {
-		return nil, fmt.Errorf("loading generative model: %w", err)
+		return nil, "", fmt.Errorf("getting session factory: %w", err)
 	}
 
-	// Load tokenizer
+	// Load the model
+	model, err := LoadGenerativeModel(modelPath, factory)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading model: %w", err)
+	}
+
+	// Load the tokenizer
 	tokenizer, err := LoadTokenizer(modelPath)
 	if err != nil {
 		model.Close()
-		return nil, fmt.Errorf("loading tokenizer: %w", err)
+		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 
-	// Create and return the pipeline
-	return NewTextGenerationPipeline(model, tokenizer, config), nil
+	// Apply options
+	config := &TextGenerationConfig{
+		ModelPath: modelPath,
+	}
+	for _, opt := range opts {
+		opt(config)
+	}
+
+	// Create the pipeline
+	pipeline := NewTextGenerationPipeline(model, tokenizer, config)
+
+	// Try to load tool parser from genai_config.json
+	if genaiConfig := readGenAIConfig(modelPath); genaiConfig != nil && genaiConfig.ToolCallFormat != "" {
+		pipeline.toolCallFormat = genaiConfig.ToolCallFormat
+		// If a custom factory was provided, use it
+		if config.ToolParserFactory != nil {
+			if parser, err := config.ToolParserFactory(modelPath); err == nil {
+				pipeline.toolParser = parser
+			}
+		}
+		// Otherwise the caller should set the tool parser manually using SetToolParser
+		// since we can't import lib/generation here due to circular dependency
+	}
+
+	return pipeline, backendType, nil
 }

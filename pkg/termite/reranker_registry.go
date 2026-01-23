@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/reranking"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	"github.com/jellydator/ttlcache/v3"
@@ -41,7 +41,7 @@ type RerankerModelInfo struct {
 // RerankerRegistry manages reranker models with lazy loading and TTL-based unloading
 type RerankerRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -68,7 +68,7 @@ type RerankerConfig struct {
 // NewRerankerRegistry creates a new lazy-loading reranker registry
 func NewRerankerRegistry(
 	config RerankerConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*RerankerRegistry, error) {
 	if logger == nil {
@@ -249,19 +249,22 @@ func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
 func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, error) {
 	r.logger.Info("Loading reranker model on demand",
 		zap.String("model", info.Name),
-		zap.String("path", info.Path),
-		zap.String("onnxFile", info.OnnxFilename))
+		zap.String("path", info.Path))
 
-	// Pass model path, ONNX filename, and session manager to pooled reranker
-	model, backendUsed, err := termreranking.NewPooledHugotRerankerWithSessionManager(
-		info.Path, info.OnnxFilename, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based reranker
+	cfg := termreranking.PooledRerankerConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := termreranking.NewPooledReranker(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading reranker model %s: %w", info.Name, err)
 	}
 
 	r.logger.Info("Successfully loaded reranker model",
 		zap.String("name", info.Name),
-		zap.String("onnxFile", info.OnnxFilename),
 		zap.String("backend", string(backendUsed)),
 		zap.Int("poolSize", info.PoolSize))
 

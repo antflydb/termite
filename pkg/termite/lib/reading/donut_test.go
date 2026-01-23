@@ -1,4 +1,4 @@
-package ocr
+package reading
 
 import (
 	"testing"

@@ -13,9 +13,12 @@ replace github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260119040111-36db55706c38
 	github.com/cespare/xxhash/v2 v2.3.0
+	github.com/eliben/go-sentencepiece v0.6.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/goccy/go-json v0.10.2
 	github.com/gomlx/go-huggingface v0.3.1
+	github.com/gomlx/gomlx v0.26.0
+	github.com/gomlx/onnx-gomlx v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/hugot v0.6.1
 	github.com/knights-analytics/ortgenai v0.0.1
@@ -28,6 +31,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/sugarme/tokenizer v0.3.0
+	github.com/yalue/onnxruntime_go v1.25.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/image v0.34.0
 	golang.org/x/sync v0.19.0
@@ -52,8 +56,6 @@ require (
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-xla v0.1.4 // indirect
-	github.com/gomlx/gomlx v0.26.0 // indirect
-	github.com/gomlx/onnx-gomlx v0.3.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
@@ -95,7 +97,6 @@ require (
 	github.com/vmware-labs/yaml-jsonpath v0.3.2 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/yalue/onnxruntime_go v1.25.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect

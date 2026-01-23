@@ -197,3 +197,31 @@ func (p *PooledReranker) Close() error {
 	p.pipelines = nil
 	return lastErr
 }
+
+// minScore returns the minimum score from a slice of scores.
+func minScore(scores []float32) float32 {
+	if len(scores) == 0 {
+		return 0
+	}
+	min := scores[0]
+	for _, s := range scores[1:] {
+		if s < min {
+			min = s
+		}
+	}
+	return min
+}
+
+// maxScore returns the maximum score from a slice of scores.
+func maxScore(scores []float32) float32 {
+	if len(scores) == 0 {
+		return 0
+	}
+	max := scores[0]
+	for _, s := range scores[1:] {
+		if s > max {
+			max = s
+		}
+	}
+	return max
+}

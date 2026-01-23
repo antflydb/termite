@@ -24,7 +24,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
@@ -45,7 +45,7 @@ type ModelInfo struct {
 // EmbedderRegistry manages embedding models with lazy loading and TTL-based unloading
 type EmbedderRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -76,7 +76,7 @@ type EmbedderConfig struct {
 // NewEmbedderRegistry creates a new lazy-loading embedder registry
 func NewEmbedderRegistry(
 	config EmbedderConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*EmbedderRegistry, error) {
 	if logger == nil {
@@ -331,14 +331,14 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		zap.Int("pool_size", info.PoolSize))
 
 	var embedder embeddings.Embedder
-	var backendUsed hugot.BackendType
+	var backendUsed backends.BackendType
 	var err error
 
 	// Handle different model types
 	switch info.ModelType {
 	case "clip":
 		// Load standard precision CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
 			info.Path,
 			false, // not quantized
 			r.sessionManager,
@@ -347,7 +347,7 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		)
 	case "clip-quantized":
 		// Load quantized CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
 			info.Path,
 			true, // quantized
 			r.sessionManager,
@@ -355,15 +355,14 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 			r.logger.Named(info.Name),
 		)
 	default:
-		// Standard pooled embedder
-		embedder, backendUsed, err = termembeddings.NewPooledHugotEmbedderWithSessionManager(
-			info.Path,
-			info.OnnxFilename,
-			info.PoolSize,
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
+		// Standard pooled embedder using pipeline
+		cfg := termembeddings.PooledEmbedderConfig{
+			ModelPath:     info.Path,
+			PoolSize:      info.PoolSize,
+			ModelBackends: nil, // Use all available backends
+			Logger:        r.logger.Named(info.Name),
+		}
+		embedder, backendUsed, err = termembeddings.NewPooledEmbedder(cfg, r.sessionManager)
 	}
 
 	if err != nil {

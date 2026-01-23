@@ -31,6 +31,16 @@ import (
 // Ensure PooledEmbedder implements the Embedder interface
 var _ embeddings.Embedder = (*PooledEmbedder)(nil)
 
+// DefaultEmbeddingBatchSize is the default batch size for embedding inference.
+//
+// The ONNX Runtime CoreML Execution Provider cannot handle batch sizes > 1 for embedding models.
+// This is specific to the CoreML EP bridge layer - pure ONNX Runtime CPU handles batching fine.
+// With CoreML, any batch size > 1 causes: "Error executing model: Unable to compute the prediction
+// using a neural network model (error code: -1)".
+//
+// See batch_test.go for validation of this limitation.
+const DefaultEmbeddingBatchSize = 1
+
 // PooledEmbedder manages multiple EmbeddingPipeline instances for concurrent embedding generation.
 // Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
 type PooledEmbedder struct {

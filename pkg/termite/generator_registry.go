@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -32,7 +32,7 @@ import (
 // GeneratorModelInfo holds metadata about a discovered generator model (not loaded yet)
 type GeneratorModelInfo struct {
 	Name      string
-	Path      string            // Path to base variant
+	Path      string // Path to base variant
 	ModelType string
 	Variants  map[string]string // variant name -> path (e.g., "i4" -> "/path/to/model/i4")
 }
@@ -40,7 +40,7 @@ type GeneratorModelInfo struct {
 // GeneratorRegistry manages generator models with lazy loading and TTL-based unloading
 type GeneratorRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -65,7 +65,7 @@ type GeneratorConfig struct {
 // NewGeneratorRegistry creates a new lazy-loading generator registry
 func NewGeneratorRegistry(
 	config GeneratorConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*GeneratorRegistry, error) {
 	if logger == nil {
@@ -257,19 +257,15 @@ func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (gener
 			zap.Error(err))
 	}
 
-	// Load the generator model
-	var model generation.Generator
-	var backendUsed hugot.BackendType
-	var loadErr error
-
-	if r.sessionManager != nil {
-		// Generative models only support ONNX backend currently
-		model, backendUsed, loadErr = generation.NewHugotGeneratorWithSessionManager(
-			modelPath, r.sessionManager, []string{"onnx"}, r.logger.Named(cacheKey))
-	} else {
-		model, loadErr = generation.NewHugotGeneratorWithSession(
-			modelPath, nil, r.logger.Named(cacheKey))
+	// Load the generator model using pipeline-based generator
+	cfg := &generation.PooledPipelineGeneratorConfig{
+		ModelPath: modelPath,
+		PoolSize:  1, // Use single pipeline, registry manages caching
+		Logger:    r.logger.Named(cacheKey),
 	}
+	// Generative models only support ONNX backend currently
+	model, backendUsed, loadErr := generation.NewPooledPipelineGenerator(
+		cfg, r.sessionManager, []string{"onnx"})
 
 	if loadErr != nil {
 		return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, loadErr)

@@ -29,8 +29,8 @@ import (
 	"io"
 	"runtime"
 
-	"github.com/antflydb/termite/pkg/termite/cmd/cmd"
 	json "github.com/antflydb/antfly-go/libaf/json"
+	"github.com/antflydb/termite/pkg/termite/cmd/cmd"
 	gojson "github.com/goccy/go-json"
 )
 
