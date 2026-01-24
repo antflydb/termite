@@ -137,7 +137,9 @@ type triplet struct {
 // Fallback format (when tokenizer strips special tokens):
 // Subject  Object  relation  Subject2  Object2  relation2
 // (elements separated by double spaces)
-func parseREBELTriplets(text string, config REBELConfig) []triplet {
+//
+// The score parameter is the generation confidence score, applied to all triplets.
+func parseREBELTriplets(text string, config REBELConfig, score float32) []triplet {
 	var triplets []triplet
 
 	// Remove start/end tokens
@@ -159,20 +161,20 @@ func parseREBELTriplets(text string, config REBELConfig) []triplet {
 			if part == "" {
 				continue
 			}
-			if t := parseTripletPart(part, config); t != nil {
+			if t := parseTripletPart(part, config, score); t != nil {
 				triplets = append(triplets, *t)
 			}
 		}
 	} else {
 		// Fallback: parse by double-space separation
-		triplets = parseREBELOutputNoTokens(text)
+		triplets = parseREBELOutputNoTokens(text, score)
 	}
 
 	return triplets
 }
 
 // parseTripletPart parses a single triplet from REBEL output.
-func parseTripletPart(part string, config REBELConfig) *triplet {
+func parseTripletPart(part string, config REBELConfig, score float32) *triplet {
 	subjToken := config.SubjectToken
 	objToken := config.ObjectToken
 
@@ -206,12 +208,13 @@ func parseTripletPart(part string, config REBELConfig) *triplet {
 		Subject:  subject,
 		Object:   object,
 		Relation: relation,
+		Score:    score,
 	}
 }
 
 // parseREBELOutputNoTokens parses REBEL output when special tokens are stripped.
 // The format is elements separated by double spaces: "Subject  Object  relation  ..."
-func parseREBELOutputNoTokens(text string) []triplet {
+func parseREBELOutputNoTokens(text string, score float32) []triplet {
 	var triplets []triplet
 
 	// Split by double space
@@ -237,6 +240,7 @@ func parseREBELOutputNoTokens(text string) []triplet {
 				Subject:  subject,
 				Object:   object,
 				Relation: relation,
+				Score:    score,
 			})
 		}
 	}
@@ -500,7 +504,14 @@ func (p *PooledREBEL) ExtractRelations(ctx context.Context, texts []string, enti
 
 		// Parse triplets from generated text
 		rawOutput := result.Text
-		triplets := parseREBELTriplets(rawOutput, p.config)
+		p.logger.Debug("REBEL raw output",
+			zap.Int("text_index", i),
+			zap.String("raw_output", rawOutput),
+			zap.Float32("score", result.Score),
+			zap.String("triplet_token", p.config.TripletToken),
+			zap.String("subject_token", p.config.SubjectToken),
+			zap.String("object_token", p.config.ObjectToken))
+		triplets := parseREBELTriplets(rawOutput, p.config, result.Score)
 
 		// Convert triplets to entities and relations
 		entities, relations := tripletsToNER(text, triplets)

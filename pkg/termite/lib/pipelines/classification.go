@@ -244,6 +244,10 @@ type ClassificationPipeline struct {
 
 	// ModelConfig holds model-specific configuration.
 	ModelConfig *ClassificationModelConfig
+
+	// entailmentIndex is the index of the "entailment" label in NLI model outputs.
+	// Different models may use different orderings (e.g., 0=entailment vs 2=entailment).
+	entailmentIndex int
 }
 
 // ClassificationPipelineConfig holds configuration for a ClassificationPipeline.
@@ -261,7 +265,7 @@ type ClassificationPipelineConfig struct {
 
 	// HypothesisTemplate is the template for zero-shot classification.
 	// The "{}" placeholder is replaced with candidate labels.
-	// Example: "This text is about {}."
+	// Default: "This text is about {}.".
 	HypothesisTemplate string
 }
 
@@ -294,13 +298,40 @@ func NewClassificationPipeline(
 		WithPadding(PaddingLongest),
 	)
 
+	// Determine entailment index from model config.
+	// NLI models have different label orderings; we need to find "entailment".
+	entailmentIndex := findEntailmentIndex(modelConfig)
+
 	return &ClassificationPipeline{
-		Model:        model,
-		Tokenizer:    tokenizer,
-		BasePipeline: basePipeline,
-		Config:       pipelineConfig,
-		ModelConfig:  modelConfig,
+		Model:           model,
+		Tokenizer:       tokenizer,
+		BasePipeline:    basePipeline,
+		Config:          pipelineConfig,
+		ModelConfig:     modelConfig,
+		entailmentIndex: entailmentIndex,
 	}
+}
+
+// findEntailmentIndex determines the index of the "entailment" label in the model output.
+// Different NLI models use different label orderings:
+// - Some: [contradiction, neutral, entailment] -> entailment at index 2
+// - Others: [entailment, neutral, contradiction] -> entailment at index 0
+func findEntailmentIndex(modelConfig *ClassificationModelConfig) int {
+	if modelConfig == nil || modelConfig.ID2Label == nil {
+		// Default assumption: [contradiction, neutral, entailment]
+		return 2
+	}
+
+	// Search for "entailment" in id2label mapping
+	for idx, label := range modelConfig.ID2Label {
+		lowerLabel := strings.ToLower(label)
+		if strings.Contains(lowerLabel, "entailment") {
+			return idx
+		}
+	}
+
+	// Fallback to index 2 if entailment not found
+	return 2
 }
 
 // Classify classifies a batch of texts and returns the predicted label with scores.
@@ -378,13 +409,12 @@ func (p *ClassificationPipeline) ClassifyWithLabels(ctx context.Context, texts [
 		}
 
 		// Extract entailment scores for each label
-		// NLI models typically have 3 outputs: [contradiction, neutral, entailment]
-		// We use the entailment score (index 2) for zero-shot classification
+		// NLI models have varying label orderings, use entailmentIndex from config.
 		entailmentScores := make([]float32, len(candidateLabels))
 		for i, logit := range output.Logits {
 			if len(logit) >= 3 {
-				// Standard NLI model: use entailment score
-				entailmentScores[i] = logit[2]
+				// Standard NLI model: use entailment score at configured index
+				entailmentScores[i] = logit[p.entailmentIndex]
 			} else if len(logit) == 2 {
 				// Binary model: use positive class
 				entailmentScores[i] = logit[1]
@@ -647,7 +677,7 @@ func LoadClassificationPipeline(
 ) (*ClassificationPipeline, backends.BackendType, error) {
 	// Apply options
 	loaderCfg := &classificationLoaderConfig{
-		hypothesisTemplate: "This example is {}.",
+		hypothesisTemplate: "This text is about {}.",
 	}
 	for _, opt := range opts {
 		opt(loaderCfg)

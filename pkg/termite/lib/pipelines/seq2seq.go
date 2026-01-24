@@ -37,8 +37,9 @@ type Seq2SeqModelConfig struct {
 	ModelPath string
 
 	// Paths to ONNX files (if present)
-	EncoderPath string
-	DecoderPath string
+	EncoderPath     string
+	DecoderPath     string // Main decoder (may require KV-cache or be merged)
+	DecoderInitPath string // Init decoder for first step (no KV-cache required)
 
 	// Decoder configuration
 	DecoderConfig *backends.DecoderConfig
@@ -56,11 +57,11 @@ type rawSeq2SeqConfig struct {
 	ModelType string `json:"model_type"`
 
 	// Vocab and token IDs
-	VocabSize           int   `json:"vocab_size"`
-	EOSTokenID          any   `json:"eos_token_id"` // Can be int or []int
-	BOSTokenID          int32 `json:"bos_token_id"`
-	PadTokenID          any   `json:"pad_token_id"` // Can be int or null
-	DecoderStartTokenID int32 `json:"decoder_start_token_id"`
+	VocabSize           int    `json:"vocab_size"`
+	EOSTokenID          any    `json:"eos_token_id"` // Can be int or []int
+	BOSTokenID          int32  `json:"bos_token_id"`
+	PadTokenID          any    `json:"pad_token_id"` // Can be int or null
+	DecoderStartTokenID *int32 `json:"decoder_start_token_id"`
 
 	// Architecture - different names across models
 	DecoderLayers         int `json:"decoder_layers"`
@@ -70,6 +71,7 @@ type rawSeq2SeqConfig struct {
 	NumHeads              int `json:"num_heads"`
 	DModel                int `json:"d_model"`
 	HiddenSize            int `json:"hidden_size"`
+	DKV                   int `json:"d_kv"` // T5-specific key/value head dimension
 
 	// Sequence length
 	MaxPositionEmbeddings int `json:"max_position_embeddings"`
@@ -105,11 +107,18 @@ func LoadSeq2SeqModelConfig(modelPath string) (*Seq2SeqModelConfig, error) {
 	})
 
 	// Find decoder ONNX file
+	// Prefer merged decoder that handles both init and continuation
 	decoderPath := FindONNXFile(modelPath, []string{
 		"decoder_model_merged.onnx", // Preferred: merged decoder with KV-cache
 		"decoder_with_past_model.onnx",
 		"decoder_model.onnx",
 		"decoder.onnx",
+	})
+
+	// Find init decoder for first step (no KV-cache required)
+	decoderInitPath := FindONNXFile(modelPath, []string{
+		"decoder-init.onnx",
+		"decoder_init.onnx",
 	})
 
 	// Load model configuration from config.json
@@ -128,17 +137,23 @@ func LoadSeq2SeqModelConfig(modelPath string) (*Seq2SeqModelConfig, error) {
 	numLayers := FirstNonZero(rawConfig.DecoderLayers, rawConfig.NumDecoderLayers, rawConfig.NumLayers, 6)
 	numHeads := FirstNonZero(rawConfig.DecoderAttentionHeads, rawConfig.NumHeads, 8)
 	hiddenSize := FirstNonZero(rawConfig.DModel, rawConfig.HiddenSize, 768)
-	headDim := hiddenSize / numHeads
+
+	// HeadDim: T5 models use d_kv explicitly, others compute from hidden_size/num_heads
+	headDim := rawConfig.DKV
+	if headDim == 0 {
+		headDim = hiddenSize / numHeads
+	}
 
 	return &Seq2SeqModelConfig{
-		ModelPath:     modelPath,
-		EncoderPath:   encoderPath,
-		DecoderPath:   decoderPath,
-		DecoderConfig: decoderConfig,
-		NumLayers:     numLayers,
-		NumHeads:      numHeads,
-		HeadDim:       headDim,
-		HiddenSize:    hiddenSize,
+		ModelPath:       modelPath,
+		EncoderPath:     encoderPath,
+		DecoderPath:     decoderPath,
+		DecoderInitPath: decoderInitPath,
+		DecoderConfig:   decoderConfig,
+		NumLayers:       numLayers,
+		NumHeads:        numHeads,
+		HeadDim:         headDim,
+		HiddenSize:      hiddenSize,
 	}, nil
 }
 
@@ -253,12 +268,22 @@ func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerati
 	}
 
 	// Decoder start token
-	decoderStartTokenID := cfg.DecoderStartTokenID
+	// Use pointer to distinguish "not set" from "explicitly set to 0"
+	var decoderStartTokenID int32
+	if cfg.DecoderStartTokenID != nil {
+		decoderStartTokenID = *cfg.DecoderStartTokenID
+	} else {
+		// Fallback for models that don't specify decoder_start_token_id
+		// T5 uses pad_token_id, BART uses bos_token_id
+		if cfg.ModelType == "t5" || cfg.ModelType == "mt5" || cfg.ModelType == "longt5" {
+			decoderStartTokenID = padTokenID
+		} else {
+			decoderStartTokenID = cfg.BOSTokenID
+		}
+	}
+	// Override from generation config if present
 	if genCfg != nil && genCfg.DecoderStartTokenID != 0 {
 		decoderStartTokenID = genCfg.DecoderStartTokenID
-	}
-	if decoderStartTokenID == 0 {
-		decoderStartTokenID = padTokenID // T5 uses pad_token as decoder_start
 	}
 
 	// Max length
@@ -270,6 +295,12 @@ func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerati
 	numHeads := FirstNonZero(cfg.DecoderAttentionHeads, cfg.NumHeads, 8)
 	hiddenSize := FirstNonZero(cfg.DModel, cfg.HiddenSize, 768)
 
+	// HeadDim: T5 models use d_kv explicitly, others compute from hidden_size/num_heads
+	headDim := cfg.DKV
+	if headDim == 0 {
+		headDim = hiddenSize / numHeads
+	}
+
 	return &backends.DecoderConfig{
 		VocabSize:           cfg.VocabSize,
 		MaxLength:           maxLength,
@@ -279,7 +310,7 @@ func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerati
 		DecoderStartTokenID: decoderStartTokenID,
 		NumLayers:           FirstNonZero(cfg.DecoderLayers, cfg.NumDecoderLayers, cfg.NumLayers, 6),
 		NumHeads:            numHeads,
-		HeadDim:             hiddenSize / numHeads,
+		HeadDim:             headDim,
 	}
 }
 
@@ -292,11 +323,14 @@ var _ backends.Model = (*seq2SeqModel)(nil)
 
 // seq2SeqModel implements backends.Model for encoder-decoder text-to-text tasks.
 // It uses separate encoder and decoder sessions (T5, BART, mT5, etc.).
+// For models with separate init/continuation decoders, it uses decoderInitSession
+// for the first step (no KV-cache) and decoderSession for subsequent steps.
 type seq2SeqModel struct {
 	config *Seq2SeqModelConfig
 
-	encoderSession backends.Session
-	decoderSession backends.Session
+	encoderSession     backends.Session
+	decoderSession     backends.Session // Main decoder (with KV-cache or merged)
+	decoderInitSession backends.Session // Init decoder for first step (optional)
 
 	backendType backends.BackendType
 }
@@ -345,11 +379,24 @@ func LoadSeq2SeqModel(modelPath string, factory backends.SessionFactory, opts ..
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
 
+	// Create init decoder session if available
+	// Models like BART/REBEL have separate decoder-init.onnx for the first step
+	var decoderInitSession backends.Session
+	if config.DecoderInitPath != "" {
+		decoderInitSession, err = factory.CreateSession(config.DecoderInitPath, opts...)
+		if err != nil {
+			encoderSession.Close()
+			decoderSession.Close()
+			return nil, fmt.Errorf("creating decoder init session: %w", err)
+		}
+	}
+
 	return &seq2SeqModel{
-		config:         config,
-		encoderSession: encoderSession,
-		decoderSession: decoderSession,
-		backendType:    factory.Backend(),
+		config:             config,
+		encoderSession:     encoderSession,
+		decoderSession:     decoderSession,
+		decoderInitSession: decoderInitSession,
+		backendType:        factory.Backend(),
 	}, nil
 }
 
@@ -461,14 +508,25 @@ func (m *seq2SeqModel) runDecoder(ctx context.Context, inputs *backends.ModelInp
 		}
 	}
 
-	// Build decoder inputs
-	tensorInputs, err := m.buildDecoderInputs(flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
+	// Choose the appropriate decoder session:
+	// - Use decoderInitSession for the first step (no KV-cache)
+	// - Use decoderSession for subsequent steps (with KV-cache)
+	isFirstStep := pastKeyValues == nil || pastKeyValues.SeqLen == 0
+	session := m.decoderSession
+
+	if isFirstStep && m.decoderInitSession != nil {
+		// Use init decoder for first step
+		session = m.decoderInitSession
+	}
+
+	// Build decoder inputs (using the appropriate session's input info)
+	tensorInputs, err := m.buildDecoderInputsForSession(session, flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
 	if err != nil {
 		return nil, fmt.Errorf("building decoder inputs: %w", err)
 	}
 
 	// Run decoder
-	outputs, err := m.decoderSession.Run(tensorInputs)
+	outputs, err := session.Run(tensorInputs)
 	if err != nil {
 		return nil, fmt.Errorf("running decoder: %w", err)
 	}
@@ -505,12 +563,13 @@ func (m *seq2SeqModel) runDecoder(ctx context.Context, inputs *backends.ModelInp
 	}, nil
 }
 
-// buildDecoderInputs creates the input tensors for the decoder.
-func (m *seq2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+// buildDecoderInputsForSession creates the input tensors for the specified decoder session.
+// This allows using different sessions for init (first step) and continuation (with KV-cache).
+func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
-	// Get decoder input names from session
-	inputInfo := m.decoderSession.InputInfo()
+	// Get decoder input names from the specified session
+	inputInfo := session.InputInfo()
 	inputNames := make(map[string]bool)
 	for _, info := range inputInfo {
 		inputNames[info.Name] = true
@@ -555,13 +614,36 @@ func (m *seq2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen in
 	}
 
 	// Add use_cache_branch if needed
+	// Check the input data type to determine whether to use bool or float
 	if inputNames["use_cache_branch"] {
-		useCacheBool := []bool{pastKV != nil && pastKV.SeqLen > 0}
-		inputs = append(inputs, backends.NamedTensor{
-			Name:  "use_cache_branch",
-			Shape: []int64{1},
-			Data:  useCacheBool,
-		})
+		// Find the expected data type for use_cache_branch
+		var useCacheDataType backends.DataType = backends.DataTypeBool // default to bool
+		for _, info := range inputInfo {
+			if info.Name == "use_cache_branch" {
+				useCacheDataType = info.DataType
+				break
+			}
+		}
+
+		useCacheVal := pastKV != nil && pastKV.SeqLen > 0
+		if useCacheDataType == backends.DataTypeFloat32 {
+			useCache := []float32{0}
+			if useCacheVal {
+				useCache[0] = 1
+			}
+			inputs = append(inputs, backends.NamedTensor{
+				Name:  "use_cache_branch",
+				Shape: []int64{1},
+				Data:  useCache,
+			})
+		} else {
+			// Default to bool
+			inputs = append(inputs, backends.NamedTensor{
+				Name:  "use_cache_branch",
+				Shape: []int64{1},
+				Data:  []bool{useCacheVal},
+			})
+		}
 	}
 
 	// Add past_key_values inputs if needed
@@ -576,9 +658,10 @@ func (m *seq2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen in
 }
 
 // createPastKVTensor creates a tensor for past key/value cache.
+// Maps input names like "past_key_values.0.decoder.key" to stored output names like "present.0.decoder.key".
 func (m *seq2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int) backends.NamedTensor {
-	// If no past KV, create empty tensor
-	if pastKV == nil || pastKV.SeqLen == 0 {
+	// If no past KV or no stored tensors, create empty tensor
+	if pastKV == nil || pastKV.SeqLen == 0 || pastKV.Tensors == nil {
 		// Create zero-sized tensor for first step
 		// Shape: [batch, num_heads, 0, head_dim]
 		return backends.NamedTensor{
@@ -588,9 +671,21 @@ func (m *seq2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache,
 		}
 	}
 
-	// TODO: Extract the appropriate slice from pastKV based on layer index in name
-	// For now, return empty - full implementation would parse layer index from name
-	// and extract the corresponding KV tensors
+	// Map input name to output name
+	// "past_key_values.0.decoder.key" -> "present.0.decoder.key"
+	// "past_key_values.0.encoder.key" -> "present.0.encoder.key"
+	outputName := mapPastToPresent(name)
+
+	// Look up the stored tensor
+	if tensor, ok := pastKV.Tensors[outputName]; ok {
+		return backends.NamedTensor{
+			Name:  name,
+			Shape: tensor.Shape,
+			Data:  tensor.Data,
+		}
+	}
+
+	// Fallback: return empty tensor if not found
 	return backends.NamedTensor{
 		Name:  name,
 		Shape: []int64{int64(batchSize), int64(m.config.NumHeads), 0, int64(m.config.HeadDim)},
@@ -598,23 +693,62 @@ func (m *seq2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache,
 	}
 }
 
+// mapPastToPresent converts an input tensor name to the corresponding output tensor name.
+// Examples:
+//   - "past_key_values.0.decoder.key" -> "present.0.decoder.key"
+//   - "past_key_values.0.encoder.value" -> "present.0.encoder.value"
+func mapPastToPresent(inputName string) string {
+	// Common patterns:
+	// BART/REBEL: past_key_values.{layer}.{encoder|decoder}.{key|value} -> present.{layer}.{encoder|decoder}.{key|value}
+	if len(inputName) > 16 && inputName[:16] == "past_key_values." {
+		return "present." + inputName[16:]
+	}
+	// Some models use different naming
+	if len(inputName) > 4 && inputName[:4] == "pkv." {
+		return "present." + inputName[4:]
+	}
+	return inputName
+}
+
 // extractKVCache extracts the KV-cache from decoder outputs.
+// For BART/REBEL models, this stores all present.* tensors which will be
+// passed as past_key_values.* inputs to subsequent decoder steps.
 func (m *seq2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
-	// Look for present_key_values or present outputs
+	// Collect all present_key_values or present.* outputs
+	tensors := make(map[string]backends.NamedTensor)
+	hasKVOutputs := false
+
 	for _, output := range outputs {
 		if IsPresentKeyValueOutput(output.Name) {
-			// Found KV-cache output - build the cache structure
-			seqLen := 1
-			if pastKV != nil {
-				seqLen = pastKV.SeqLen + 1
+			hasKVOutputs = true
+			// Store the tensor data (make a copy to avoid issues with buffer reuse)
+			data, ok := output.Data.([]float32)
+			if ok {
+				dataCopy := make([]float32, len(data))
+				copy(dataCopy, data)
+				shapeCopy := make([]int64, len(output.Shape))
+				copy(shapeCopy, output.Shape)
+				tensors[output.Name] = backends.NamedTensor{
+					Name:  output.Name,
+					Shape: shapeCopy,
+					Data:  dataCopy,
+				}
 			}
-			return &backends.KVCache{
-				SeqLen:    seqLen,
-				NumLayers: m.config.NumLayers,
-				NumHeads:  m.config.NumHeads,
-				HeadDim:   m.config.HeadDim,
-				BatchSize: batchSize,
-			}
+		}
+	}
+
+	if hasKVOutputs {
+		seqLen := 1
+		if pastKV != nil {
+			seqLen = pastKV.SeqLen + 1
+		}
+		return &backends.KVCache{
+			SeqLen:    seqLen,
+			NumLayers: m.config.NumLayers,
+			NumHeads:  m.config.NumHeads,
+			HeadDim:   m.config.HeadDim,
+			BatchSize: batchSize,
+			Tensors:   tensors,
 		}
 	}
 
@@ -626,6 +760,7 @@ func (m *seq2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSize 
 			NumHeads:  m.config.NumHeads,
 			HeadDim:   m.config.HeadDim,
 			BatchSize: batchSize,
+			Tensors:   pastKV.Tensors,
 		}
 	}
 
@@ -659,6 +794,13 @@ func (m *seq2SeqModel) Close() error {
 			errs = append(errs, fmt.Errorf("closing decoder: %w", err))
 		}
 		m.decoderSession = nil
+	}
+
+	if m.decoderInitSession != nil {
+		if err := m.decoderInitSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing decoder init: %w", err))
+		}
+		m.decoderInitSession = nil
 	}
 
 	if len(errs) > 0 {

@@ -29,13 +29,14 @@ import (
 	"github.com/gomlx/huggingface-gomlx/architectures/bert"
 	"github.com/gomlx/onnx-gomlx/onnx"
 
-	// Import simplego backend - always available
+	// Import Go backend - always available (pure Go, no CGO)
 	_ "github.com/gomlx/gomlx/backends/simplego"
 )
 
 func init() {
 	// Register Go backend (always available)
-	RegisterBackend(newGomlxBackend(BackendGo, "simplego"))
+	// Note: The simplego package registers itself as "go" in the backends registry
+	RegisterBackend(newGomlxBackend(BackendGo, "go"))
 }
 
 // gomlxBackend implements Backend using GoMLX for inference.
@@ -49,7 +50,7 @@ func init() {
 //   - BackendXLA: XLA engine, hardware accelerated (CUDA, TPU, optimized CPU), requires XLA/PJRT build tags
 type gomlxBackend struct {
 	backendType BackendType
-	engineType  string // "simplego" or "xla"
+	engineType  string // "go" or "xla"
 	engineMgr   *engineManager
 	available   *bool // cached availability check
 }

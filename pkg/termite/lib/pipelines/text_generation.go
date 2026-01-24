@@ -562,13 +562,16 @@ func (m *generativeModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 		})
 	}
 
-	// Add use_cache_branch if needed (for ONNX models with merged past/no-past)
+	// Add use_cache_branch if needed (ONNX models expect float, not bool)
 	if inputNames["use_cache_branch"] {
-		useCacheBool := []bool{pastKV != nil && pastKV.SeqLen > 0}
+		useCache := []float32{0}
+		if pastKV != nil && pastKV.SeqLen > 0 {
+			useCache[0] = 1
+		}
 		inputs = append(inputs, backends.NamedTensor{
 			Name:  "use_cache_branch",
 			Shape: []int64{1},
-			Data:  useCacheBool,
+			Data:  useCache,
 		})
 	}
 

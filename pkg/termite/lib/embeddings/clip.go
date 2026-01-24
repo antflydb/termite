@@ -164,19 +164,18 @@ func (e *CLIPEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart) (
 		}
 	}
 
-	// Process text batch
+	// Process text inputs one at a time (CLIP text model only supports batch_size=1)
 	if len(textInputs) > 0 {
 		if e.textPipeline == nil {
 			return nil, fmt.Errorf("text embedding requested but no text encoder available")
 		}
 
-		textEmbeddings, err := e.textPipeline.Embed(ctx, textInputs)
-		if err != nil {
-			return nil, fmt.Errorf("embedding text: %w", err)
-		}
-
-		for i, idx := range textIndices {
-			results[idx] = textEmbeddings[i]
+		for i, text := range textInputs {
+			embedding, err := e.textPipeline.EmbedOne(ctx, text)
+			if err != nil {
+				return nil, fmt.Errorf("embedding text %d: %w", i, err)
+			}
+			results[textIndices[i]] = embedding
 		}
 	}
 

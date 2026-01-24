@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build onnx && ORT && !darwin
+//go:build onnx && ORT
 
 package backends
 
@@ -80,7 +80,7 @@ func (b *onnxBackend) Priority() int {
 }
 
 func (b *onnxBackend) Loader() ModelLoader {
-	return &onnxModelLoader{backend: b}
+	return &ortModelLoader{backend: b}
 }
 
 // SessionFactory returns a SessionFactory for creating raw ONNX sessions.
@@ -106,30 +106,36 @@ func (b *onnxBackend) initONNX() error {
 	return b.initErr
 }
 
-// getOnnxLibraryPath returns the directory containing libonnxruntime.so from environment.
-// Checks ONNXRUNTIME_ROOT first, then LD_LIBRARY_PATH.
+// getOnnxLibraryPath returns the directory containing libonnxruntime from environment.
+// Checks ONNXRUNTIME_ROOT first, then LD_LIBRARY_PATH (or DYLD_LIBRARY_PATH on macOS).
 func getOnnxLibraryPath() string {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
+	libName := getOnnxLibraryName()
 
 	// Check ONNXRUNTIME_ROOT (set by Makefile)
 	if root := os.Getenv("ONNXRUNTIME_ROOT"); root != "" {
 		// Try platform-specific path first
 		platformDir := filepath.Join(root, platform, "lib")
-		if _, err := os.Stat(filepath.Join(platformDir, getOnnxLibraryName())); err == nil {
+		if _, err := os.Stat(filepath.Join(platformDir, libName)); err == nil {
 			return platformDir
 		}
 		// Try direct lib path
 		directDir := filepath.Join(root, "lib")
-		if _, err := os.Stat(filepath.Join(directDir, getOnnxLibraryName())); err == nil {
+		if _, err := os.Stat(filepath.Join(directDir, libName)); err == nil {
 			return directDir
 		}
 	}
 
-	// Check LD_LIBRARY_PATH
-	if ldPath := os.Getenv("LD_LIBRARY_PATH"); ldPath != "" {
-		// LD_LIBRARY_PATH can have multiple paths separated by ':'
+	// Check library path environment variable (platform-specific)
+	ldPath := os.Getenv("LD_LIBRARY_PATH")
+	if runtime.GOOS == "darwin" {
+		if dyldPath := os.Getenv("DYLD_LIBRARY_PATH"); dyldPath != "" {
+			ldPath = dyldPath
+		}
+	}
+	if ldPath != "" {
 		for _, dir := range filepath.SplitList(ldPath) {
-			if _, err := os.Stat(filepath.Join(dir, getOnnxLibraryName())); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, libName)); err == nil {
 				return dir
 			}
 		}
@@ -181,12 +187,12 @@ func (b *onnxBackend) useCUDA() bool {
 	return b.cudaEnabled
 }
 
-// onnxModelLoader implements ModelLoader for ONNX Runtime.
-type onnxModelLoader struct {
+// ortModelLoader implements ModelLoader for ONNX Runtime.
+type ortModelLoader struct {
 	backend *onnxBackend
 }
 
-func (l *onnxModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
+func (l *ortModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 	// Initialize ONNX Runtime if needed
 	if err := l.backend.initONNX(); err != nil {
 		return nil, fmt.Errorf("initializing ONNX Runtime: %w", err)
@@ -198,6 +204,27 @@ func (l *onnxModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 	onnxPath := filepath.Join(path, config.ONNXFilename)
 	if _, err := os.Stat(onnxPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("ONNX model not found: %s", onnxPath)
+	}
+
+	// Get input/output names from the model metadata
+	inputs, outputs, err := ort.GetInputOutputInfo(onnxPath)
+	if err != nil {
+		return nil, fmt.Errorf("getting model info: %w", err)
+	}
+
+	// Extract input names - filter for known text model inputs
+	inputNames := filterInputNames(inputs)
+	if len(inputNames) == 0 {
+		return nil, fmt.Errorf("no valid input names found in model")
+	}
+
+	// Extract output names
+	outputNames := make([]string, len(outputs))
+	for i, info := range outputs {
+		outputNames[i] = info.Name
+	}
+	if len(outputNames) == 0 {
+		return nil, fmt.Errorf("no output names found in model")
 	}
 
 	// Create session options
@@ -232,48 +259,288 @@ func (l *onnxModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 		}
 	}
 
-	// Create the session
+	// Create the session with dynamically detected input/output names
 	session, err := ort.NewDynamicAdvancedSession(onnxPath,
-		[]string{"input_ids", "attention_mask"},
-		[]string{"last_hidden_state"},
+		inputNames,
+		outputNames,
 		sessionOpts)
 	if err != nil {
 		sessionOpts.Destroy()
 		return nil, fmt.Errorf("creating ONNX session: %w", err)
 	}
 
-	return &onnxModel{
+	return &ortModel{
 		path:        path,
 		config:      config,
 		session:     session,
 		sessionOpts: sessionOpts,
+		inputNames:  inputNames,
+		outputNames: outputNames,
 	}, nil
 }
 
-func (l *onnxModelLoader) SupportsModel(path string) bool {
+// filterInputNames extracts relevant input names for text and vision models.
+// Filters for common input patterns like input_ids, attention_mask, token_type_ids,
+// and vision inputs like pixel_values.
+func filterInputNames(inputs []ort.InputOutputInfo) []string {
+	// Known input names for text and vision models
+	knownInputs := map[string]bool{
+		// Text model inputs
+		"input_ids":      true,
+		"attention_mask": true,
+		"token_type_ids": true,
+		// Vision model inputs
+		"pixel_values": true,
+	}
+
+	var names []string
+	for _, info := range inputs {
+		if knownInputs[info.Name] {
+			names = append(names, info.Name)
+		}
+	}
+
+	// If no known inputs found, return all input names
+	if len(names) == 0 {
+		names = make([]string, len(inputs))
+		for i, info := range inputs {
+			names[i] = info.Name
+		}
+	}
+
+	return names
+}
+
+func (l *ortModelLoader) SupportsModel(path string) bool {
 	// Check if the model directory contains an ONNX file
 	matches, _ := filepath.Glob(filepath.Join(path, "*.onnx"))
 	return len(matches) > 0
 }
 
-func (l *onnxModelLoader) Backend() BackendType {
+func (l *ortModelLoader) Backend() BackendType {
 	return BackendONNX
 }
 
-// onnxModel implements Model using ONNX Runtime.
-type onnxModel struct {
+// ortModel implements Model using ONNX Runtime.
+type ortModel struct {
 	path        string
 	config      *LoadConfig
 	session     *ort.DynamicAdvancedSession
 	sessionOpts *ort.SessionOptions
+	inputNames  []string
+	outputNames []string
 }
 
-func (m *onnxModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
+func (m *ortModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	if m.session == nil {
 		return nil, fmt.Errorf("ONNX session not initialized")
 	}
 
-	// Convert inputs to ONNX tensors
+	// Determine input type and dispatch to appropriate forward method
+	isVisionModel := inputs.ImagePixels != nil && len(inputs.ImagePixels) > 0
+	isEmbeddingsModel := inputs.Embeddings != nil && len(inputs.Embeddings) > 0
+
+	if isEmbeddingsModel {
+		return m.forwardEmbeddings(ctx, inputs)
+	}
+	if isVisionModel {
+		return m.forwardVision(ctx, inputs)
+	}
+	return m.forwardText(ctx, inputs)
+}
+
+// forwardEmbeddings handles inference for projection models (e.g., visual_projection.onnx).
+// Takes pre-computed embeddings and projects them to a different dimensionality.
+func (m *ortModel) forwardEmbeddings(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
+	batchSize := len(inputs.Embeddings)
+	if batchSize == 0 {
+		return &ModelOutput{}, nil
+	}
+
+	hiddenSize := len(inputs.Embeddings[0])
+
+	// Flatten embeddings to 1D array for tensor creation
+	flatData := make([]float32, batchSize*hiddenSize)
+	for i, emb := range inputs.Embeddings {
+		copy(flatData[i*hiddenSize:(i+1)*hiddenSize], emb)
+	}
+
+	// Create input tensor [batch, hidden_size]
+	inputTensor, err := ort.NewTensor(ort.NewShape(int64(batchSize), int64(hiddenSize)), flatData)
+	if err != nil {
+		return nil, fmt.Errorf("creating embeddings tensor: %w", err)
+	}
+	defer inputTensor.Destroy()
+
+	// For projection models, there's typically just one input
+	inputTensors := []ort.Value{inputTensor}
+
+	// Run inference
+	outputTensors := make([]ort.Value, len(m.outputNames))
+	for i := range outputTensors {
+		outputTensors[i] = nil
+	}
+	err = m.session.Run(inputTensors, outputTensors)
+	if err != nil {
+		return nil, fmt.Errorf("running ONNX projection: %w", err)
+	}
+	defer func() {
+		for _, t := range outputTensors {
+			if t != nil {
+				t.Destroy()
+			}
+		}
+	}()
+
+	if len(outputTensors) == 0 || outputTensors[0] == nil {
+		return nil, fmt.Errorf("no output tensors returned")
+	}
+
+	// Get the output tensor
+	outputTensor := outputTensors[0]
+	outputShape := outputTensor.GetShape()
+
+	// Type assert to get the data
+	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
+	if !ok {
+		return nil, fmt.Errorf("output tensor is not float32")
+	}
+	outputData := floatTensor.GetData()
+
+	// Output should be 2D [batch, projection_dim]
+	if len(outputShape) != 2 {
+		return nil, fmt.Errorf("projection output has unexpected shape: %v (expected 2D)", outputShape)
+	}
+
+	projectionDim := int(outputShape[1])
+
+	// Build output embeddings
+	embeddings := make([][]float32, batchSize)
+	for i := 0; i < batchSize; i++ {
+		embeddings[i] = make([]float32, projectionDim)
+		copy(embeddings[i], outputData[i*projectionDim:(i+1)*projectionDim])
+	}
+
+	return &ModelOutput{
+		Embeddings: embeddings,
+	}, nil
+}
+
+// forwardVision handles inference for vision models (e.g., CLIP visual encoder).
+func (m *ortModel) forwardVision(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
+	batchSize := inputs.ImageBatch
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	channels := inputs.ImageChannels
+	height := inputs.ImageHeight
+	width := inputs.ImageWidth
+
+	// Create pixel_values tensor [batch, channels, height, width]
+	pixelTensor, err := ort.NewTensor(ort.NewShape(int64(batchSize), int64(channels), int64(height), int64(width)), inputs.ImagePixels)
+	if err != nil {
+		return nil, fmt.Errorf("creating pixel_values tensor: %w", err)
+	}
+	defer pixelTensor.Destroy()
+
+	// Build input tensors
+	inputTensors := make([]ort.Value, 0, len(m.inputNames))
+	for _, name := range m.inputNames {
+		switch name {
+		case "pixel_values":
+			inputTensors = append(inputTensors, pixelTensor)
+		}
+	}
+
+	if len(inputTensors) == 0 {
+		return nil, fmt.Errorf("no valid input tensors created for vision model (expected pixel_values)")
+	}
+
+	// Run inference
+	outputTensors := make([]ort.Value, len(m.outputNames))
+	for i := range outputTensors {
+		outputTensors[i] = nil
+	}
+	err = m.session.Run(inputTensors, outputTensors)
+	if err != nil {
+		return nil, fmt.Errorf("running ONNX inference: %w", err)
+	}
+	defer func() {
+		for _, t := range outputTensors {
+			if t != nil {
+				t.Destroy()
+			}
+		}
+	}()
+
+	if len(outputTensors) == 0 || outputTensors[0] == nil {
+		return nil, fmt.Errorf("no output tensors returned")
+	}
+
+	// Get the output tensor and extract data
+	outputTensor := outputTensors[0]
+	outputShape := outputTensor.GetShape()
+
+	// Type assert to get the data
+	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
+	if !ok {
+		return nil, fmt.Errorf("output tensor is not float32")
+	}
+	outputData := floatTensor.GetData()
+
+	// Handle different output shapes:
+	// - 3D [batch, seq, hidden]: hidden states (ViT outputs [batch, num_patches, hidden])
+	// - 2D [batch, hidden]: pooled embeddings (some vision models pool internally)
+	switch len(outputShape) {
+	case 3:
+		// Vision encoder output: [batch, num_patches, hidden]
+		seqLen := int(outputShape[1])
+		hiddenSize := int(outputShape[2])
+
+		lastHiddenState := make([][][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			lastHiddenState[i] = make([][]float32, seqLen)
+			for j := 0; j < seqLen; j++ {
+				lastHiddenState[i][j] = make([]float32, hiddenSize)
+				baseIdx := (i*seqLen + j) * hiddenSize
+				copy(lastHiddenState[i][j], outputData[baseIdx:baseIdx+hiddenSize])
+			}
+		}
+
+		// For vision models, use CLS token (first token) as embedding
+		embeddings := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			embeddings[i] = make([]float32, hiddenSize)
+			copy(embeddings[i], lastHiddenState[i][0])
+		}
+
+		return &ModelOutput{
+			LastHiddenState: lastHiddenState,
+			Embeddings:      embeddings,
+		}, nil
+
+	case 2:
+		// Pooled output: [batch, hidden]
+		hiddenSize := int(outputShape[1])
+
+		embeddings := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			embeddings[i] = make([]float32, hiddenSize)
+			baseIdx := i * hiddenSize
+			copy(embeddings[i], outputData[baseIdx:baseIdx+hiddenSize])
+		}
+
+		return &ModelOutput{
+			Embeddings: embeddings,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected output shape: %v (expected 2D or 3D)", outputShape)
+	}
+}
+
+// forwardText handles inference for text models (e.g., BERT, CLIP text encoder).
+func (m *ortModel) forwardText(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	batchSize := len(inputs.InputIDs)
 	if batchSize == 0 {
 		return &ModelOutput{}, nil
@@ -304,30 +571,53 @@ func (m *onnxModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOut
 	}
 	defer attentionMaskTensor.Destroy()
 
-	// Run inference
-	outputTensors, err := m.session.Run([]ort.ArbitraryTensor{inputIDsTensor, attentionMaskTensor})
+	// Build input tensors based on what the model expects
+	inputTensors := make([]ort.Value, 0, len(m.inputNames))
+	var tokenTypeIdsTensor *ort.Tensor[int64]
+	for _, name := range m.inputNames {
+		switch name {
+		case "input_ids":
+			inputTensors = append(inputTensors, inputIDsTensor)
+		case "attention_mask":
+			inputTensors = append(inputTensors, attentionMaskTensor)
+		case "token_type_ids":
+			// Create zeros tensor for token_type_ids (used by some BERT models)
+			flatTokenTypeIds := make([]int64, batchSize*seqLen) // zeros by default
+			tokenTypeIdsTensor, err = ort.NewTensor(ort.NewShape(int64(batchSize), int64(seqLen)), flatTokenTypeIds)
+			if err != nil {
+				return nil, fmt.Errorf("creating token_type_ids tensor: %w", err)
+			}
+			inputTensors = append(inputTensors, tokenTypeIdsTensor)
+		}
+	}
+	if tokenTypeIdsTensor != nil {
+		defer tokenTypeIdsTensor.Destroy()
+	}
+
+	// Run inference - pass nil outputs to let session allocate them
+	outputTensors := make([]ort.Value, len(m.outputNames))
+	for i := range outputTensors {
+		outputTensors[i] = nil
+	}
+	err = m.session.Run(inputTensors, outputTensors)
 	if err != nil {
 		return nil, fmt.Errorf("running ONNX inference: %w", err)
 	}
 	defer func() {
 		for _, t := range outputTensors {
-			t.Destroy()
+			if t != nil {
+				t.Destroy()
+			}
 		}
 	}()
 
-	// Extract output - expect last_hidden_state with shape [batch, seq, hidden]
-	if len(outputTensors) == 0 {
+	if len(outputTensors) == 0 || outputTensors[0] == nil {
 		return nil, fmt.Errorf("no output tensors returned")
 	}
 
 	// Get the output tensor and extract data
 	outputTensor := outputTensors[0]
 	outputShape := outputTensor.GetShape()
-	if len(outputShape) < 3 {
-		return nil, fmt.Errorf("unexpected output shape: %v", outputShape)
-	}
-
-	hiddenSize := int(outputShape[2])
 
 	// Type assert to get the data
 	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
@@ -336,28 +626,54 @@ func (m *onnxModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOut
 	}
 	outputData := floatTensor.GetData()
 
-	// Reshape into [batch][seq][hidden]
-	lastHiddenState := make([][][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
-		lastHiddenState[i] = make([][]float32, seqLen)
-		for j := 0; j < seqLen; j++ {
-			lastHiddenState[i][j] = make([]float32, hiddenSize)
-			baseIdx := (i*seqLen + j) * hiddenSize
-			copy(lastHiddenState[i][j], outputData[baseIdx:baseIdx+hiddenSize])
+	// Handle different output shapes:
+	// - 3D [batch, seq, hidden]: hidden states (encoder models)
+	// - 2D [batch, classes]: logits (classification models)
+	switch len(outputShape) {
+	case 3:
+		// Standard encoder output: [batch, seq, hidden]
+		hiddenSize := int(outputShape[2])
+
+		lastHiddenState := make([][][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			lastHiddenState[i] = make([][]float32, seqLen)
+			for j := 0; j < seqLen; j++ {
+				lastHiddenState[i][j] = make([]float32, hiddenSize)
+				baseIdx := (i*seqLen + j) * hiddenSize
+				copy(lastHiddenState[i][j], outputData[baseIdx:baseIdx+hiddenSize])
+			}
 		}
+
+		// Apply pooling to get embeddings
+		embeddings := m.poolHiddenStates(lastHiddenState, inputs.AttentionMask)
+
+		return &ModelOutput{
+			LastHiddenState: lastHiddenState,
+			Embeddings:      embeddings,
+		}, nil
+
+	case 2:
+		// Classification output: [batch, classes] - logits
+		numClasses := int(outputShape[1])
+
+		logits := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			logits[i] = make([]float32, numClasses)
+			baseIdx := i * numClasses
+			copy(logits[i], outputData[baseIdx:baseIdx+numClasses])
+		}
+
+		return &ModelOutput{
+			Logits: logits,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected output shape: %v (expected 2D or 3D)", outputShape)
 	}
-
-	// Apply pooling to get embeddings
-	embeddings := m.poolHiddenStates(lastHiddenState, inputs.AttentionMask)
-
-	return &ModelOutput{
-		LastHiddenState: lastHiddenState,
-		Embeddings:      embeddings,
-	}, nil
 }
 
 // poolHiddenStates applies pooling to get [batch, hidden] embeddings.
-func (m *onnxModel) poolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32) [][]float32 {
+func (m *ortModel) poolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32) [][]float32 {
 	batchSize := len(hiddenStates)
 	if batchSize == 0 {
 		return nil
@@ -417,7 +733,7 @@ func (m *onnxModel) poolHiddenStates(hiddenStates [][][]float32, attentionMask [
 	return embeddings
 }
 
-func (m *onnxModel) Close() error {
+func (m *ortModel) Close() error {
 	if m.session != nil {
 		m.session.Destroy()
 		m.session = nil
@@ -429,11 +745,11 @@ func (m *onnxModel) Close() error {
 	return nil
 }
 
-func (m *onnxModel) Name() string {
+func (m *ortModel) Name() string {
 	return m.path
 }
 
-func (m *onnxModel) Backend() BackendType {
+func (m *ortModel) Backend() BackendType {
 	return BackendONNX
 }
 
@@ -557,9 +873,25 @@ func (s *onnxSession) Run(inputs []NamedTensor) ([]NamedTensor, error) {
 		return nil, fmt.Errorf("session is closed")
 	}
 
-	// Convert inputs to ONNX tensors
-	ortInputs := make([]ort.Value, len(inputs))
-	for i, input := range inputs {
+	// Build a map of input name -> tensor for fast lookup
+	inputMap := make(map[string]NamedTensor, len(inputs))
+	for _, input := range inputs {
+		inputMap[input.Name] = input
+	}
+
+	// Convert inputs to ONNX tensors in the order expected by the session
+	ortInputs := make([]ort.Value, len(s.inputInfo))
+	for i, info := range s.inputInfo {
+		input, ok := inputMap[info.Name]
+		if !ok {
+			// Clean up already created tensors
+			for j := 0; j < i; j++ {
+				if ortInputs[j] != nil {
+					ortInputs[j].Destroy()
+				}
+			}
+			return nil, fmt.Errorf("missing input tensor: %s", info.Name)
+		}
 		tensor, err := createOrtTensor(input)
 		if err != nil {
 			// Clean up already created tensors
@@ -696,5 +1028,23 @@ func extractOrtTensor(ortTensor ort.Value, name string) (NamedTensor, error) {
 		}, nil
 	}
 
+	// Try bool
+	if boolTensor, ok := ortTensor.(*ort.Tensor[bool]); ok {
+		data := boolTensor.GetData()
+		dataCopy := make([]bool, len(data))
+		copy(dataCopy, data)
+		return NamedTensor{
+			Name:  name,
+			Shape: shape,
+			Data:  dataCopy,
+		}, nil
+	}
+
 	return NamedTensor{}, fmt.Errorf("unsupported tensor type")
+}
+
+// GenerativeSessionFactory returns a factory for creating generative (LLM) sessions.
+// This enables ortgenai-based text generation through the unified backend interface.
+func (b *onnxBackend) GenerativeSessionFactory() GenerativeSessionFactory {
+	return &onnxGenerativeSessionFactory{}
 }

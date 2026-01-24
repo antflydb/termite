@@ -14,6 +14,8 @@
 
 package backends
 
+import "context"
+
 // Session represents a low-level inference session that can run tensor computations.
 // This is the primitive interface that backends provide - it handles tensor I/O
 // without knowledge of model semantics (encoder-decoder, vision, etc.).
@@ -123,4 +125,80 @@ func ApplySessionOptions(opts ...SessionOption) *SessionConfig {
 		opt(cfg)
 	}
 	return cfg
+}
+
+// GenerativeSession represents a session for generative (LLM) models.
+// This wraps backends like ortgenai that handle chat completion and text generation.
+type GenerativeSession interface {
+	// Generate produces text from the given messages.
+	// Returns the generated text, token count, and any error.
+	Generate(ctx context.Context, messages []GenerativeMessage, opts *GenerativeOptions) (*GenerativeResult, error)
+
+	// GenerateStream produces tokens one at a time via channels.
+	// Returns a channel for tokens, a channel for errors, and any setup error.
+	GenerateStream(ctx context.Context, messages []GenerativeMessage, opts *GenerativeOptions) (<-chan GenerativeToken, <-chan error, error)
+
+	// Close releases resources associated with the session.
+	Close() error
+}
+
+// GenerativeMessage represents a chat message for generative models.
+type GenerativeMessage struct {
+	Role     string   // "system", "user", "assistant"
+	Content  string   // Text content
+	ImageURLs []string // Optional image URLs for multimodal models
+}
+
+// GenerativeOptions holds parameters for text generation.
+type GenerativeOptions struct {
+	MaxTokens   int
+	Temperature float32
+	TopP        float32
+	TopK        int
+	StopTokens  []string
+}
+
+// DefaultGenerativeOptions returns sensible defaults for generation.
+func DefaultGenerativeOptions() *GenerativeOptions {
+	return &GenerativeOptions{
+		MaxTokens:   2048,
+		Temperature: 1.0,
+		TopP:        1.0,
+		TopK:        0,
+	}
+}
+
+// GenerativeResult holds the output of text generation.
+type GenerativeResult struct {
+	Text         string
+	TokensUsed   int
+	FinishReason string // "stop", "length", etc.
+}
+
+// GenerativeToken represents a single token in streaming output.
+type GenerativeToken struct {
+	Token    string
+	Index    int
+	IsFinal  bool
+}
+
+// GenerativeSessionFactory creates generative sessions from model directories.
+// Each backend that supports generative models implements this.
+type GenerativeSessionFactory interface {
+	// CreateGenerativeSession creates a session from a model directory.
+	// The model directory should contain genai_config.json or config.json + model.onnx.
+	CreateGenerativeSession(modelPath string, opts ...SessionOption) (GenerativeSession, error)
+
+	// SupportsGenerativeModel returns true if the model at the given path can be loaded.
+	SupportsGenerativeModel(modelPath string) bool
+
+	// Backend returns the backend type this factory uses.
+	Backend() BackendType
+}
+
+// GenerativeSessionFactoryProvider is an optional interface that backends can implement
+// to provide access to a GenerativeSessionFactory for creating generative sessions.
+type GenerativeSessionFactoryProvider interface {
+	// GenerativeSessionFactory returns a factory for creating generative sessions.
+	GenerativeSessionFactory() GenerativeSessionFactory
 }

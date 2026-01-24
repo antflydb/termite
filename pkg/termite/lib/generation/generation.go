@@ -60,6 +60,16 @@ func (m Message) GetTextContent() string {
 	return text
 }
 
+// HasImages returns true if this message contains any image parts.
+func (m Message) HasImages() bool {
+	for _, part := range m.Parts {
+		if part.Type == "image_url" && part.ImageURL != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // ContentPart represents a part of multimodal content.
 type ContentPart struct {
 	Type     string `json:"type"`               // "text" or "image_url"

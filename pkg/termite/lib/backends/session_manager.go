@@ -308,3 +308,74 @@ func (sm *SessionManager) Close() error {
 
 	return nil
 }
+
+// GetGenerativeSessionFactory returns a GenerativeSessionFactory for the specified backend.
+// Returns an error if the backend doesn't support generative session creation.
+func (sm *SessionManager) GetGenerativeSessionFactory(backend BackendType) (GenerativeSessionFactory, error) {
+	sm.mu.RLock()
+	if sm.closed {
+		sm.mu.RUnlock()
+		return nil, fmt.Errorf("session manager is closed")
+	}
+	sm.mu.RUnlock()
+
+	// Get the backend
+	b, ok := GetBackend(backend)
+	if !ok {
+		return nil, fmt.Errorf("backend %q not registered", backend)
+	}
+
+	if !b.Available() {
+		return nil, fmt.Errorf("backend %q not available", backend)
+	}
+
+	// Check if the backend provides a GenerativeSessionFactory
+	provider, ok := b.(GenerativeSessionFactoryProvider)
+	if !ok {
+		return nil, fmt.Errorf("backend %q does not support generative session factory", backend)
+	}
+
+	return provider.GenerativeSessionFactory(), nil
+}
+
+// GetGenerativeSessionFactoryForModel returns a GenerativeSessionFactory for loading a model,
+// respecting backend restrictions. Tries backends in priority order.
+// Returns the factory and the backend type that was used.
+func (sm *SessionManager) GetGenerativeSessionFactoryForModel(modelBackends []string) (GenerativeSessionFactory, BackendType, error) {
+	sm.mu.RLock()
+	priority := sm.getPriority()
+	sm.mu.RUnlock()
+
+	// Build model backend set for quick lookup
+	modelBackendSet := make(map[BackendType]bool)
+	for _, b := range modelBackends {
+		modelBackendSet[BackendType(b)] = true
+	}
+
+	// Try each backend spec in priority order
+	var lastErr error
+	for _, spec := range priority {
+		// Skip if model doesn't support this backend (unless model has no restrictions)
+		if len(modelBackends) > 0 && !modelBackendSet[spec.Backend] {
+			continue
+		}
+
+		factory, err := sm.GetGenerativeSessionFactory(spec.Backend)
+		if err == nil {
+			return factory, spec.Backend, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		if len(modelBackends) > 0 {
+			return nil, "", fmt.Errorf("no generative session factory for backends %v: %w", modelBackends, lastErr)
+		}
+		return nil, "", fmt.Errorf("no generative session factory available: %w", lastErr)
+	}
+
+	if len(modelBackends) > 0 {
+		return nil, "", fmt.Errorf("no generative session factory for backends %v", modelBackends)
+	}
+	return nil, "", fmt.Errorf("no generative session factory available")
+}

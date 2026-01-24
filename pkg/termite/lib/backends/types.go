@@ -140,10 +140,19 @@ type ModelInputs struct {
 	ImageHeight   int       // Image height
 	ImageWidth    int       // Image width
 
-	// For encoder-decoder models (seq2seq, vision2seq)
+	// Pre-computed embeddings (for projection models like visual_projection.onnx)
+	Embeddings [][]float32 // Embeddings to project [batch, hidden_size]
+
+	// Audio inputs (speech2seq models)
+	AudioFeatures []float32 // Preprocessed mel spectrogram [batch, time, features]
+	AudioBatch    int       // Batch size for audio
+	AudioTime     int       // Time steps (frames)
+	AudioMels     int       // Feature dimension (mel bins)
+
+	// For encoder-decoder models (seq2seq, vision2seq, speech2seq)
 	EncoderOutput *EncoderOutput // Output from encoder to pass to decoder
 
-	// For autoregressive models (generative, seq2seq decoder, vision2seq decoder)
+	// For autoregressive models (generative, seq2seq decoder, vision2seq decoder, speech2seq decoder)
 	PastKeyValues *KVCache // KV-cache from previous steps
 }
 
@@ -231,6 +240,10 @@ type KVCache struct {
 	HeadDim int
 	// BatchSize is the batch size.
 	BatchSize int
+	// Tensors holds named KV-cache tensors for models with complex cache structures.
+	// Keys are output tensor names (e.g., "present.0.decoder.key").
+	// Used by BART/REBEL models with separate self-attention and cross-attention caches.
+	Tensors map[string]NamedTensor
 }
 
 // DecoderConfig holds decoder configuration for generation.
@@ -286,6 +299,37 @@ func DefaultImageConfig() *ImageConfig {
 		Std:           [3]float32{0.5, 0.5, 0.5},
 		RescaleFactor: 1.0 / 255.0,
 		DoCenterCrop:  false,
+	}
+}
+
+// AudioConfig holds configuration for audio preprocessing.
+type AudioConfig struct {
+	// SampleRate is the target sample rate (typically 16000 for speech models).
+	SampleRate int
+	// FeatureSize is the mel spectrogram feature dimension (typically 80 or 128).
+	FeatureSize int
+	// NFft is the FFT window size (typically 400 for 25ms at 16kHz).
+	NFft int
+	// HopLength is the hop length between frames (typically 160 for 10ms at 16kHz).
+	HopLength int
+	// ChunkLength is the audio chunk length in seconds (typically 30 for Whisper).
+	ChunkLength int
+	// NMels is the number of mel filter banks.
+	NMels int
+	// PaddingValue is the value to pad with (typically 0.0).
+	PaddingValue float32
+}
+
+// DefaultAudioConfig returns sensible defaults for Whisper-style models.
+func DefaultAudioConfig() *AudioConfig {
+	return &AudioConfig{
+		SampleRate:   16000,
+		FeatureSize:  80,
+		NFft:         400,
+		HopLength:    160,
+		ChunkLength:  30,
+		NMels:        80,
+		PaddingValue: 0.0,
 	}
 }
 

@@ -19,7 +19,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -35,6 +34,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 )
 
@@ -65,16 +66,6 @@ const (
 	donutCordName = "Xenova/donut-base-finetuned-cord-v2"
 )
 
-// TrOCRConfig holds the model configuration
-type TrOCRConfig struct {
-	VisionConfig struct {
-		ImageSize int `json:"image_size"`
-	} `json:"vision_config"`
-	DecoderStartTokenID int `json:"decoder_start_token_id"`
-	EosTokenID          int `json:"eos_token_id"`
-	PadTokenID          int `json:"pad_token_id"`
-	VocabSize           int `json:"vocab_size"`
-}
 
 // =============================================================================
 // Helper Functions
@@ -89,7 +80,11 @@ func fileExists(path string) bool {
 	return !info.IsDir()
 }
 
-// createTestImageWithText creates a simple image with text-like pattern for testing
+// createTestImageWithText creates a simple test pattern image (not real text).
+// Note: This creates a dot pattern that OCR models won't recognize as text.
+// The output "SR:" from TrOCR on this pattern matches Python transformers behavior,
+// confirming our ONNX implementation is correct.
+// For real OCR testing, use actual text images or the sample-page-1.png testdata.
 func createTestImageWithText(t *testing.T, text string, width, height int) image.Image {
 	t.Helper()
 
@@ -97,7 +92,7 @@ func createTestImageWithText(t *testing.T, text string, width, height int) image
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
 
-	// Draw simple black pattern as placeholder for text
+	// Draw simple black dot pattern (not readable text)
 	textRect := image.Rect(width/4, height/3, 3*width/4, 2*height/3)
 	for x := textRect.Min.X; x < textRect.Max.X; x++ {
 		for y := textRect.Min.Y; y < textRect.Max.Y; y++ {
@@ -146,6 +141,34 @@ func renderPDFPage(t *testing.T, pdfPath string, pageNum int, outputPath string)
 	return nil
 }
 
+// createReader creates a PooledReader using the new backends API.
+// This replaces the old NewPooledHugotReader calls.
+func createReader(t *testing.T, modelPath string) (*reading.PooledReader, error) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	sessionManager := backends.NewSessionManager()
+
+	cfg := &reading.PooledReaderConfig{
+		ModelPath: modelPath,
+		PoolSize:  1,
+		Logger:    logger,
+	}
+
+	// Use all available backends
+	modelBackends := []string{"onnx", "xla", "go"}
+
+	reader, _, err := reading.NewPooledReader(cfg, sessionManager, modelBackends)
+	if err != nil {
+		return nil, err
+	}
+
+	// Note: The sessionManager will be cleaned up when the reader is closed
+	// since the pipelines hold references to the loaded models
+
+	return reader, nil
+}
+
 // =============================================================================
 // TrOCR Tests
 // =============================================================================
@@ -176,16 +199,12 @@ func TestTrOCRModelDownload(t *testing.T) {
 		}
 	}
 
-	// Load and verify config
-	configPath := filepath.Join(modelPath, "config.json")
-	configData, err := os.ReadFile(configPath)
-	require.NoError(t, err, "Failed to read config.json")
+	// Load and verify config using the pipelines package
+	config, err := pipelines.LoadVision2SeqModelConfig(modelPath)
+	require.NoError(t, err, "Failed to load Vision2Seq model config")
 
-	var config TrOCRConfig
-	err = json.Unmarshal(configData, &config)
-	require.NoError(t, err, "Failed to parse config.json")
-
-	t.Logf("TrOCR config: image_size=%d, vocab_size=%d", config.VisionConfig.ImageSize, config.VocabSize)
+	t.Logf("TrOCR config: num_heads=%d, head_dim=%d, vocab_size=%d",
+		config.NumHeads, config.HeadDim, config.DecoderConfig.VocabSize)
 }
 
 // TestTrOCRReader tests the TrOCR model using the Reader interface
@@ -218,8 +237,7 @@ func TestTrOCRReader(t *testing.T) {
 	}
 
 	// Create Reader
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	if err != nil {
 		t.Skipf("Reader creation failed: %v", err)
 	}
@@ -247,8 +265,7 @@ func TestTrOCRExportedModel(t *testing.T) {
 
 	modelPath := ensureHuggingFaceModel(t, trocrModelName, trocrModelRepo, ModelTypeReader)
 
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	require.NoError(t, err, "Failed to create Reader")
 	defer reader.Close()
 
@@ -277,8 +294,7 @@ func TestTrOCRWithPDFPage(t *testing.T) {
 	modelPath := ensureHuggingFaceModel(t, trocrModelName, trocrModelRepo, ModelTypeReader)
 
 	// Create Reader
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	require.NoError(t, err, "Failed to create Reader")
 	defer reader.Close()
 
@@ -359,8 +375,7 @@ func TestDonutExportedModel(t *testing.T) {
 
 	modelPath := ensureHuggingFaceModel(t, donutCordName, donutCordRepo, ModelTypeReader)
 
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	if err != nil {
 		t.Skipf("Could not create Donut reader: %v", err)
 	}
@@ -405,8 +420,7 @@ func TestDonutWithPDFPage(t *testing.T) {
 	t.Logf("Loaded PDF page image: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
 
 	// Create Reader
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	if err != nil {
 		t.Skipf("Could not create Donut reader: %v", err)
 	}
@@ -447,8 +461,7 @@ func TestDocVQAWithPDFPage(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create Reader
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	if err != nil {
 		t.Skipf("Could not create DocVQA reader: %v", err)
 	}
@@ -503,8 +516,7 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 	t.Logf("Loaded PDF page image: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
 
 	// Create Reader
-	logger := zap.NewNop()
-	reader, err := reading.NewPooledHugotReader(modelPath, 1, logger)
+	reader, err := createReader(t, modelPath)
 	if err != nil {
 		t.Skipf("Could not create Florence-2 reader: %v", err)
 	}

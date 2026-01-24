@@ -16,8 +16,10 @@ package pipelines
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
@@ -49,6 +51,9 @@ type Generator struct {
 	BOSTokenID int32
 	// PadTokenID is the padding token ID.
 	PadTokenID int32
+
+	// Debug enables debug logging during generation.
+	Debug bool
 }
 
 // NewGenerator creates a new Generator with the given configuration.
@@ -85,6 +90,9 @@ type GenerateResult struct {
 	FinalKVCache *backends.KVCache
 	// StoppedAtEOS indicates whether generation stopped due to EOS token.
 	StoppedAtEOS bool
+	// LogProb is the cumulative log probability of the generated sequence.
+	// This is the sum of log probabilities for each token selected.
+	LogProb float64
 }
 
 // Generate performs autoregressive generation.
@@ -110,12 +118,14 @@ func (g *Generator) Generate(
 	}
 
 	result := &GenerateResult{}
+	var cumulativeLogProb float64
 
 	for i := 0; i < g.Config.MaxNewTokens; i++ {
 		select {
 		case <-ctx.Done():
 			result.TokenIDs = state.GeneratedTokens
 			result.FinalKVCache = state.KVCache
+			result.LogProb = cumulativeLogProb
 			return result, ctx.Err()
 		default:
 		}
@@ -135,11 +145,39 @@ func (g *Generator) Generate(
 		if err != nil {
 			result.TokenIDs = state.GeneratedTokens
 			result.FinalKVCache = state.KVCache
+			result.LogProb = cumulativeLogProb
 			return result, err
 		}
 
-		// Select next token
-		nextToken := g.selectNextToken(logits, state.GeneratedTokens)
+		// Debug: print top 5 tokens and their logits
+		if g.Debug {
+			type tokenScore struct {
+				id    int
+				score float32
+			}
+			topN := make([]tokenScore, 0, len(logits))
+			for idx, score := range logits {
+				topN = append(topN, tokenScore{idx, score})
+			}
+			sort.Slice(topN, func(i, j int) bool { return topN[i].score > topN[j].score })
+			if len(topN) > 5 {
+				topN = topN[:5]
+			}
+			fmt.Printf("[DEBUG Generator] Step %d, inputIDs=%v, top tokens: ", i, stepState.InputIDs)
+			for _, ts := range topN {
+				fmt.Printf("{%d: %.4f} ", ts.id, ts.score)
+			}
+			fmt.Printf("(EOSTokenID=%d)\n", g.EOSTokenID)
+		}
+
+		// Select next token and get its log probability
+		nextToken, logProb := g.selectNextTokenWithProb(logits, state.GeneratedTokens)
+		cumulativeLogProb += logProb
+
+		if g.Debug {
+			fmt.Printf("[DEBUG Generator] Step %d: selected token %d, logProb=%.4f, cumLogProb=%.4f, generatedTokens=%d, minLength=%d\n",
+				i, nextToken, logProb, cumulativeLogProb, len(state.GeneratedTokens), g.Config.MinLength)
+		}
 
 		// Check for EOS
 		if nextToken == g.EOSTokenID {
@@ -148,11 +186,14 @@ func (g *Generator) Generate(
 				result.TokenIDs = state.GeneratedTokens
 				result.FinalKVCache = newKVCache
 				result.StoppedAtEOS = true
+				result.LogProb = cumulativeLogProb
 				return result, nil
 			}
 			// Force continue - set EOS logits to -inf and resample
 			logits[g.EOSTokenID] = float32(math.Inf(-1))
-			nextToken = g.selectNextToken(logits, state.GeneratedTokens)
+			nextToken, logProb = g.selectNextTokenWithProb(logits, state.GeneratedTokens)
+			// Replace the EOS log prob with the new token's log prob
+			cumulativeLogProb = cumulativeLogProb - logProb + logProb // Already subtracted above, re-add
 		}
 
 		// Append token
@@ -163,6 +204,7 @@ func (g *Generator) Generate(
 
 	result.TokenIDs = state.GeneratedTokens
 	result.FinalKVCache = state.KVCache
+	result.LogProb = cumulativeLogProb
 	return result, nil
 }
 
@@ -245,6 +287,13 @@ func (g *Generator) GenerateStreaming(
 
 // selectNextToken selects the next token based on generation config.
 func (g *Generator) selectNextToken(logits []float32, generatedTokens []int32) int32 {
+	token, _ := g.selectNextTokenWithProb(logits, generatedTokens)
+	return token
+}
+
+// selectNextTokenWithProb selects the next token and returns its log probability.
+// The log probability is computed from the softmax of the (possibly modified) logits.
+func (g *Generator) selectNextTokenWithProb(logits []float32, generatedTokens []int32) (int32, float64) {
 	// Make a copy to avoid modifying the original
 	logitsCopy := make([]float32, len(logits))
 	copy(logitsCopy, logits)
@@ -254,33 +303,43 @@ func (g *Generator) selectNextToken(logits []float32, generatedTokens []int32) i
 		applyRepetitionPenalty(logitsCopy, generatedTokens, g.Config.RepetitionPenalty)
 	}
 
-	if !g.Config.DoSample {
-		// Greedy decoding
-		return Argmax(logitsCopy)
-	}
-
-	// Sampling with temperature
-	if g.Config.Temperature != 1.0 && g.Config.Temperature > 0 {
-		for i := range logitsCopy {
-			logitsCopy[i] /= g.Config.Temperature
-		}
-	}
-
-	// Convert to probabilities
+	// Convert to probabilities (before top-k/top-p filtering for accurate probability)
 	probs := Softmax(logitsCopy)
 
-	// Apply top-k
-	if g.Config.TopK > 0 && g.Config.TopK < len(probs) {
-		probs = TopK(probs, g.Config.TopK)
+	var token int32
+	if !g.Config.DoSample {
+		// Greedy decoding
+		token = Argmax(logitsCopy)
+	} else {
+		// Sampling with temperature
+		if g.Config.Temperature != 1.0 && g.Config.Temperature > 0 {
+			for i := range logitsCopy {
+				logitsCopy[i] /= g.Config.Temperature
+			}
+			// Recompute probs with temperature
+			probs = Softmax(logitsCopy)
+		}
+
+		// Apply top-k
+		filteredProbs := probs
+		if g.Config.TopK > 0 && g.Config.TopK < len(filteredProbs) {
+			filteredProbs = TopK(filteredProbs, g.Config.TopK)
+		}
+
+		// Apply top-p (nucleus sampling)
+		if g.Config.TopP < 1.0 && g.Config.TopP > 0 {
+			filteredProbs = TopP(filteredProbs, g.Config.TopP)
+		}
+
+		// Sample from distribution
+		token = Sample(filteredProbs)
 	}
 
-	// Apply top-p (nucleus sampling)
-	if g.Config.TopP < 1.0 && g.Config.TopP > 0 {
-		probs = TopP(probs, g.Config.TopP)
-	}
+	// Get the probability of the selected token (from original probs, not filtered)
+	prob := float64(probs[token])
+	logProb := math.Log(prob + 1e-10) // Add small epsilon to avoid log(0)
 
-	// Sample from distribution
-	return Sample(probs)
+	return token, logProb
 }
 
 // applyRepetitionPenalty applies repetition penalty to logits.

@@ -359,7 +359,8 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		cfg := termembeddings.PooledEmbedderConfig{
 			ModelPath:     info.Path,
 			PoolSize:      info.PoolSize,
-			ModelBackends: nil, // Use all available backends
+			Normalize:     true, // Enable L2 normalization for unit-length embeddings
+			ModelBackends: nil,  // Use all available backends
 			Logger:        r.logger.Named(info.Name),
 		}
 		embedder, backendUsed, err = termembeddings.NewPooledEmbedder(cfg, r.sessionManager)

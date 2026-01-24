@@ -458,13 +458,14 @@ func isWordChar(r rune) bool {
 }
 
 // buildPrompt constructs the label prompt for GLiNER.
-// GLiNER expects labels in format: <<label1>><<label2>>...
+// GLiNER ONNX models expect labels in format: <<ENT>>label1<<SEP>><<ENT>>label2<<SEP>>...
+// where <<ENT>> and <<SEP>> are special tokens in the vocabulary.
 func (p *GLiNERPipeline) buildPrompt(labels []string) string {
 	var sb strings.Builder
 	for _, label := range labels {
-		sb.WriteString("<<")
+		sb.WriteString("<<ENT>>")
 		sb.WriteString(label)
-		sb.WriteString(">>")
+		sb.WriteString("<<SEP>>")
 	}
 	return sb.String()
 }
@@ -480,15 +481,30 @@ func (p *GLiNERPipeline) tokenizeWords(words []string) [][]int {
 
 // buildInputs constructs the model inputs for GLiNER inference.
 func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, words []string, labels []string) ([]backends.NamedTensor, error) {
-	// Count total text tokens
+	// Count total text tokens (excluding special tokens added by tokenizer)
 	totalTextTokens := 0
 	for _, wt := range textTokens {
-		totalTextTokens += len(wt)
+		// Each word's tokens may include special tokens, strip them
+		for _, tok := range wt {
+			if tok != 0 && tok != 1 && tok != 2 { // Skip PAD, CLS, SEP
+				totalTextTokens++
+			}
+		}
 	}
 
-	// Build combined token sequence: [CLS] + prompt + [SEP] + text tokens + [SEP]
-	// For simplicity, we'll construct the full sequence
-	seqLen := len(promptTokens) + totalTextTokens + 3 // CLS, SEP after prompt, SEP at end
+	// The tokenizer (DeBERTa) uses: [CLS]=1, [SEP]=2, [PAD]=0
+	// The promptTokens already includes [CLS] at start and [SEP] at end
+	// Strip the special tokens from promptTokens for cleaner handling
+	cleanPromptTokens := make([]int, 0, len(promptTokens))
+	for _, tok := range promptTokens {
+		if tok != 1 && tok != 2 { // Skip CLS and SEP
+			cleanPromptTokens = append(cleanPromptTokens, tok)
+		}
+	}
+
+	// Build combined token sequence: [CLS] + prompt + text tokens + [SEP]
+	// Note: GLiNER expects prompt and text in same segment (no separator between them)
+	seqLen := len(cleanPromptTokens) + totalTextTokens + 2 // CLS at start, SEP at end
 
 	// Limit sequence length
 	maxLen := p.Config.MaxLength
@@ -500,29 +516,23 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	inputIDs := make([]int64, seqLen)
 	attentionMask := make([]int64, seqLen)
 
-	// Get special tokens
-	clsID := 101  // BERT [CLS]
-	sepID := 102  // BERT [SEP]
-	padID := 0    // Padding
+	// DeBERTa special token IDs
+	clsID := int64(1)  // DeBERTa [CLS]
+	sepID := int64(2)  // DeBERTa [SEP]
+	padID := int64(0)  // DeBERTa [PAD]
+	_ = padID // unused for now, padding handled later
 
 	idx := 0
-	inputIDs[idx] = int64(clsID)
+	inputIDs[idx] = clsID
 	attentionMask[idx] = 1
 	idx++
 
-	// Add prompt tokens
-	for _, tok := range promptTokens {
+	// Add prompt tokens (label markers)
+	for _, tok := range cleanPromptTokens {
 		if idx >= seqLen-1 {
 			break
 		}
 		inputIDs[idx] = int64(tok)
-		attentionMask[idx] = 1
-		idx++
-	}
-
-	// Add separator
-	if idx < seqLen-1 {
-		inputIDs[idx] = int64(sepID)
 		attentionMask[idx] = 1
 		idx++
 	}
@@ -535,10 +545,15 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	textStartIdx := idx
 
 	// Add text tokens with word tracking
+	// Skip special tokens (CLS=1, SEP=2, PAD=0) that tokenizer may add to each word
 	wordIdx := int64(1) // Start at 1 (0 reserved for non-word tokens)
-	for wi, wordTokens := range textTokens {
-		_ = wi // word index for debugging
+	for _, wordTokens := range textTokens {
+		hasRealToken := false
 		for _, tok := range wordTokens {
+			// Skip special tokens that tokenizer adds
+			if tok == 0 || tok == 1 || tok == 2 {
+				continue
+			}
 			if idx >= seqLen-1 {
 				break
 			}
@@ -546,59 +561,59 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 			attentionMask[idx] = 1
 			wordsMask[idx] = wordIdx
 			idx++
+			hasRealToken = true
 		}
-		wordIdx++
+		if hasRealToken {
+			wordIdx++
+		}
 		if idx >= seqLen-1 {
 			break
 		}
 	}
 
-	// Record text length
-	textLengths[0] = int64(idx - textStartIdx)
+	// Record text length (number of text tokens)
+	numTextTokens := idx - textStartIdx
+	textLengths[0] = int64(numTextTokens)
 
 	// Add final separator
 	if idx < seqLen {
-		inputIDs[idx] = int64(sepID)
+		inputIDs[idx] = sepID
 		attentionMask[idx] = 1
 		idx++
 	}
 
 	// Pad remaining
 	for ; idx < seqLen; idx++ {
-		inputIDs[idx] = int64(padID)
+		inputIDs[idx] = padID
 		attentionMask[idx] = 0
 	}
 
-	// Build span indices for all possible spans up to maxWidth
-	numWords := int(wordIdx - 1)
+	// Build span indices as a flat list of [numTextTokens * maxWidth] spans
+	// The model operates on token positions, not word positions
+	// It internally reshapes to [numTextTokens, maxWidth, ...]
 	maxWidth := p.PipelineConfig.MaxWidth
-	if maxWidth > numWords {
-		maxWidth = numWords
+
+	// Ensure at least 1 token
+	if numTextTokens < 1 {
+		numTextTokens = 1
 	}
 
-	// Calculate number of spans
-	numSpans := 0
-	for width := 1; width <= maxWidth; width++ {
-		numSpans += numWords - width + 1
-	}
+	// Total number of spans = numTextTokens * maxWidth (fixed grid)
+	numSpans := numTextTokens * maxWidth
 
-	if numSpans == 0 {
-		numSpans = 1 // At least one span
-	}
-
+	// Build span_idx as [1, numSpans, 2] and span_mask as [1, numSpans]
 	spanIdx := make([]int64, numSpans*2)
-	spanMask := make([]int64, numSpans)
+	spanMask := make([]bool, numSpans)
 
-	spanI := 0
-	for width := 1; width <= maxWidth; width++ {
-		for start := 0; start <= numWords-width; start++ {
-			end := start + width - 1
-			if spanI < numSpans {
-				spanIdx[spanI*2] = int64(start)
-				spanIdx[spanI*2+1] = int64(end)
-				spanMask[spanI] = 1
-				spanI++
-			}
+	for t := 0; t < numTextTokens; t++ {
+		for wi := 0; wi < maxWidth; wi++ {
+			spanI := t*maxWidth + wi
+			start := t
+			end := t + wi // span end position (token index)
+			spanIdx[spanI*2] = int64(start)
+			spanIdx[spanI*2+1] = int64(end)
+			// Mask is true if the span end is within bounds
+			spanMask[spanI] = end < numTextTokens
 		}
 	}
 
@@ -621,7 +636,7 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 		},
 		{
 			Name:  "text_lengths",
-			Shape: []int64{1},
+			Shape: []int64{1, 1},
 			Data:  textLengths,
 		},
 		{
@@ -656,11 +671,12 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	}
 
 	if logits == nil {
-		// Try first output
-		if len(outputs) > 0 {
-			if data, ok := outputs[0].Data.([]float32); ok {
+		// Try first float32 output
+		for _, out := range outputs {
+			if data, ok := out.Data.([]float32); ok {
 				logits = data
-				logitsShape = outputs[0].Shape
+				logitsShape = out.Shape
+				break
 			}
 		}
 	}
@@ -669,36 +685,51 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		return nil, fmt.Errorf("no logits output found")
 	}
 
-	// logits shape is typically [batch, num_spans, num_labels]
+	// Logits shape: [batch, num_tokens, max_width, num_labels]
+	// We need to use the actual shape from the output, not numWords
 	numLabels := len(labels)
-	numSpans := 0
-	if len(logitsShape) >= 2 {
-		numSpans = int(logitsShape[1])
-	}
-
-	// Calculate number of spans
 	numWords := len(words)
 	maxWidth := p.PipelineConfig.MaxWidth
-	if maxWidth > numWords {
-		maxWidth = numWords
+
+	// Get dimensions from logits shape
+	var numTokens int
+	if len(logitsShape) >= 4 {
+		numTokens = int(logitsShape[1])
+		maxWidth = int(logitsShape[2])
+		numLabels = int(logitsShape[3])
+	}
+
+	// Ensure at least 1 token
+	if numTokens < 1 {
+		numTokens = numWords
 	}
 
 	// Extract entities from spans with scores above threshold
+	// The span grid is [numTokens, maxWidth] where:
+	// - First index is the token position
+	// - Second index is the span width index (0 = width 1, 1 = width 2, etc.)
+	// We need to map token positions back to word positions for entity extraction
 	var entities []GLiNEREntity
 	threshold := p.PipelineConfig.Threshold
 
-	spanI := 0
-	for width := 1; width <= maxWidth; width++ {
-		for start := 0; start <= numWords-width; start++ {
-			end := start + width - 1
+	// For now, use word-based iteration since we need word boundaries for entity text
+	// The logits are indexed by word position (after the prompt), not raw token position
+	for w := 0; w < numWords; w++ {
+		for wi := 0; wi < maxWidth; wi++ {
+			start := w
+			end := w + wi // span end position (word index)
 
-			if spanI >= numSpans {
-				break
+			// Skip invalid spans (extending beyond text)
+			if end >= numWords {
+				continue
 			}
 
 			// Get scores for this span across all labels
+			// Logits layout: [batch, token_pos, width, label]
+			// Flat index: token_pos * maxWidth * numLabels + width * numLabels + label
+			spanIdx := w*maxWidth*numLabels + wi*numLabels
 			for labelIdx := 0; labelIdx < numLabels; labelIdx++ {
-				logitIdx := spanI*numLabels + labelIdx
+				logitIdx := spanIdx + labelIdx
 				if logitIdx >= len(logits) {
 					continue
 				}
@@ -727,8 +758,6 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 					})
 				}
 			}
-
-			spanI++
 		}
 	}
 

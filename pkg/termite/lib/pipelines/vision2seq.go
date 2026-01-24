@@ -21,6 +21,7 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gomlx/go-huggingface/tokenizers"
 
@@ -74,10 +75,14 @@ type Vision2SeqResult = EncoderDecoderResult
 // This is backend-agnostic and can be used by both ONNX and GoMLX backends.
 func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error) {
 	// Find encoder ONNX file
+	// NOTE: vision_encoder.onnx is preferred over encoder_model.onnx because
+	// some models (like Florence-2) have both, but encoder_model.onnx expects
+	// inputs_embeds (concatenated image+text features) while vision_encoder.onnx
+	// takes pixel_values directly and outputs hidden states usable by the decoder.
 	encoderPath := FindONNXFile(modelPath, []string{
 		"encoder.onnx",
-		"encoder_model.onnx",
 		"vision_encoder.onnx",
+		"encoder_model.onnx",
 	})
 
 	// Find decoder ONNX file
@@ -103,10 +108,24 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 	// Build image config
 	imageConfig := buildImageConfig(rawConfig, preprocConfig)
 
-	// Determine architecture
-	numLayers := FirstNonZero(rawConfig.DecoderLayers, rawConfig.NumDecoderLayers, 6)
-	numHeads := FirstNonZero(rawConfig.DecoderAttentionHeads, rawConfig.NumAttentionHeads, rawConfig.DecoderNumHeads, 8)
-	hiddenSize := FirstNonZero(rawConfig.DecoderHiddenSize, rawConfig.HiddenSize, 768)
+	// Determine architecture - prefer nested decoder config for VisionEncoderDecoder models
+	var numLayers, numHeads, hiddenSize int
+	if rawConfig.DecoderConfig != nil {
+		dec := rawConfig.DecoderConfig
+		numLayers = FirstNonZero(dec.DecoderLayers, 6)
+		numHeads = FirstNonZero(dec.DecoderAttentionHeads, 8)
+		hiddenSize = FirstNonZero(dec.DModel, 768)
+	} else if rawConfig.TextConfig != nil {
+		// Florence-2 uses text_config for decoder settings
+		text := rawConfig.TextConfig
+		numLayers = FirstNonZero(text.DecoderLayers, 6)
+		numHeads = FirstNonZero(text.DecoderAttentionHeads, 12) // Florence-2 default is 12
+		hiddenSize = FirstNonZero(text.DModel, 768)
+	} else {
+		numLayers = FirstNonZero(rawConfig.DecoderLayers, rawConfig.NumDecoderLayers, 6)
+		numHeads = FirstNonZero(rawConfig.DecoderAttentionHeads, rawConfig.NumAttentionHeads, rawConfig.DecoderNumHeads, 8)
+		hiddenSize = FirstNonZero(rawConfig.DecoderHiddenSize, rawConfig.HiddenSize, 768)
+	}
 	headDim := hiddenSize / numHeads
 
 	return &Vision2SeqModelConfig{
@@ -144,7 +163,7 @@ func IsVision2SeqModel(path string) bool {
 
 // rawVision2SeqConfig represents the model's config.json structure.
 type rawVision2SeqConfig struct {
-	// Decoder config
+	// Top-level decoder config (some models use this)
 	VocabSize           int   `json:"vocab_size"`
 	DecoderStartTokenID int32 `json:"decoder_start_token_id"`
 	EOSTokenID          any   `json:"eos_token_id"` // Can be int or []int
@@ -152,7 +171,7 @@ type rawVision2SeqConfig struct {
 	PadTokenID          int32 `json:"pad_token_id"`
 	MaxLength           int   `json:"max_length"`
 
-	// Decoder architecture
+	// Top-level decoder architecture (some models use this)
 	DecoderLayers         int `json:"decoder_layers"`
 	DecoderAttentionHeads int `json:"decoder_attention_heads"`
 	DecoderHiddenSize     int `json:"d_model"`
@@ -168,15 +187,43 @@ type rawVision2SeqConfig struct {
 	ImageStd     []float32 `json:"image_std"`
 	Size         any       `json:"size"`
 
+	// Nested decoder config (for VisionEncoderDecoder models like TrOCR)
+	DecoderConfig *struct {
+		VocabSize             int   `json:"vocab_size"`
+		DecoderStartTokenID   int32 `json:"decoder_start_token_id"`
+		EOSTokenID            any   `json:"eos_token_id"`
+		BOSTokenID            int32 `json:"bos_token_id"`
+		PadTokenID            int32 `json:"pad_token_id"`
+		MaxLength             int   `json:"max_length"`
+		DecoderLayers         int   `json:"decoder_layers"`
+		DecoderAttentionHeads int   `json:"decoder_attention_heads"`
+		DModel                int   `json:"d_model"`
+	} `json:"decoder"`
+
 	// Encoder config (for vision models)
 	EncoderConfig *struct {
-		ImageSize int `json:"image_size"`
+		ImageSize         int `json:"image_size"`
+		HiddenSize        int `json:"hidden_size"`
+		NumAttentionHeads int `json:"num_attention_heads"`
 	} `json:"encoder"`
 
 	// Vision config (for some models)
 	VisionConfig *struct {
 		ImageSize int `json:"image_size"`
 	} `json:"vision_config"`
+
+	// Text config (for Florence-2 and similar models)
+	TextConfig *struct {
+		VocabSize             int   `json:"vocab_size"`
+		DecoderStartTokenID   int32 `json:"decoder_start_token_id"`
+		EOSTokenID            any   `json:"eos_token_id"`
+		BOSTokenID            int32 `json:"bos_token_id"`
+		PadTokenID            int32 `json:"pad_token_id"`
+		MaxLength             int   `json:"max_length"`
+		DecoderLayers         int   `json:"decoder_layers"`
+		DecoderAttentionHeads int   `json:"decoder_attention_heads"`
+		DModel                int   `json:"d_model"`
+	} `json:"text_config"`
 }
 
 // rawPreprocessorConfig represents preprocessor_config.json
@@ -224,6 +271,83 @@ func loadPreprocessorConfig(path string) *rawPreprocessorConfig {
 
 // buildDecoderConfig creates a DecoderConfig from the raw config.
 func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
+	// Try nested decoder config first (for VisionEncoderDecoder models like TrOCR)
+	if cfg.DecoderConfig != nil {
+		dec := cfg.DecoderConfig
+
+		// Handle eos_token_id which can be int or []int
+		var eosTokenID int32
+		switch v := dec.EOSTokenID.(type) {
+		case float64:
+			eosTokenID = int32(v)
+		case []interface{}:
+			if len(v) > 0 {
+				if f, ok := v[0].(float64); ok {
+					eosTokenID = int32(f)
+				}
+			}
+		}
+
+		maxLength := dec.MaxLength
+		if maxLength == 0 {
+			maxLength = 512
+		}
+
+		numHeads := FirstNonZero(dec.DecoderAttentionHeads, 8)
+		hiddenSize := FirstNonZero(dec.DModel, 768)
+
+		return &backends.DecoderConfig{
+			VocabSize:           dec.VocabSize,
+			MaxLength:           maxLength,
+			EOSTokenID:          eosTokenID,
+			BOSTokenID:          dec.BOSTokenID,
+			PadTokenID:          dec.PadTokenID,
+			DecoderStartTokenID: dec.DecoderStartTokenID,
+			NumLayers:           FirstNonZero(dec.DecoderLayers, 6),
+			NumHeads:            numHeads,
+			HeadDim:             hiddenSize / numHeads,
+		}
+	}
+
+	// Try text_config for Florence-2 style models
+	if cfg.TextConfig != nil {
+		text := cfg.TextConfig
+
+		// Handle eos_token_id which can be int or []int
+		var eosTokenID int32
+		switch v := text.EOSTokenID.(type) {
+		case float64:
+			eosTokenID = int32(v)
+		case []interface{}:
+			if len(v) > 0 {
+				if f, ok := v[0].(float64); ok {
+					eosTokenID = int32(f)
+				}
+			}
+		}
+
+		maxLength := text.MaxLength
+		if maxLength == 0 {
+			maxLength = 512
+		}
+
+		numHeads := FirstNonZero(text.DecoderAttentionHeads, 12) // Florence-2 default is 12
+		hiddenSize := FirstNonZero(text.DModel, 768)
+
+		return &backends.DecoderConfig{
+			VocabSize:           text.VocabSize,
+			MaxLength:           maxLength,
+			EOSTokenID:          eosTokenID,
+			BOSTokenID:          text.BOSTokenID,
+			PadTokenID:          text.PadTokenID,
+			DecoderStartTokenID: text.DecoderStartTokenID,
+			NumLayers:           FirstNonZero(text.DecoderLayers, 6),
+			NumHeads:            numHeads,
+			HeadDim:             hiddenSize / numHeads,
+		}
+	}
+
+	// Fall back to top-level fields
 	// Handle eos_token_id which can be int or []int
 	var eosTokenID int32
 	switch v := cfg.EOSTokenID.(type) {
@@ -598,19 +722,44 @@ func (m *vision2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 	}
 
 	// Add use_cache_branch if needed
+	// Check the input data type to determine whether to use bool or float
 	if inputNames["use_cache_branch"] {
-		useCacheBool := []bool{pastKV != nil}
-		inputs = append(inputs, backends.NamedTensor{
-			Name:  "use_cache_branch",
-			Shape: []int64{1},
-			Data:  useCacheBool,
-		})
+		// Find the expected data type for use_cache_branch
+		var useCacheDataType backends.DataType = backends.DataTypeBool // default to bool
+		for _, info := range inputInfo {
+			if info.Name == "use_cache_branch" {
+				useCacheDataType = info.DataType
+				break
+			}
+		}
+
+		useCacheVal := pastKV != nil && pastKV.SeqLen > 0
+		if useCacheDataType == backends.DataTypeFloat32 {
+			useCache := []float32{0}
+			if useCacheVal {
+				useCache[0] = 1
+			}
+			inputs = append(inputs, backends.NamedTensor{
+				Name:  "use_cache_branch",
+				Shape: []int64{1},
+				Data:  useCache,
+			})
+		} else {
+			// Default to bool
+			inputs = append(inputs, backends.NamedTensor{
+				Name:  "use_cache_branch",
+				Shape: []int64{1},
+				Data:  []bool{useCacheVal},
+			})
+		}
 	}
 
 	// Add past_key_values inputs if needed
+	// Encoder KV tensors need to have sequence length matching encoder output
+	encoderSeqLen := encoderOutput.Shape[1]
 	for _, info := range inputInfo {
 		if IsPastKeyValueInput(info.Name) {
-			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize)
+			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize, encoderSeqLen)
 			inputs = append(inputs, tensor)
 		}
 	}
@@ -623,26 +772,52 @@ func (m *vision2SeqModel) getDecoderInputIDsName(inputNames map[string]bool) str
 	return GetDecoderInputIDsName(inputNames)
 }
 
+// isEncoderKVTensor returns true if the tensor name indicates it's for encoder cross-attention.
+func isEncoderKVTensor(name string) bool {
+	// Encoder KV tensors typically have ".encoder." in their name
+	// e.g., "past_key_values.0.encoder.key" vs "past_key_values.0.decoder.key"
+	return strings.Contains(name, ".encoder.")
+}
+
 // createPastKVTensor creates a tensor for past key/value cache.
-func (m *vision2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int) backends.NamedTensor {
-	// If no past KV, create empty tensor
-	if pastKV == nil || pastKV.SeqLen == 0 {
-		// Create zero-sized tensor for first step
-		// Shape: [batch, num_heads, 0, head_dim]
-		return backends.NamedTensor{
-			Name:  name,
-			Shape: []int64{int64(batchSize), int64(m.config.NumHeads), 0, int64(m.config.HeadDim)},
-			Data:  []float32{},
-		}
+// On the first step (when pastKV is nil), both encoder and decoder KV tensors
+// should have sequence length 0, matching transformers.js behavior.
+// The model will compute cross-attention KV from encoder_hidden_states and
+// output them as present.*.encoder.* tensors.
+func (m *vision2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
+	numHeads := m.config.NumHeads
+	headDim := m.config.HeadDim
+
+	// Use defaults if config values are 0 (shouldn't happen but be safe)
+	if numHeads == 0 {
+		numHeads = 8
+	}
+	if headDim == 0 {
+		headDim = 64
 	}
 
-	// TODO: Extract the appropriate slice from pastKV based on layer index in name
-	// For now, return empty - full implementation would parse layer index from name
-	// and extract the corresponding KV tensors
+	// Determine sequence length based on whether we have past KV cache
+	var seqLen int
+	if pastKV != nil && pastKV.SeqLen > 0 {
+		// We have past KV cache - use appropriate sequence lengths
+		if isEncoderKVTensor(name) {
+			seqLen = encoderSeqLen
+		} else {
+			seqLen = pastKV.SeqLen
+		}
+	} else {
+		// First step - use 0 sequence length for empty tensors
+		// This tells the model to compute everything from encoder_hidden_states
+		seqLen = 0
+	}
+
+	// Create tensor with appropriate shape
+	size := batchSize * numHeads * seqLen * headDim
+	data := make([]float32, size)
 	return backends.NamedTensor{
 		Name:  name,
-		Shape: []int64{int64(batchSize), int64(m.config.NumHeads), 0, int64(m.config.HeadDim)},
-		Data:  []float32{},
+		Shape: []int64{int64(batchSize), int64(numHeads), int64(seqLen), int64(headDim)},
+		Data:  data,
 	}
 }
 
@@ -742,14 +917,21 @@ func (p *Vision2SeqPipeline) Run(ctx context.Context, img image.Image) (*Vision2
 // RunWithPrompt processes an image with an optional text prompt.
 // The prompt can be used for task-conditioned generation (e.g., Florence-2).
 func (p *Vision2SeqPipeline) RunWithPrompt(ctx context.Context, img image.Image, prompt string) (*Vision2SeqResult, error) {
-	// Encode image
-	encoderOutput, err := p.encodeImage(ctx, img)
+	// Encode image (with prompt tokens for Florence-2)
+	encoderOutput, err := p.encodeImageWithPrompt(ctx, img, prompt)
 	if err != nil {
 		return nil, err
 	}
 
 	// Get start tokens
-	startTokens := p.GetStartTokens(prompt)
+	// For Florence-2, the prompt is already in the encoder, so just use decoder start token
+	// For other models, the prompt goes to the decoder
+	var startTokens []int32
+	if p.isFlorence2Model() {
+		startTokens = []int32{p.DecoderConfig.DecoderStartTokenID}
+	} else {
+		startTokens = p.GetStartTokens(prompt)
+	}
 
 	// Generate using shared base
 	return p.GenerateFromEncoderOutput(ctx, encoderOutput, startTokens)
@@ -832,6 +1014,12 @@ func (p *Vision2SeqPipeline) encodeImageBytes(ctx context.Context, data []byte) 
 
 // encodePixels runs the encoder on preprocessed image pixels.
 func (p *Vision2SeqPipeline) encodePixels(ctx context.Context, pixels []float32) (*backends.EncoderOutput, error) {
+	return p.encodePixelsWithPrompt(ctx, pixels, nil)
+}
+
+// encodePixelsWithPrompt runs the encoder on preprocessed image pixels with optional prompt tokens.
+// For Florence-2 models, the prompt tokens are embedded alongside the image in the encoder.
+func (p *Vision2SeqPipeline) encodePixelsWithPrompt(ctx context.Context, pixels []float32, promptTokenIDs [][]int32) (*backends.EncoderOutput, error) {
 	cfg := p.ImageProcessor.Config
 	batchSize := 1
 
@@ -842,12 +1030,38 @@ func (p *Vision2SeqPipeline) encodePixels(ctx context.Context, pixels []float32)
 		ImageChannels: cfg.Channels,
 		ImageHeight:   cfg.Height,
 		ImageWidth:    cfg.Width,
+		InputIDs:      promptTokenIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encoding image: %w", err)
 	}
 
 	return encodeOutput.EncoderOutput, nil
+}
+
+// encodeImageWithPrompt preprocesses and encodes an image with an optional prompt.
+// For Florence-2 models, the prompt is embedded alongside the image in the encoder.
+func (p *Vision2SeqPipeline) encodeImageWithPrompt(ctx context.Context, img image.Image, prompt string) (*backends.EncoderOutput, error) {
+	// Preprocess image
+	pixels, err := p.ImageProcessor.Process(img)
+	if err != nil {
+		return nil, fmt.Errorf("preprocessing image: %w", err)
+	}
+
+	// Tokenize prompt if provided and this is a Florence-2 model
+	var promptTokenIDs [][]int32
+	if prompt != "" && p.isFlorence2Model() {
+		tokens := p.Tokenizer.Encode(prompt)
+		promptTokenIDs = [][]int32{IntToInt32(tokens)}
+	}
+
+	return p.encodePixelsWithPrompt(ctx, pixels, promptTokenIDs)
+}
+
+// isFlorence2Model checks if the underlying model is a Florence-2 model.
+func (p *Vision2SeqPipeline) isFlorence2Model() bool {
+	_, ok := p.Model.(*florence2Model)
+	return ok
 }
 
 // =============================================================================
@@ -886,10 +1100,18 @@ func LoadVision2SeqPipeline(
 		return nil, "", fmt.Errorf("getting session factory: %w", err)
 	}
 
-	// Load the model
-	model, err := LoadVision2SeqModel(modelPath, factory)
-	if err != nil {
-		return nil, "", fmt.Errorf("loading model: %w", err)
+	// Load the model - check for Florence-2 architecture
+	var model backends.Model
+	if IsFlorence2Model(modelPath) {
+		model, err = LoadFlorence2Model(modelPath, factory)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading Florence-2 model: %w", err)
+		}
+	} else {
+		model, err = LoadVision2SeqModel(modelPath, factory)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading model: %w", err)
+		}
 	}
 
 	// Load the tokenizer

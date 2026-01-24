@@ -278,6 +278,10 @@ type EmbeddingPipeline struct {
 	// Model performs inference on tokenized/preprocessed inputs.
 	Model backends.Model
 
+	// Projector is an optional projection model (e.g., visual_projection.onnx for CLIP).
+	// If set, embeddings are run through this model after extraction.
+	Projector backends.Model
+
 	// Tokenizer handles text-to-token conversion (required for text mode).
 	Tokenizer tokenizers.Tokenizer
 
@@ -402,6 +406,14 @@ func (p *EmbeddingPipeline) EmbedBatch(ctx context.Context, inputs *backends.Mod
 		return nil, fmt.Errorf("model output contains neither embeddings nor hidden states")
 	}
 
+	// Apply projection model if present (e.g., CLIP visual_projection)
+	if p.Projector != nil {
+		embeddings, err = p.applyProjection(ctx, embeddings)
+		if err != nil {
+			return nil, fmt.Errorf("applying projection: %w", err)
+		}
+	}
+
 	// Optionally normalize embeddings
 	if p.Config.Normalize {
 		for i := range embeddings {
@@ -410,6 +422,30 @@ func (p *EmbeddingPipeline) EmbedBatch(ctx context.Context, inputs *backends.Mod
 	}
 
 	return embeddings, nil
+}
+
+// applyProjection runs embeddings through the projector model (e.g., visual_projection.onnx).
+func (p *EmbeddingPipeline) applyProjection(ctx context.Context, embeddings [][]float32) ([][]float32, error) {
+	if p.Projector == nil {
+		return embeddings, nil
+	}
+
+	// Create input for projection model
+	// The projection model takes a 2D tensor [batch, hidden_size] and outputs [batch, projection_dim]
+	inputs := &backends.ModelInputs{
+		Embeddings: embeddings,
+	}
+
+	output, err := p.Projector.Forward(ctx, inputs)
+	if err != nil {
+		return nil, fmt.Errorf("projection forward: %w", err)
+	}
+
+	if output.Embeddings != nil && len(output.Embeddings) > 0 {
+		return output.Embeddings, nil
+	}
+
+	return nil, fmt.Errorf("projection model did not return embeddings")
 }
 
 // Embed generates embeddings for a batch of text strings.
@@ -458,6 +494,40 @@ func (p *EmbeddingPipeline) Embed(ctx context.Context, texts []string) ([][]floa
 	}
 
 	return p.EmbedBatch(ctx, inputs)
+}
+
+// EmbedOne generates an embedding for a single text string.
+// Use this for models that only support batch_size=1.
+func (p *EmbeddingPipeline) EmbedOne(ctx context.Context, text string) ([]float32, error) {
+	// Tokenize single text
+	tokens := p.Tokenizer.Encode(text)
+	if len(tokens) > p.Config.MaxLength {
+		tokens = tokens[:p.Config.MaxLength]
+	}
+	inputIDs := IntToInt32(tokens)
+	seqLen := len(inputIDs)
+
+	// Create attention mask
+	attentionMask := make([]int32, seqLen)
+	for j := range attentionMask {
+		attentionMask[j] = 1
+	}
+
+	// Create model inputs for single item
+	inputs := &backends.ModelInputs{
+		InputIDs:      [][]int32{inputIDs},
+		AttentionMask: [][]int32{attentionMask},
+	}
+
+	// Run inference
+	result, err := p.EmbedBatch(ctx, inputs)
+	if err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+	return result[0], nil
 }
 
 // EmbedImages generates embeddings for a batch of images.
@@ -535,7 +605,19 @@ func (p *EmbeddingPipeline) Forward(ctx context.Context, inputs *backends.ModelI
 // Close releases resources held by the pipeline.
 // Implements backends.Model.
 func (p *EmbeddingPipeline) Close() error {
-	return p.Model.Close()
+	var errs []error
+	if err := p.Model.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("closing model: %w", err))
+	}
+	if p.Projector != nil {
+		if err := p.Projector.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing projector: %w", err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing pipeline: %v", errs)
+	}
+	return nil
 }
 
 // Name returns the model name for logging and debugging.
@@ -701,6 +783,21 @@ func loadVisualEmbeddingPipeline(
 		return nil, fmt.Errorf("loading visual model: %w", err)
 	}
 
+	// Check for visual projection model (e.g., visual_projection.onnx for CLIP)
+	// This projects from hidden_size (e.g., 768) to projection_dim (e.g., 512)
+	var projector backends.Model
+	projectionFile := FindONNXFile(modelPath, []string{
+		"visual_projection.onnx",
+		"vision_projection.onnx",
+	})
+	if projectionFile != "" {
+		projector, err = loader.Load(modelPath, backends.WithONNXFile(filepath.Base(projectionFile)))
+		if err != nil {
+			model.Close()
+			return nil, fmt.Errorf("loading visual projection: %w", err)
+		}
+	}
+
 	// Use provided image config or the one from model config
 	imageConfig := loaderCfg.imageConfig
 	if imageConfig == nil {
@@ -720,5 +817,7 @@ func loadVisualEmbeddingPipeline(
 		pipelineConfig.Pooling = backends.PoolingMean
 	}
 
-	return NewImageEmbeddingPipeline(model, imageConfig, pipelineConfig), nil
+	pipeline := NewImageEmbeddingPipeline(model, imageConfig, pipelineConfig)
+	pipeline.Projector = projector
+	return pipeline, nil
 }

@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,6 +41,7 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
 	_ "golang.org/x/image/webp"
 )
@@ -104,18 +106,24 @@ func (t *TermiteAPI) ReadImages(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRead(w, r)
 }
 
+// TranscribeAudio implements ServerInterface
+func (t *TermiteAPI) TranscribeAudio(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiTranscribe(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
-		Chunkers:    []string{},
-		Rerankers:   []string{},
-		Embedders:   []string{},
-		Generators:  []string{},
-		Recognizers: []string{},
-		Extractors:  []string{},
-		Rewriters:   []string{},
-		Classifiers: []string{},
-		Readers:     []string{},
+		Chunkers:     []string{},
+		Rerankers:    []string{},
+		Embedders:    []string{},
+		Generators:   []string{},
+		Recognizers:  []string{},
+		Extractors:   []string{},
+		Rewriters:    []string{},
+		Classifiers:  []string{},
+		Readers:      []string{},
+		Transcribers: []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -164,6 +172,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.readerRegistry != nil {
 		resp.Readers = t.node.readerRegistry.List()
+	}
+
+	if t.node.transcriberRegistry != nil {
+		resp.Transcribers = t.node.transcriberRegistry.List()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -920,8 +932,8 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get generator from registry
-	generator, err := ln.generatorRegistry.Get(req.Model)
+	// Acquire generator from registry (increments ref count to prevent cache eviction during use)
+	generator, err := ln.generatorRegistry.Acquire(req.Model)
 	if err != nil {
 		ln.logger.Error("Failed to get generator",
 			zap.String("model", req.Model),
@@ -929,6 +941,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("model not found: %s: %v", req.Model, err), http.StatusNotFound)
 		return
 	}
+	defer ln.generatorRegistry.Release(req.Model)
 
 	// Check for tool support if tools are requested
 	var toolParser generation.ToolParser
@@ -1624,4 +1637,105 @@ func downloadAndDecodeImages(ctx context.Context, imageURLs []ImageURL, secConfi
 	}
 
 	return images, nil
+}
+
+// handleApiTranscribe handles speech-to-text transcription requests
+func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if transcription is available
+	if ln.transcriberRegistry == nil || len(ln.transcriberRegistry.List()) == 0 {
+		http.Error(w, "transcription not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request using generated types
+	var req TranscribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Audio) == 0 {
+		http.Error(w, "audio is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get transcriber model from registry
+	transcriber, err := ln.transcriberRegistry.Get(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Decode base64 audio data
+	audioData, err := base64.StdEncoding.DecodeString(string(req.Audio))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid base64 audio data: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Build transcription options
+	opts := transcribing.TranscribeOptions{}
+	if req.Language != "" {
+		opts.Language = req.Language
+	}
+
+	// Transcribe audio
+	result, err := transcriber.TranscribeWithOptions(r.Context(), audioData, opts)
+	if err != nil {
+		ln.logger.Error("transcription failed",
+			zap.String("model", req.Model),
+			zap.Int("audio_bytes", len(audioData)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("transcription failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record metrics
+	RecordTranscriberRequest(req.Model)
+
+	ln.logger.Info("transcribe request completed",
+		zap.String("model", req.Model),
+		zap.Int("audio_bytes", len(audioData)),
+		zap.Int("text_length", len(result.Text)))
+
+	// Send response
+	resp := TranscribeResponse{
+		Model:    req.Model,
+		Text:     result.Text,
+		Language: result.Language,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }

@@ -17,6 +17,7 @@ package pipelines
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/gomlx/go-huggingface/tokenizers"
 
@@ -37,6 +38,13 @@ type EncoderDecoderResult struct {
 
 	// StoppedAtEOS indicates whether generation stopped due to EOS token.
 	StoppedAtEOS bool
+
+	// Score is the generation confidence score (probability).
+	// Computed as exp(LogProb / TokenCount) to get average per-token probability.
+	Score float32
+
+	// LogProb is the cumulative log probability of the generated sequence.
+	LogProb float64
 }
 
 // EncoderDecoderPipeline provides shared functionality for encoder-decoder models.
@@ -96,11 +104,22 @@ func (p *EncoderDecoderPipeline) GenerateFromEncoderOutput(
 	// Decode tokens to text
 	text := p.Tokenizer.Decode(Int32ToInt(result.TokenIDs))
 
+	// Compute score as average per-token probability
+	// Score = exp(totalLogProb / numTokens)
+	var score float32
+	tokenCount := len(result.TokenIDs)
+	if tokenCount > 0 {
+		avgLogProb := result.LogProb / float64(tokenCount)
+		score = float32(math.Exp(avgLogProb))
+	}
+
 	return &EncoderDecoderResult{
 		Text:         text,
 		TokenIDs:     result.TokenIDs,
-		TokenCount:   len(result.TokenIDs),
+		TokenCount:   tokenCount,
 		StoppedAtEOS: result.StoppedAtEOS,
+		Score:        score,
+		LogProb:      result.LogProb,
 	}, nil
 }
 
@@ -166,4 +185,9 @@ func (p *EncoderDecoderPipeline) GetStartTokens(prompt string) []int32 {
 // Close releases resources held by the pipeline.
 func (p *EncoderDecoderPipeline) Close() error {
 	return p.Model.Close()
+}
+
+// SetDebug enables or disables debug output during generation.
+func (p *EncoderDecoderPipeline) SetDebug(debug bool) {
+	p.Generator.Debug = debug
 }

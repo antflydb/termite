@@ -15,6 +15,7 @@
 package pipelines
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,20 +28,36 @@ import (
 
 // LoadTokenizer loads a tokenizer from a local model directory.
 // It auto-detects the tokenizer type (HuggingFace tokenizer.json or SentencePiece tokenizer.model).
+// When built with ONNX/ORT tags, it uses the fast Rust tokenizer; otherwise falls back to pure Go.
 func LoadTokenizer(modelPath string) (tokenizers.Tokenizer, error) {
 	// First, try to load tokenizer_config.json for class information
 	var config *api.Config
 	configPath := filepath.Join(modelPath, "tokenizer_config.json")
 	if _, err := os.Stat(configPath); err == nil {
-		config, err = api.ParseConfigFile(configPath)
+		// Normalize the config to handle HuggingFace AddedToken objects
+		normalizedContent, err := normalizeTokenizerConfig(configPath)
+		if err != nil {
+			return nil, fmt.Errorf("normalizing tokenizer config: %w", err)
+		}
+		config, err = api.ParseConfigContent(normalizedContent)
 		if err != nil {
 			return nil, fmt.Errorf("parsing tokenizer config: %w", err)
 		}
+		config.ConfigFile = configPath
 	}
 
 	// Try tokenizer.json (HuggingFace Tokenizers format - BPE, WordPiece, etc.)
 	tokenizerJSONPath := filepath.Join(modelPath, "tokenizer.json")
 	if _, err := os.Stat(tokenizerJSONPath); err == nil {
+		// Try Rust tokenizer first (much faster, available with ORT/XLA builds)
+		if rustTokenizerAvailable() {
+			if tok, err := loadRustTokenizer(modelPath, config); err == nil && tok != nil {
+				return tok, nil
+			}
+			// Fall through to Go tokenizer if Rust fails
+		}
+
+		// Fall back to pure Go tokenizer
 		tok, err := hftokenizer.NewFromFile(config, tokenizerJSONPath)
 		if err != nil {
 			return nil, fmt.Errorf("loading tokenizer.json: %w", err)
@@ -112,4 +129,52 @@ func MustLoadTokenizer(modelPath string) tokenizers.Tokenizer {
 		panic(fmt.Sprintf("failed to load tokenizer: %v", err))
 	}
 	return tok
+}
+
+// normalizeTokenizerConfig reads a tokenizer_config.json file and normalizes
+// HuggingFace AddedToken objects to plain strings.
+// Some HuggingFace models use {"__type": "AddedToken", "content": "<s>"} format
+// instead of plain strings for special tokens.
+func normalizeTokenizerConfig(configPath string) ([]byte, error) {
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+
+	// Parse as generic JSON
+	var raw map[string]any
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil, fmt.Errorf("parsing config JSON: %w", err)
+	}
+
+	// Token fields that might be AddedToken objects
+	tokenFields := []string{
+		"bos_token", "eos_token", "pad_token", "unk_token",
+		"cls_token", "sep_token", "mask_token",
+	}
+
+	// Normalize each token field
+	for _, field := range tokenFields {
+		if val, ok := raw[field]; ok {
+			raw[field] = extractTokenContent(val)
+		}
+	}
+
+	// Re-serialize to JSON
+	return json.Marshal(raw)
+}
+
+// extractTokenContent extracts the token string from either a plain string
+// or a HuggingFace AddedToken object.
+func extractTokenContent(v any) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case map[string]any:
+		// HuggingFace AddedToken format: {"__type": "AddedToken", "content": "<s>", ...}
+		if content, ok := val["content"].(string); ok {
+			return content
+		}
+	}
+	return ""
 }
