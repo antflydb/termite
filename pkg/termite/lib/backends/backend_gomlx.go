@@ -83,9 +83,20 @@ func (b *gomlxBackend) Available() bool {
 		return *b.available
 	}
 
-	// Test if we can create an engine of this type
-	_, err := backends.NewWithConfig(b.engineType)
-	result := err == nil
+	// Test if we can create an engine of this type.
+	// Use recover to catch panics from libraries that don't handle
+	// missing dependencies gracefully (e.g., go-xla panics if PJRT
+	// plugin fails to load due to GLIBC version mismatch).
+	result := func() (available bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				available = false
+			}
+		}()
+		_, err := backends.NewWithConfig(b.engineType)
+		return err == nil
+	}()
+
 	b.available = &result
 	return result
 }
@@ -128,7 +139,7 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 
 	// If specific backend requested, create it
 	if backendType != "" {
-		return backends.NewWithConfig(backendType)
+		return safeNewBackend(backendType)
 	}
 
 	// Use cached default engine
@@ -137,10 +148,10 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 	}
 
 	// Auto-detect: try xla first, fall back to simplego
-	engine, err := backends.NewWithConfig("xla")
+	engine, err := safeNewBackend("xla")
 	if err != nil {
 		// XLA not available, use simplego
-		engine, err = backends.NewWithConfig("simplego")
+		engine, err = safeNewBackend("simplego")
 		if err != nil {
 			return nil, err
 		}
@@ -148,6 +159,18 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 
 	m.defaultEngine = engine
 	return engine, nil
+}
+
+// safeNewBackend creates a new backend, catching panics from libraries
+// that don't handle missing dependencies gracefully.
+func safeNewBackend(backendType string) (engine backends.Backend, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			engine = nil
+			err = fmt.Errorf("backend %q panicked during initialization: %v", backendType, r)
+		}
+	}()
+	return backends.NewWithConfig(backendType)
 }
 
 // gomlxModelLoader implements ModelLoader for GoMLX inference.
