@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "name": "stella_en_1.5B_v5",
+  "owner": "dunzhang",
+  "type": "embedder",
+  "description": "Premium English embeddings with Matryoshka support. Top-tier MTEB scores with excellent quality-to-size ratio.",
+  "source": "dunzhang/stella_en_1.5B_v5",
+  "files": [],
+  "variants": {}
+}
