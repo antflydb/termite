@@ -23,7 +23,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/reranking"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -41,14 +41,16 @@ func skipIfNoModels(t testing.TB, modelsDir string) {
 	}
 }
 
-// newNonQuantizedHugotModel creates a Hugot model that explicitly uses the non-quantized version
-func newNonQuantizedHugotModel(modelPath string, logger *zap.Logger) (reranking.Model, error) {
-	return termreranking.NewPooledHugotReranker(modelPath, "model.onnx", 1, logger)
-}
-
-// newQuantizedHugotModel creates a Hugot model that explicitly uses the quantized version
-func newQuantizedHugotModel(modelPath string, logger *zap.Logger) (reranking.Model, error) {
-	return termreranking.NewPooledHugotReranker(modelPath, "model_i8.onnx", 1, logger)
+// newRerankerModel creates a reranker model using the new pipeline-based API
+func newRerankerModel(modelPath string, sessionManager *backends.SessionManager, logger *zap.Logger) (reranking.Model, error) {
+	cfg := termreranking.PooledRerankerConfig{
+		ModelPath:     modelPath,
+		PoolSize:      1,
+		ModelBackends: nil,
+		Logger:        logger,
+	}
+	model, _, err := termreranking.NewPooledReranker(cfg, sessionManager)
+	return model, err
 }
 
 func TestRerankerRegistryLoading(t *testing.T) {
@@ -62,7 +64,7 @@ func TestRerankerRegistryLoading(t *testing.T) {
 	defer func() { _ = logger.Sync() }()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
@@ -115,10 +117,20 @@ func TestRerankerRegistryLoading(t *testing.T) {
 }
 
 func TestCompareQuantizedVsNonQuantized(t *testing.T) {
-	modelPath := filepath.Join("..", "..", "models", "rerankers", "mxbai-rerank-base-v1")
-	skipIfNoModels(t, modelPath)
+	modelsDir := filepath.Join("..", "..", "models", "rerankers")
+	skipIfNoModels(t, modelsDir)
 	logger := zap.NewExample()
 	defer func() { _ = logger.Sync() }()
+
+	// Create session manager
+	sessionManager := backends.NewSessionManager()
+	defer func() { _ = sessionManager.Close() }()
+
+	// Create registry
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	require.NoError(t, err)
+	require.NotNil(t, registry)
+	defer func() { _ = registry.Close() }()
 
 	// Test documents
 	query := "What is machine learning?"
@@ -136,10 +148,10 @@ func TestCompareQuantizedVsNonQuantized(t *testing.T) {
 	}
 
 	t.Run("NonQuantized", func(t *testing.T) {
-		model, err := newNonQuantizedHugotModel(modelPath, logger.Named("non-quantized"))
-		require.NoError(t, err)
-		require.NotNil(t, model)
-		defer func() { _ = model.Close() }()
+		model, err := registry.Get("mxbai-rerank-base-v1")
+		if err != nil {
+			t.Skipf("Model not available: %v", err)
+		}
 
 		scores, err := model.Rerank(t.Context(), query, documents)
 		require.NoError(t, err)
@@ -153,14 +165,10 @@ func TestCompareQuantizedVsNonQuantized(t *testing.T) {
 	})
 
 	t.Run("Quantized", func(t *testing.T) {
-		// Temporarily create a quantized model by directly calling reranking package
-		logger := zap.NewExample()
-		defer func() { _ = logger.Sync() }()
-
-		model, err := newQuantizedHugotModel(modelPath, logger.Named("quantized"))
-		require.NoError(t, err)
-		require.NotNil(t, model)
-		defer func() { _ = model.Close() }()
+		model, err := registry.Get("mxbai-rerank-base-v1-i8-qt")
+		if err != nil {
+			t.Skipf("Quantized model not available: %v", err)
+		}
 
 		scores, err := model.Rerank(t.Context(), query, documents)
 		require.NoError(t, err)
@@ -181,7 +189,7 @@ func TestCompareAllRerankerModels(t *testing.T) {
 	defer func() { _ = logger.Sync() }()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
@@ -306,8 +314,8 @@ func getRanks(scores []float32) []int {
 }
 
 func BenchmarkRerankerQuantizedVsNonQuantized(b *testing.B) {
-	modelPath := filepath.Join("..", "..", "models", "rerankers", "mxbai-rerank-base-v1")
-	skipIfNoModels(b, modelPath)
+	modelsDir := filepath.Join("..", "..", "models", "rerankers")
+	skipIfNoModels(b, modelsDir)
 	logger := zap.NewNop()
 
 	query := "What is machine learning?"
@@ -324,11 +332,21 @@ func BenchmarkRerankerQuantizedVsNonQuantized(b *testing.B) {
 		"Classical music has been popular for centuries across many cultures.",
 	}
 
+	// Create session manager
+	sessionManager := backends.NewSessionManager()
+	defer func() { _ = sessionManager.Close() }()
+
+	// Create registry
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	require.NoError(b, err)
+	require.NotNil(b, registry)
+	defer func() { _ = registry.Close() }()
+
 	b.Run("NonQuantized", func(b *testing.B) {
-		model, err := newNonQuantizedHugotModel(modelPath, logger)
-		require.NoError(b, err)
-		require.NotNil(b, model)
-		defer func() { _ = model.Close() }()
+		model, err := registry.Get("mxbai-rerank-base-v1")
+		if err != nil {
+			b.Skipf("Model not available: %v", err)
+		}
 
 		b.ResetTimer()
 		for b.Loop() {
@@ -338,10 +356,10 @@ func BenchmarkRerankerQuantizedVsNonQuantized(b *testing.B) {
 	})
 
 	b.Run("Quantized", func(b *testing.B) {
-		model, err := newQuantizedHugotModel(modelPath, logger)
-		require.NoError(b, err)
-		require.NotNil(b, model)
-		defer func() { _ = model.Close() }()
+		model, err := registry.Get("mxbai-rerank-base-v1-i8-qt")
+		if err != nil {
+			b.Skipf("Quantized model not available: %v", err)
+		}
 
 		b.ResetTimer()
 		for b.Loop() {
@@ -371,7 +389,7 @@ func BenchmarkAllRerankerModels(b *testing.B) {
 	}
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry once for all benchmarks
@@ -427,7 +445,7 @@ func TestEmbedderRegistryLoading(t *testing.T) {
 	defer func() { _ = logger.Sync() }()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
@@ -461,7 +479,7 @@ func TestEmbedderModelEmbedding(t *testing.T) {
 	defer func() { _ = logger.Sync() }()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
@@ -512,7 +530,7 @@ func TestEmbedderQuantizedVsNonQuantized(t *testing.T) {
 	defer func() { _ = logger.Sync() }()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
@@ -597,7 +615,7 @@ func BenchmarkEmbedderQuantizedVsNonQuantized(b *testing.B) {
 	ctx := context.Background()
 
 	// Create session manager
-	sessionManager := hugot.NewSessionManager()
+	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
 	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir}, sessionManager, logger)

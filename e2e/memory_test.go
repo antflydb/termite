@@ -26,7 +26,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/termite/pkg/termite"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"go.uber.org/zap/zaptest"
 )
 
@@ -50,7 +50,7 @@ func TestMemoryGrowthWithVaryingShapes(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
 	// Create session manager
-	sm := hugot.NewSessionManager()
+	sm := backends.NewSessionManager()
 	defer sm.Close()
 
 	// Create embedder registry
@@ -140,7 +140,7 @@ func TestMemoryWithRepeatedShapes(t *testing.T) {
 
 	logger := zaptest.NewLogger(t)
 
-	sm := hugot.NewSessionManager()
+	sm := backends.NewSessionManager()
 	defer sm.Close()
 
 	registry, err := termite.NewEmbedderRegistry(
@@ -235,7 +235,7 @@ func BenchmarkMemoryPerShape(b *testing.B) {
 		b.Skipf("Embedder models directory not found: %s (run a test first to download)", embedderModelsDir)
 	}
 
-	sm := hugot.NewSessionManager()
+	sm := backends.NewSessionManager()
 	defer sm.Close()
 
 	registry, err := termite.NewEmbedderRegistry(

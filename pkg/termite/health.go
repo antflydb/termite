@@ -17,7 +17,7 @@ package termite
 import (
 	"net/http"
 
-	"github.com/bytedance/sonic/encoder"
+	json "github.com/antflydb/antfly-go/libaf/json"
 )
 
 // Version information - set at build time via ldflags
@@ -51,7 +51,7 @@ type ReadyModels struct {
 func (ln *TermiteNode) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = encoder.NewStreamEncoder(w).Encode(HealthResponse{Status: "ok"})
+	_ = json.NewEncoder(w).Encode(HealthResponse{Status: "ok"})
 }
 
 // handleReadyz returns 200 if the service is ready to accept requests (readiness check)
@@ -82,11 +82,11 @@ func (ln *TermiteNode) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		resp.Status = "not_ready"
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = encoder.NewStreamEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = encoder.NewStreamEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }

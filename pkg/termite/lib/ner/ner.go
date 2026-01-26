@@ -12,12 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package ner provides Named Entity Recognition functionality using ONNX models.
 package ner
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"sync/atomic"
+
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"go.uber.org/zap"
+	"golang.org/x/sync/semaphore"
 )
 
 // ErrNotSupported is returned when a model doesn't support a particular operation.
@@ -106,4 +113,182 @@ type Recognizer interface {
 	// RelationLabels returns the default relation labels this model uses.
 	// Returns nil if the model doesn't support relation extraction.
 	RelationLabels() []string
+}
+
+// Ensure PooledNER implements the Model interface
+var _ Model = (*PooledNER)(nil)
+
+// PooledNERConfig holds configuration for creating a PooledNER.
+type PooledNERConfig struct {
+	// ModelPath is the path to the model directory
+	ModelPath string
+
+	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count)
+	PoolSize int
+
+	// ModelBackends specifies which backends this model supports (nil = all backends)
+	ModelBackends []string
+
+	// Logger for logging (nil = no logging)
+	Logger *zap.Logger
+}
+
+// PooledNER manages multiple NERPipeline instances for concurrent NER.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+type PooledNER struct {
+	pipelines    []*pipelines.NERPipeline
+	sem          *semaphore.Weighted
+	nextPipeline atomic.Uint64
+	logger       *zap.Logger
+	poolSize     int
+	backendType  backends.BackendType
+}
+
+// NewPooledNER creates a new NERPipeline-based pooled NER model.
+// This is the new implementation using go-huggingface tokenizers and the backends package.
+func NewPooledNER(
+	cfg PooledNERConfig,
+	sessionManager *backends.SessionManager,
+) (*PooledNER, backends.BackendType, error) {
+	if cfg.ModelPath == "" {
+		return nil, "", fmt.Errorf("model path is required")
+	}
+
+	logger := cfg.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
+	// Auto-detect pool size from CPU count if not specified
+	poolSize := cfg.PoolSize
+	if poolSize <= 0 {
+		poolSize = runtime.NumCPU()
+	}
+
+	logger.Info("Initializing pooled NER",
+		zap.String("modelPath", cfg.ModelPath),
+		zap.Int("poolSize", poolSize))
+
+	// Create N NER pipelines
+	pipelinesList := make([]*pipelines.NERPipeline, poolSize)
+	var backendUsed backends.BackendType
+
+	for i := 0; i < poolSize; i++ {
+		pipeline, bt, err := pipelines.LoadNERPipeline(
+			cfg.ModelPath,
+			sessionManager,
+			cfg.ModelBackends,
+		)
+		if err != nil {
+			// Clean up already-created pipelines
+			for j := 0; j < i; j++ {
+				if pipelinesList[j] != nil {
+					_ = pipelinesList[j].Close()
+				}
+			}
+			logger.Error("Failed to create NER pipeline",
+				zap.Int("index", i),
+				zap.Error(err))
+			return nil, "", fmt.Errorf("creating NER pipeline %d: %w", i, err)
+		}
+		pipelinesList[i] = pipeline
+		backendUsed = bt
+		logger.Debug("Created NER pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+	}
+
+	logger.Info("Successfully created pooled NER pipelines",
+		zap.Int("count", poolSize),
+		zap.String("backend", string(backendUsed)))
+
+	return &PooledNER{
+		pipelines:   pipelinesList,
+		sem:         semaphore.NewWeighted(int64(poolSize)),
+		logger:      logger,
+		poolSize:    poolSize,
+		backendType: backendUsed,
+	}, backendUsed, nil
+}
+
+// BackendType returns the backend type used by this NER model
+func (p *PooledNER) BackendType() backends.BackendType {
+	return p.backendType
+}
+
+// Recognize extracts named entities from the given texts.
+// Thread-safe: uses semaphore to limit concurrent pipeline access.
+func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	// Acquire semaphore slot (blocks if all pipelines busy)
+	if err := p.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	}
+	defer p.sem.Release(1)
+
+	// Round-robin pipeline selection
+	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+	pipeline := p.pipelines[idx]
+
+	p.logger.Debug("Using pipeline for NER",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)))
+
+	// Delegate to NERPipeline.ExtractEntities
+	pipelineEntities, err := pipeline.ExtractEntities(ctx, texts)
+	if err != nil {
+		p.logger.Error("NER failed",
+			zap.Int("pipelineIndex", idx),
+			zap.Error(err))
+		return nil, fmt.Errorf("extracting entities: %w", err)
+	}
+
+	// Convert pipelines.Entity to ner.Entity
+	results := make([][]Entity, len(pipelineEntities))
+	for i, entities := range pipelineEntities {
+		results[i] = make([]Entity, len(entities))
+		for j, e := range entities {
+			results[i][j] = Entity{
+				Text:  e.Text,
+				Label: e.Label,
+				Start: e.Start,
+				End:   e.End,
+				Score: e.Score,
+			}
+		}
+	}
+
+	p.logger.Debug("NER completed",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)),
+		zap.Int("total_entities", countEntities(results)))
+
+	return results, nil
+}
+
+// Close releases resources.
+func (p *PooledNER) Close() error {
+	var lastErr error
+	for i, pipeline := range p.pipelines {
+		if pipeline != nil {
+			if err := pipeline.Close(); err != nil {
+				p.logger.Warn("Failed to close pipeline",
+					zap.Int("index", i),
+					zap.Error(err))
+				lastErr = err
+			}
+		}
+	}
+	p.pipelines = nil
+	return lastErr
+}
+
+// countEntities counts the total number of entities across all texts.
+func countEntities(results [][]Entity) int {
+	count := 0
+	for _, entities := range results {
+		count += len(entities)
+	}
+	return count
 }

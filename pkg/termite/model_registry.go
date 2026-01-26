@@ -221,12 +221,30 @@ func isGeneratorModelDir(path string) bool {
 }
 
 // generateGenaiConfig creates a genai_config.json file from a HuggingFace config.json.
+// It also ensures chat_template.jinja exists for chat-based generation.
 // This enables ONNX Runtime GenAI to load standard HuggingFace ONNX models.
 // Returns nil if successful, error otherwise.
 func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 	genaiConfigPath := filepath.Join(modelPath, "genai_config.json")
+	chatTemplateJinjaPath := filepath.Join(modelPath, "chat_template.jinja")
 
-	// Skip if genai_config.json already exists
+	// Ensure chat_template.jinja exists (ortgenai loads it from this file)
+	if _, err := os.Stat(chatTemplateJinjaPath); os.IsNotExist(err) {
+		// Try to create it from tokenizer_config.json
+		chatTemplate := getChatTemplateFromTokenizer(modelPath, logger)
+		if chatTemplate != "" {
+			if err := os.WriteFile(chatTemplateJinjaPath, []byte(chatTemplate), 0644); err != nil {
+				logger.Warn("Failed to write chat_template.jinja",
+					zap.String("path", chatTemplateJinjaPath),
+					zap.Error(err))
+			} else {
+				logger.Info("Created chat_template.jinja from tokenizer_config.json",
+					zap.String("path", chatTemplateJinjaPath))
+			}
+		}
+	}
+
+	// Skip genai_config.json generation if it already exists
 	if _, err := os.Stat(genaiConfigPath); err == nil {
 		return nil
 	}
@@ -316,7 +334,7 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 		headDim = int(hd)
 	}
 
-	// Build genai_config.json
+	// Build genai_config.json (chat_template is loaded from chat_template.jinja file, not from JSON)
 	genaiConfig := map[string]any{
 		"model": map[string]any{
 			"bos_token_id": 2,
@@ -381,6 +399,36 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 		zap.String("path", genaiConfigPath))
 
 	return nil
+}
+
+// getChatTemplateFromTokenizer tries to get a chat template from tokenizer_config.json.
+// Returns empty string if no template is found.
+func getChatTemplateFromTokenizer(modelPath string, logger *zap.Logger) string {
+	tokenizerConfigPath := filepath.Join(modelPath, "tokenizer_config.json")
+	tokenizerData, err := os.ReadFile(tokenizerConfigPath)
+	if err != nil {
+		logger.Debug("No tokenizer_config.json found",
+			zap.String("modelPath", modelPath))
+		return ""
+	}
+
+	var tokenizerConfig map[string]any
+	if err := json.Unmarshal(tokenizerData, &tokenizerConfig); err != nil {
+		logger.Debug("Failed to parse tokenizer_config.json",
+			zap.String("modelPath", modelPath),
+			zap.Error(err))
+		return ""
+	}
+
+	if ct, ok := tokenizerConfig["chat_template"].(string); ok && ct != "" {
+		logger.Debug("Found chat_template in tokenizer_config.json",
+			zap.String("modelPath", modelPath))
+		return ct
+	}
+
+	logger.Debug("No chat_template in tokenizer_config.json",
+		zap.String("modelPath", modelPath))
+	return ""
 }
 
 // isValidGeneratorModel checks if a model directory contains a valid generator model.

@@ -104,34 +104,6 @@ func TestTermiteNode_HandleApiEmbed_InvalidRequest(t *testing.T) {
 	assert.True(t, w.Code == http.StatusServiceUnavailable || w.Code == http.StatusBadRequest)
 }
 
-func TestTermiteReranker_InitWithoutModel(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-
-	// Should return nil when model is nil
-	reranker, err := NewTermiteReranker(nil, logger)
-	require.NoError(t, err)
-	assert.Nil(t, reranker)
-}
-
-func TestHugotModel_InitWithoutModelPath(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-
-	// Should return nil when model path is empty
-	model, err := NewHugotModel("", logger)
-	require.NoError(t, err)
-	assert.Nil(t, model)
-}
-
-func TestHugotModel_InitWithInvalidModelPath(t *testing.T) {
-	logger := zaptest.NewLogger(t)
-
-	// Should return error when model path doesn't exist
-	model, err := NewHugotModel("/nonexistent/path/to/model", logger)
-	assert.Error(t, err)
-	assert.Nil(t, model)
-	assert.Contains(t, err.Error(), "does not exist")
-}
-
 // MockModel implements the reranking.Model interface for testing
 type MockModel struct {
 	rerankFunc func(ctx context.Context, query string, prompts []string) ([]float32, error)

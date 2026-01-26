@@ -24,7 +24,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
@@ -45,7 +45,7 @@ type ModelInfo struct {
 // EmbedderRegistry manages embedding models with lazy loading and TTL-based unloading
 type EmbedderRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -54,6 +54,10 @@ type EmbedderRegistry struct {
 
 	// Loaded models with TTL cache (for lazy models)
 	cache *ttlcache.Cache[string, embeddings.Embedder]
+
+	// Reference counting to prevent eviction during active use
+	refCounts   map[string]int
+	refCountsMu sync.Mutex
 
 	// Pinned models (never evicted, stored separately from cache)
 	pinned   map[string]embeddings.Embedder
@@ -76,7 +80,7 @@ type EmbedderConfig struct {
 // NewEmbedderRegistry creates a new lazy-loading embedder registry
 func NewEmbedderRegistry(
 	config EmbedderConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*EmbedderRegistry, error) {
 	if logger == nil {
@@ -93,6 +97,7 @@ func NewEmbedderRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ModelInfo),
+		refCounts:       make(map[string]int),
 		pinned:          make(map[string]embeddings.Embedder),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
@@ -119,20 +124,10 @@ func NewEmbedderRegistry(
 		modelName := item.Key()
 		embedder := item.Value()
 
-		// Skip closing on manual deletion - Close() handles cleanup synchronously
+		// Skip closing on manual deletion - Close() handles cleanup synchronously.
+		// Don't log here since ttlcache runs eviction callbacks in goroutines,
+		// which can cause panics if the logger (e.g., test logger) is closed.
 		if reason == ttlcache.EvictionReasonDeleted {
-			// Check if model was moved to pinned (don't close in that case)
-			registry.pinnedMu.RLock()
-			isPinned := registry.pinned[modelName] == embedder
-			registry.pinnedMu.RUnlock()
-
-			if isPinned {
-				logger.Debug("Model moved to pinned, skipping close",
-					zap.String("model", modelName))
-			} else {
-				logger.Debug("Embedder removed from cache (cleanup handled separately)",
-					zap.String("model", modelName))
-			}
 			return
 		}
 
@@ -143,6 +138,22 @@ func NewEmbedderRegistry(
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
 		}
+
+		// Check if model is still in use (has active references)
+		// Hold lock through check-and-action to prevent race with Release()
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[modelName]
+		if refCount > 0 {
+			// Re-add while still holding lock to prevent race with Release()
+			registry.cache.Set(modelName, embedder, registry.keepAlive)
+			registry.refCountsMu.Unlock()
+			logger.Warn("Preventing eviction of embedder model with active references",
+				zap.String("model", modelName),
+				zap.Int("refCount", refCount),
+				zap.String("reason", reasonStr))
+			return
+		}
+		registry.refCountsMu.Unlock()
 
 		logger.Info("Unloading embedder model",
 			zap.String("model", modelName),
@@ -281,7 +292,10 @@ func (r *EmbedderRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns an embedder by model name, loading it if necessary
+// Get returns an embedder by model name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations to prevent
+// the model from being evicted during use. Get() does not track usage and
+// the returned embedder may be closed if the cache evicts it.
 func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 	// Check if model is pinned (never evicted)
 	r.pinnedMu.RLock()
@@ -313,6 +327,42 @@ func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 	return r.loadModel(info)
 }
 
+// Acquire returns an embedder by model name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
+func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
+	embedder, err := r.Get(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired embedder model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+
+	return embedder, nil
+}
+
+// Release decrements the reference count for a model.
+// Must be called after Acquire() when the caller is done using the embedder.
+func (r *EmbedderRegistry) Release(modelName string) {
+	r.refCountsMu.Lock()
+	if r.refCounts[modelName] > 0 {
+		r.refCounts[modelName]--
+	}
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released embedder model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+}
+
 // loadModel loads a model on demand
 func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, error) {
 	r.mu.Lock()
@@ -331,14 +381,14 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		zap.Int("pool_size", info.PoolSize))
 
 	var embedder embeddings.Embedder
-	var backendUsed hugot.BackendType
+	var backendUsed backends.BackendType
 	var err error
 
 	// Handle different model types
 	switch info.ModelType {
 	case "clip":
 		// Load standard precision CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
 			info.Path,
 			false, // not quantized
 			r.sessionManager,
@@ -347,7 +397,7 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		)
 	case "clip-quantized":
 		// Load quantized CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewHugotCLIPEmbedderWithSessionManager(
+		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
 			info.Path,
 			true, // quantized
 			r.sessionManager,
@@ -355,15 +405,15 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 			r.logger.Named(info.Name),
 		)
 	default:
-		// Standard pooled embedder
-		embedder, backendUsed, err = termembeddings.NewPooledHugotEmbedderWithSessionManager(
-			info.Path,
-			info.OnnxFilename,
-			info.PoolSize,
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
+		// Standard pooled embedder using pipeline
+		cfg := termembeddings.PooledEmbedderConfig{
+			ModelPath:     info.Path,
+			PoolSize:      info.PoolSize,
+			Normalize:     true, // Enable L2 normalization for unit-length embeddings
+			ModelBackends: nil,  // Use all available backends
+			Logger:        r.logger.Named(info.Name),
+		}
+		embedder, backendUsed, err = termembeddings.NewPooledEmbedder(cfg, r.sessionManager)
 	}
 
 	if err != nil {

@@ -101,9 +101,10 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 
 	// Filter and select files to download based on model type
 	var toDownload []string
-	if modelType == ModelTypeGenerator || modelType == ModelTypeReader {
-		// For generators and readers (Vision2Seq encoder-decoder models),
-		// auto-detect smallest variant if not specified
+	if modelType == ModelTypeGenerator || modelType == ModelTypeReader || modelType == ModelTypeTranscriber {
+		// For generators, readers (Vision2Seq), and transcribers (Speech2Seq) -
+		// all encoder-decoder models that need multiple ONNX files.
+		// Auto-detect smallest variant if not specified.
 		if variant == "" {
 			variant = findSmallestGeneratorVariant(files)
 			if variant != "" {

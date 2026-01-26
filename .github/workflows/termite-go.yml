@@ -42,6 +42,8 @@ jobs:
   test:
     name: Test (${{ matrix.backend }})
     runs-on: codebuild-GitHubActionsRunnerTermite-${{ github.run_id }}-${{ github.run_attempt }}
+    # XLA/omni backends require GLIBC 2.38+ (Ubuntu 24.04)
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,17 +52,27 @@ jobs:
           - backend: pure-go
             tags: ""
             cgo: "0"
+            container: ""
           - backend: onnx
             tags: "onnx,ORT"
             cgo: "1"
+            container: ""
           - backend: xla
             tags: "xla,XLA"
             cgo: "1"
+            container: "ubuntu:24.04"
           - backend: omni
             tags: "onnx,ORT,xla,XLA"
             cgo: "1"
+            container: "ubuntu:24.04"
 
     steps:
+      - name: Install container prerequisites
+        if: matrix.container != ''
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates curl
+
       - uses: actions/checkout@v6
 
       - name: Clone antfly-go (for OpenAPI refs)
@@ -71,17 +83,35 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Set up Go
+      - name: Set up Go (bootstrap)
         uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache: false
+
+      - name: Install Go 1.26rc2
+        run: |
+          go install golang.org/dl/go1.26rc2@latest
+          go1.26rc2 download
+          echo "GOROOT=$(go1.26rc2 env GOROOT)" >> $GITHUB_ENV
+          echo "$(go1.26rc2 env GOROOT)/bin" >> $GITHUB_PATH
+          echo "GOEXPERIMENT=simd" >> $GITHUB_ENV
+
+      - name: Verify Go version
+        run: go version
 
       - name: Install build dependencies
         if: matrix.cgo == '1'
         run: |
           if command -v apt-get &> /dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y build-essential pkg-config curl
+            # In container, we may not have sudo and need more packages
+            if [ -n "${{ matrix.container }}" ]; then
+              apt-get update
+              apt-get install -y build-essential pkg-config curl git ca-certificates
+            else
+              sudo apt-get update
+              sudo apt-get install -y build-essential pkg-config curl
+            fi
           elif command -v dnf &> /dev/null; then
             sudo dnf install -y --allowerasing gcc gcc-c++ make pkgconfig curl
           elif command -v yum &> /dev/null; then
@@ -92,9 +122,15 @@ jobs:
         if: matrix.cgo == '1'
         run: |
           ARCH=$([ "$(uname -m)" = "aarch64" ] && echo "arm64" || echo "amd64")
-          curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${ARCH}.tar.gz" \
-            | sudo tar -xzf - -C /usr/local/lib
-          sudo ldconfig
+          if [ -n "${{ matrix.container }}" ]; then
+            curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${ARCH}.tar.gz" \
+              | tar -xzf - -C /usr/local/lib
+            ldconfig
+          else
+            curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${ARCH}.tar.gz" \
+              | sudo tar -xzf - -C /usr/local/lib
+            sudo ldconfig
+          fi
 
       - name: Download ONNX Runtime
         if: matrix.backend == 'onnx' || matrix.backend == 'omni'
@@ -123,10 +159,17 @@ jobs:
       - name: Download PJRT CPU plugin
         if: matrix.backend == 'xla' || matrix.backend == 'omni'
         run: |
-          sudo mkdir -p /usr/local/lib/go-xla
-          curl -fsSL "https://github.com/gomlx/pjrt-cpu-binaries/releases/download/v${PJRT_CPU_VERSION}/pjrt_cpu_linux_amd64.tar.gz" \
-            | sudo tar -xzf - -C /usr/local/lib/go-xla
-          sudo ldconfig
+          if [ -n "${{ matrix.container }}" ]; then
+            mkdir -p /usr/local/lib/go-xla
+            curl -fsSL "https://github.com/gomlx/pjrt-cpu-binaries/releases/download/v${PJRT_CPU_VERSION}/pjrt_cpu_linux_amd64.tar.gz" \
+              | tar -xzf - -C /usr/local/lib/go-xla
+            ldconfig
+          else
+            sudo mkdir -p /usr/local/lib/go-xla
+            curl -fsSL "https://github.com/gomlx/pjrt-cpu-binaries/releases/download/v${PJRT_CPU_VERSION}/pjrt_cpu_linux_amd64.tar.gz" \
+              | sudo tar -xzf - -C /usr/local/lib/go-xla
+            sudo ldconfig
+          fi
           # Set env vars for subsequent steps (append to existing LD_LIBRARY_PATH if set)
           if [ -n "$LD_LIBRARY_PATH" ]; then
             echo "LD_LIBRARY_PATH=/usr/local/lib/go-xla:$LD_LIBRARY_PATH" >> $GITHUB_ENV
@@ -185,10 +228,22 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Set up Go
+      - name: Set up Go (bootstrap)
         uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache: false
+
+      - name: Install Go 1.26rc2
+        run: |
+          go install golang.org/dl/go1.26rc2@latest
+          go1.26rc2 download
+          echo "GOROOT=$(go1.26rc2 env GOROOT)" >> $GITHUB_ENV
+          echo "$(go1.26rc2 env GOROOT)/bin" >> $GITHUB_PATH
+          echo "GOEXPERIMENT=simd" >> $GITHUB_ENV
+
+      - name: Verify Go version
+        run: go version
 
       - name: Install build dependencies
         run: |

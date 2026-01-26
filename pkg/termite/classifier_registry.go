@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -46,7 +46,7 @@ type loadedClassifier struct {
 // ClassifierRegistry manages zero-shot classification models with lazy loading and TTL-based unloading
 type ClassifierRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -55,6 +55,10 @@ type ClassifierRegistry struct {
 
 	// Loaded models with TTL cache
 	cache *ttlcache.Cache[string, *loadedClassifier]
+
+	// Reference counting to prevent eviction during active use
+	refCounts   map[string]int
+	refCountsMu sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -73,7 +77,7 @@ type ClassifierConfig struct {
 // NewClassifierRegistry creates a new lazy-loading classifier registry
 func NewClassifierRegistry(
 	config ClassifierConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*ClassifierRegistry, error) {
 	if logger == nil {
@@ -95,6 +99,7 @@ func NewClassifierRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ClassifierModelInfo),
+		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -128,6 +133,23 @@ func NewClassifierRegistry(
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
 		}
+
+		// Check if model is still in use (has active references)
+		// Hold lock through check-and-action to prevent race with Release()
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[item.Key()]
+		if refCount > 0 {
+			// Re-add while still holding lock to prevent race with Release()
+			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			registry.refCountsMu.Unlock()
+			logger.Warn("Preventing eviction of classifier model with active references",
+				zap.String("model", item.Key()),
+				zap.Int("refCount", refCount),
+				zap.String("reason", reasonStr))
+			return
+		}
+		registry.refCountsMu.Unlock()
+
 		logger.Info("Evicting classifier model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
@@ -234,13 +256,52 @@ func (r *ClassifierRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns a classifier model by name, loading it if necessary
+// Get returns a classifier model by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations to prevent
+// the model from being evicted during use. Get() does not track usage and
+// the returned classifier may be closed if the cache evicts it.
 func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, error) {
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
 		return nil, err
 	}
 	return loaded.classifier, nil
+}
+
+// Acquire returns a classifier by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
+func (r *ClassifierRegistry) Acquire(modelName string) (*loadedClassifier, error) {
+	loaded, err := r.getLoaded(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired classifier model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+
+	return loaded, nil
+}
+
+// Release decrements the reference count for a model.
+// Must be called after Acquire() when the caller is done using the classifier.
+func (r *ClassifierRegistry) Release(modelName string) {
+	r.refCountsMu.Lock()
+	if r.refCounts[modelName] > 0 {
+		r.refCounts[modelName]--
+	}
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released classifier model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
 }
 
 // getLoaded gets or loads a model from cache
@@ -270,8 +331,14 @@ func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassi
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	model, backendUsed, err := classification.NewPooledHugotClassifierWithSessionManager(
-		info.Path, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based classifier
+	cfg := classification.PooledClassifierConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := classification.NewPooledClassifier(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading classifier model %s: %w", info.Name, err)
 	}

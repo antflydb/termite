@@ -26,10 +26,37 @@
 package main
 
 import (
+	"io"
 	"runtime"
 
+	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/termite/pkg/termite/cmd/cmd"
+	gojson "github.com/goccy/go-json"
 )
+
+func init() {
+	// Configure the JSON wrapper to use goccy/go-json for performance
+	json.SetConfig(json.Config{
+		Marshal:   gojson.Marshal,
+		Unmarshal: gojson.Unmarshal,
+		MarshalString: func(v any) (string, error) {
+			data, err := gojson.Marshal(v)
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
+		},
+		UnmarshalString: func(s string, v any) error {
+			return gojson.Unmarshal([]byte(s), v)
+		},
+		NewEncoder: func(w io.Writer) json.Encoder {
+			return gojson.NewEncoder(w)
+		},
+		NewDecoder: func(r io.Reader) json.Decoder {
+			return gojson.NewDecoder(r)
+		},
+	})
+}
 
 // https://goreleaser.com/cookbooks/using-main.version/
 //

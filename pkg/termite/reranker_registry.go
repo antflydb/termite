@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/reranking"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	"github.com/jellydator/ttlcache/v3"
@@ -41,7 +41,7 @@ type RerankerModelInfo struct {
 // RerankerRegistry manages reranker models with lazy loading and TTL-based unloading
 type RerankerRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -50,6 +50,10 @@ type RerankerRegistry struct {
 
 	// Loaded models with TTL cache
 	cache *ttlcache.Cache[string, reranking.Model]
+
+	// Reference counting to prevent eviction during active use
+	refCounts   map[string]int
+	refCountsMu sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -68,7 +72,7 @@ type RerankerConfig struct {
 // NewRerankerRegistry creates a new lazy-loading reranker registry
 func NewRerankerRegistry(
 	config RerankerConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*RerankerRegistry, error) {
 	if logger == nil {
@@ -90,6 +94,7 @@ func NewRerankerRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*RerankerModelInfo),
+		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -125,6 +130,23 @@ func NewRerankerRegistry(
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
 		}
+
+		// Check if model is still in use (has active references)
+		// Hold lock through check-and-action to prevent race with Release()
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[item.Key()]
+		if refCount > 0 {
+			// Re-add while still holding lock to prevent race with Release()
+			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			registry.refCountsMu.Unlock()
+			logger.Warn("Preventing eviction of reranker model with active references",
+				zap.String("model", item.Key()),
+				zap.Int("refCount", refCount),
+				zap.String("reason", reasonStr))
+			return
+		}
+		registry.refCountsMu.Unlock()
+
 		logger.Info("Evicting reranker model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
@@ -224,7 +246,10 @@ func (r *RerankerRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns a reranker by name, loading it if necessary
+// Get returns a reranker by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations to prevent
+// the model from being evicted during use. Get() does not track usage and
+// the returned reranker may be closed if the cache evicts it.
 func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
 	// Check cache first
 	if item := r.cache.Get(modelName); item != nil {
@@ -245,23 +270,62 @@ func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
 	return r.loadModel(info)
 }
 
+// Acquire returns a reranker by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
+func (r *RerankerRegistry) Acquire(modelName string) (reranking.Model, error) {
+	model, err := r.Get(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired reranker model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+
+	return model, nil
+}
+
+// Release decrements the reference count for a model.
+// Must be called after Acquire() when the caller is done using the reranker.
+func (r *RerankerRegistry) Release(modelName string) {
+	r.refCountsMu.Lock()
+	if r.refCounts[modelName] > 0 {
+		r.refCounts[modelName]--
+	}
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released reranker model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+}
+
 // loadModel loads a reranker model from disk
 func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, error) {
 	r.logger.Info("Loading reranker model on demand",
 		zap.String("model", info.Name),
-		zap.String("path", info.Path),
-		zap.String("onnxFile", info.OnnxFilename))
+		zap.String("path", info.Path))
 
-	// Pass model path, ONNX filename, and session manager to pooled reranker
-	model, backendUsed, err := termreranking.NewPooledHugotRerankerWithSessionManager(
-		info.Path, info.OnnxFilename, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based reranker
+	cfg := termreranking.PooledRerankerConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := termreranking.NewPooledReranker(cfg, r.sessionManager)
 	if err != nil {
 		return nil, fmt.Errorf("loading reranker model %s: %w", info.Name, err)
 	}
 
 	r.logger.Info("Successfully loaded reranker model",
 		zap.String("name", info.Name),
-		zap.String("onnxFile", info.OnnxFilename),
 		zap.String("backend", string(backendUsed)),
 		zap.Int("poolSize", info.PoolSize))
 

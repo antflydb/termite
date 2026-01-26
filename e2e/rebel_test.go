@@ -187,6 +187,16 @@ func testExtractRelations(t *testing.T, ctx context.Context, c *client.TermiteCl
 			}
 		}
 		assert.NotEmpty(t, resp.Relations[0], "First text should have relations")
+
+		// Verify relation scores are not all zero
+		hasNonZeroScore := false
+		for _, rel := range resp.Relations[0] {
+			if rel.Score > 0 {
+				hasNonZeroScore = true
+				break
+			}
+		}
+		assert.True(t, hasNonZeroScore, "Relations should have non-zero confidence scores")
 	} else {
 		t.Log("No relations extracted (model may return entities only for this text)")
 	}
@@ -237,4 +247,41 @@ func testExtractRelationsMultiple(t *testing.T, ctx context.Context, c *client.T
 		}
 	}
 	assert.True(t, hasEntities, "At least one text should have extracted entities")
+
+	// Verify that scores are not all zero (entities derived from relations should have scores)
+	hasNonZeroEntityScore := false
+	for _, textEntities := range resp.Entities {
+		for _, entity := range textEntities {
+			if entity.Score > 0 {
+				hasNonZeroEntityScore = true
+				break
+			}
+		}
+		if hasNonZeroEntityScore {
+			break
+		}
+	}
+	if hasEntities {
+		assert.True(t, hasNonZeroEntityScore, "Entity scores should not all be zero")
+	}
+
+	// Verify relation scores are not all zero
+	hasNonZeroRelScore := false
+	if resp.Relations != nil {
+		for _, textRelations := range resp.Relations {
+			for _, rel := range textRelations {
+				if rel.Score > 0 {
+					hasNonZeroRelScore = true
+					break
+				}
+			}
+			if hasNonZeroRelScore {
+				break
+			}
+		}
+	}
+	hasRelations := resp.Relations != nil && len(resp.Relations) > 0
+	if hasRelations {
+		assert.True(t, hasNonZeroRelScore, "Relation scores should not all be zero")
+	}
 }

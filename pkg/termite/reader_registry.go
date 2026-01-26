@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 	"github.com/jellydator/ttlcache/v3"
@@ -39,7 +39,7 @@ type ReaderModelInfo struct {
 // ReaderRegistry manages reader models with lazy loading and TTL-based unloading
 type ReaderRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -48,6 +48,10 @@ type ReaderRegistry struct {
 
 	// Loaded models with TTL cache
 	cache *ttlcache.Cache[string, reading.Reader]
+
+	// Reference counting to prevent eviction during active use
+	refCounts   map[string]int
+	refCountsMu sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -66,7 +70,7 @@ type ReaderConfig struct {
 // NewReaderRegistry creates a new lazy-loading reader registry
 func NewReaderRegistry(
 	config ReaderConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*ReaderRegistry, error) {
 	if logger == nil {
@@ -88,6 +92,7 @@ func NewReaderRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ReaderModelInfo),
+		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -123,6 +128,24 @@ func NewReaderRegistry(
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
 		}
+
+		// Check if model is still in use (has active references)
+		// Hold lock through check-and-action to prevent race with Release()
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[item.Key()]
+		if refCount > 0 {
+			// Re-add while still holding lock to prevent race with Release()
+			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			registry.refCountsMu.Unlock()
+			// Model is still in use - re-added to cache to prevent closing
+			logger.Warn("Preventing eviction of reader model with active references",
+				zap.String("model", item.Key()),
+				zap.Int("refCount", refCount),
+				zap.String("reason", reasonStr))
+			return
+		}
+		registry.refCountsMu.Unlock()
+
 		logger.Info("Evicting reader model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
@@ -222,7 +245,10 @@ func (r *ReaderRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns a reader by name, loading it if necessary
+// Get returns a reader by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations to prevent
+// the model from being evicted during use. Get() does not track usage and
+// the returned reader may be closed if the cache evicts it.
 func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 	// Check cache first
 	if item := r.cache.Get(modelName); item != nil {
@@ -243,15 +269,55 @@ func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 	return r.loadModel(info)
 }
 
+// Acquire returns a reader by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
+func (r *ReaderRegistry) Acquire(modelName string) (reading.Reader, error) {
+	reader, err := r.Get(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired reader model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+
+	return reader, nil
+}
+
+// Release decrements the reference count for a model.
+// Must be called after Acquire() when the caller is done using the reader.
+func (r *ReaderRegistry) Release(modelName string) {
+	r.refCountsMu.Lock()
+	if r.refCounts[modelName] > 0 {
+		r.refCounts[modelName]--
+	}
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released reader model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+}
+
 // loadModel loads a reader model from disk
 func (r *ReaderRegistry) loadModel(info *ReaderModelInfo) (reading.Reader, error) {
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Pass model path and session manager to pooled reader
-	model, backendUsed, err := reading.NewPooledHugotReaderWithSessionManager(
-		info.Path, info.PoolSize, r.sessionManager, nil, r.logger.Named(info.Name))
+	// Load using pipeline-based reader
+	cfg := &reading.PooledReaderConfig{
+		ModelPath: info.Path,
+		PoolSize:  info.PoolSize,
+		Logger:    r.logger.Named(info.Name),
+	}
+	model, backendUsed, err := reading.NewPooledReader(cfg, r.sessionManager, nil)
 	if err != nil {
 		return nil, fmt.Errorf("loading reader model %s: %w", info.Name, err)
 	}

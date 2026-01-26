@@ -22,7 +22,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// BenchmarkRerankerQuantization benchmarks all three quantization approaches
+// BenchmarkRerankerQuantization benchmarks different model variants
 func BenchmarkRerankerQuantization(b *testing.B) {
 
 	// Sample query and documents
@@ -40,57 +40,15 @@ func BenchmarkRerankerQuantization(b *testing.B) {
 		"Classical music has been popular for centuries across many cultures.",
 	}
 
-	b.Run("NonQuantized", func(b *testing.B) {
-		reranker, err := termreranking.NewPooledHugotReranker(
-			"../../models/rerankers/mxbai-rerank-base-v1",
-			"model.onnx",
-			1,
-			zap.NewNop(),
-		)
+	b.Run("mxbai-rerank-base-v1", func(b *testing.B) {
+		cfg := termreranking.PooledRerankerConfig{
+			ModelPath: "../../models/rerankers/mxbai-rerank-base-v1",
+			PoolSize:  1,
+			Logger:    zap.NewNop(),
+		}
+		reranker, _, err := termreranking.NewPooledReranker(cfg, nil)
 		if err != nil {
-			b.Fatalf("Failed to create non-quantized reranker: %v", err)
-		}
-		defer func() { _ = reranker.Close() }()
-
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := reranker.Rerank(context.Background(), query, documents)
-			if err != nil {
-				b.Fatalf("Rerank failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("DynamicQuantized", func(b *testing.B) {
-		reranker, err := termreranking.NewPooledHugotReranker(
-			"../../models/rerankers/mxbai-rerank-base-v1",
-			"model_i8.onnx",
-			1,
-			zap.NewNop(),
-		)
-		if err != nil {
-			b.Fatalf("Failed to create dynamically quantized reranker: %v", err)
-		}
-		defer func() { _ = reranker.Close() }()
-
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := reranker.Rerank(context.Background(), query, documents)
-			if err != nil {
-				b.Fatalf("Rerank failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("FP16", func(b *testing.B) {
-		reranker, err := termreranking.NewPooledHugotReranker(
-			"../../models/rerankers/reranker_onnx_fp16",
-			"model_f16.onnx",
-			1,
-			zap.NewNop(),
-		)
-		if err != nil {
-			b.Fatalf("Failed to create FP16 reranker: %v", err)
+			b.Skipf("Model not available: %v", err)
 		}
 		defer func() { _ = reranker.Close() }()
 

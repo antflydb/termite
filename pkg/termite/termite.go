@@ -24,7 +24,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"go.uber.org/zap"
 )
 
@@ -50,6 +50,9 @@ type TermiteNode struct {
 
 	// Reader registry (lazy loading with TTL-based unloading)
 	readerRegistry *ReaderRegistry
+
+	// Transcriber registry (lazy loading with TTL-based unloading)
+	transcriberRegistry *TranscriberRegistry
 
 	// Caches for embeddings, reranking, NER, and reading
 	embeddingCache *EmbeddingCache
@@ -90,24 +93,24 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Parse backend priority (supports "backend" or "backend:device" format)
-	var backendPriority []hugot.BackendSpec
+	var backendPriority []backends.BackendSpec
 	if len(config.BackendPriority) > 0 {
 		var err error
-		backendPriority, err = hugot.ParseBackendPriority(config.BackendPriority)
+		backendPriority, err = backends.ParseBackendPriority(config.BackendPriority)
 		if err != nil {
 			zl.Fatal("Invalid backend_priority configuration", zap.Error(err))
 		}
 		// Also set global priority for backward compatibility
-		globalPriority := make([]hugot.BackendType, 0, len(backendPriority))
+		globalPriority := make([]backends.BackendType, 0, len(backendPriority))
 		for _, spec := range backendPriority {
 			globalPriority = append(globalPriority, spec.Backend)
 		}
-		hugot.SetPriority(globalPriority)
+		backends.SetPriority(globalPriority)
 		zl.Info("Backend priority configured", zap.Any("priority", config.BackendPriority))
 	}
 
 	// Log available backends
-	availableBackends := hugot.ListAvailable()
+	availableBackends := backends.ListAvailable()
 	backendNames := make([]string, 0, len(availableBackends))
 	for _, b := range availableBackends {
 		backendNames = append(backendNames, b.Name())
@@ -115,7 +118,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	zl.Info("Available inference backends", zap.Strings("backends", backendNames))
 
 	// Detect and log GPU info, set metrics
-	gpuInfo := hugot.GetGPUInfo()
+	gpuInfo := backends.DetectGPU()
 	zl.Info("GPU detection complete",
 		zap.Bool("available", gpuInfo.Available),
 		zap.String("type", gpuInfo.Type),
@@ -147,24 +150,25 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Compute model subdirectory paths from models_dir
-	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir, readerModelsDir string
+	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir, readerModelsDir, transcriberModelsDir string
 	if config.ModelsDir != "" {
 		embedderModelsDir = filepath.Join(config.ModelsDir, "embedders")
 		chunkerModelsDir = filepath.Join(config.ModelsDir, "chunkers")
 		rerankerModelsDir = filepath.Join(config.ModelsDir, "rerankers")
 		generatorModelsDir = filepath.Join(config.ModelsDir, "generators")
 		readerModelsDir = filepath.Join(config.ModelsDir, "readers")
+		transcriberModelsDir = filepath.Join(config.ModelsDir, "transcribers")
 	}
 
 	// Create session manager for multi-backend support
 	// SessionManager handles backend selection per-model and manages sessions.
 	// IMPORTANT: ONNX Runtime backend allows only ONE session at a time.
 	// SessionManager enforces this by sharing sessions within each backend type.
-	var sessionManager *hugot.SessionManager
+	var sessionManager *backends.SessionManager
 	hasModels := config.ModelsDir != ""
 
 	if hasModels {
-		sessionManager = hugot.NewSessionManager()
+		sessionManager = backends.NewSessionManager()
 		defer func() { _ = sessionManager.Close() }()
 
 		// Configure session manager with backend priority (includes device preferences)
@@ -172,7 +176,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			sessionManager.SetPriority(backendPriority)
 		}
 
-		defaultBackend := hugot.GetDefaultBackend()
+		defaultBackend := backends.GetDefaultBackend()
 		if defaultBackend != nil {
 			zl.Info("Session manager initialized",
 				zap.String("default_backend", defaultBackend.Name()))
@@ -408,6 +412,33 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	}
 
+	// Initialize transcriber registry with lazy loading
+	// Models are discovered at startup but only loaded on first request
+	var transcriberRegistry *TranscriberRegistry
+	if transcriberModelsDir != "" {
+		transcriberRegistry, err = NewTranscriberRegistry(
+			TranscriberConfig{
+				ModelsDir:       transcriberModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+				PoolSize:        config.PoolSize,
+			},
+			sessionManager,
+			zl.Named("transcriber"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize transcriber registry", zap.Error(err))
+		}
+		defer func() { _ = transcriberRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := transcriberRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some transcriber models", zap.Error(err))
+			}
+		}
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -477,6 +508,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		seq2seqRegistry:       seq2seqRegistry,
 		classifierRegistry:    classifierRegistry,
 		readerRegistry:        readerRegistry,
+		transcriberRegistry:   transcriberRegistry,
 		contentSecurityConfig: contentSecurityConfig,
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,

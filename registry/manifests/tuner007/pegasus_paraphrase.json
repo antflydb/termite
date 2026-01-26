@@ -27,8 +27,8 @@
     },
     {
       "name": "config.json",
-      "digest": "sha256:833ad7059c54f47f15714095bf7500cb622b8d478c1e65ef44f66ae46da872d7",
-      "size": 2455
+      "digest": "sha256:152ec88cb1b511739a502db7ed65e3e121fc3c419073fcfc5d50b81098940f07",
+      "size": 2449
     },
     {
       "name": "tokenizer_config.json",
@@ -54,6 +54,6 @@
   "owner": "tuner007",
   "provenance": {
     "downloadedFrom": "https://huggingface.co/tuner007/pegasus_paraphrase",
-    "downloadedAt": "2026-01-04T20:32:49.415479+00:00"
+    "downloadedAt": "2026-01-24T23:12:58.160996+00:00"
   }
 }

@@ -21,8 +21,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -35,13 +35,13 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
+	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
-	"github.com/antflydb/termite/pkg/termite/lib/classification"
-	"github.com/bytedance/sonic/decoder"
-	"github.com/bytedance/sonic/encoder"
+	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
 	_ "golang.org/x/image/webp"
 )
@@ -106,18 +106,24 @@ func (t *TermiteAPI) ReadImages(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiRead(w, r)
 }
 
+// TranscribeAudio implements ServerInterface
+func (t *TermiteAPI) TranscribeAudio(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiTranscribe(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
-		Chunkers:    []string{},
-		Rerankers:   []string{},
-		Embedders:   []string{},
-		Generators:  []string{},
-		Recognizers: []string{},
-		Extractors:  []string{},
-		Rewriters:   []string{},
-		Classifiers: []string{},
-		Readers:     []string{},
+		Chunkers:     []string{},
+		Rerankers:    []string{},
+		Embedders:    []string{},
+		Generators:   []string{},
+		Recognizers:  []string{},
+		Extractors:   []string{},
+		Rewriters:    []string{},
+		Classifiers:  []string{},
+		Readers:      []string{},
+		Transcribers: []string{},
 	}
 
 	if t.node.cachedChunker != nil {
@@ -168,8 +174,12 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		resp.Readers = t.node.readerRegistry.List()
 	}
 
+	if t.node.transcriberRegistry != nil {
+		resp.Transcribers = t.node.transcriberRegistry.List()
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		t.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -186,7 +196,7 @@ func (t *TermiteAPI) GetVersion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		t.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -227,7 +237,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 
 	// Decode the request using generated types
 	var req EmbedRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -288,7 +298,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 			Embeddings: embeds,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			ln.logger.Error("encoding JSON response", zap.Error(err))
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -432,7 +442,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	UpdateQueueMetrics(ln.requestQueue.Stats())
 
 	var req ChunkRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -478,7 +488,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 
 	// Return response
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -521,7 +531,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 		Query   string   `json:"query"`   // Query text
 		Prompts []string `json:"prompts"` // Pre-rendered document texts to rerank
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -590,7 +600,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -634,7 +644,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		Labels         []string `json:"labels"`          // Custom labels for GLiNER models (optional)
 		RelationLabels []string `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -789,7 +799,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(nerResp); err != nil {
+	if err := json.NewEncoder(w).Encode(nerResp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -899,7 +909,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 
 	// Decode request
 	var req GenerateRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		ln.logger.Error("Failed to decode generate request",
 			zap.Error(err))
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
@@ -922,8 +932,8 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get generator from registry
-	generator, err := ln.generatorRegistry.Get(req.Model)
+	// Acquire generator from registry (increments ref count to prevent cache eviction during use)
+	generator, err := ln.generatorRegistry.Acquire(req.Model)
 	if err != nil {
 		ln.logger.Error("Failed to get generator",
 			zap.String("model", req.Model),
@@ -931,6 +941,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		http.Error(w, fmt.Sprintf("model not found: %s: %v", req.Model, err), http.StatusNotFound)
 		return
 	}
+	defer ln.generatorRegistry.Release(req.Model)
 
 	// Check for tool support if tools are requested
 	var toolParser generation.ToolParser
@@ -1145,7 +1156,7 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1319,7 +1330,7 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		Model  string   `json:"model"`  // Model name to use (required)
 		Inputs []string `json:"inputs"` // Input texts to rewrite
 	}
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1364,7 +1375,7 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1403,7 +1414,7 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Decode request
 	var req ClassifyRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1479,7 +1490,7 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1518,7 +1529,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 
 	// Decode request using generated types
 	var req ReadRequest
-	if err := decoder.NewStreamDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -1596,7 +1607,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1626,4 +1637,105 @@ func downloadAndDecodeImages(ctx context.Context, imageURLs []ImageURL, secConfi
 	}
 
 	return images, nil
+}
+
+// handleApiTranscribe handles speech-to-text transcription requests
+func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if transcription is available
+	if ln.transcriberRegistry == nil || len(ln.transcriberRegistry.List()) == 0 {
+		http.Error(w, "transcription not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request using generated types
+	var req TranscribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("decoding request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Audio) == 0 {
+		http.Error(w, "audio is required", http.StatusBadRequest)
+		return
+	}
+
+	// Get transcriber model from registry
+	transcriber, err := ln.transcriberRegistry.Get(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+
+	// Decode base64 audio data
+	audioData, err := base64.StdEncoding.DecodeString(string(req.Audio))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid base64 audio data: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Build transcription options
+	opts := transcribing.TranscribeOptions{}
+	if req.Language != "" {
+		opts.Language = req.Language
+	}
+
+	// Transcribe audio
+	result, err := transcriber.TranscribeWithOptions(r.Context(), audioData, opts)
+	if err != nil {
+		ln.logger.Error("transcription failed",
+			zap.String("model", req.Model),
+			zap.Int("audio_bytes", len(audioData)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("transcription failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record metrics
+	RecordTranscriberRequest(req.Model)
+
+	ln.logger.Info("transcribe request completed",
+		zap.String("model", req.Model),
+		zap.Int("audio_bytes", len(audioData)),
+		zap.Int("text_length", len(result.Text)))
+
+	// Send response
+	resp := TranscribeResponse{
+		Model:    req.Model,
+		Text:     result.Text,
+		Language: result.Language,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }

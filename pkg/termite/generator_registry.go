@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -32,7 +32,7 @@ import (
 // GeneratorModelInfo holds metadata about a discovered generator model (not loaded yet)
 type GeneratorModelInfo struct {
 	Name      string
-	Path      string            // Path to base variant
+	Path      string // Path to base variant
 	ModelType string
 	Variants  map[string]string // variant name -> path (e.g., "i4" -> "/path/to/model/i4")
 }
@@ -40,7 +40,7 @@ type GeneratorModelInfo struct {
 // GeneratorRegistry manages generator models with lazy loading and TTL-based unloading
 type GeneratorRegistry struct {
 	modelsDir      string
-	sessionManager *hugot.SessionManager
+	sessionManager *backends.SessionManager
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
@@ -49,6 +49,10 @@ type GeneratorRegistry struct {
 
 	// Loaded models with TTL cache
 	cache *ttlcache.Cache[string, generation.Generator]
+
+	// Reference counting to prevent eviction during active use
+	refCounts   map[string]int
+	refCountsMu sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -65,7 +69,7 @@ type GeneratorConfig struct {
 // NewGeneratorRegistry creates a new lazy-loading generator registry
 func NewGeneratorRegistry(
 	config GeneratorConfig,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	logger *zap.Logger,
 ) (*GeneratorRegistry, error) {
 	if logger == nil {
@@ -82,6 +86,7 @@ func NewGeneratorRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*GeneratorModelInfo),
+		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 	}
@@ -116,6 +121,24 @@ func NewGeneratorRegistry(
 		case ttlcache.EvictionReasonCapacityReached:
 			reasonStr = "capacity reached (LRU eviction)"
 		}
+
+		// Check if model is still in use (has active references)
+		// Hold lock through check-and-action to prevent race with Release()
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[item.Key()]
+		if refCount > 0 {
+			// Re-add while still holding lock to prevent race with Release()
+			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			registry.refCountsMu.Unlock()
+			// Model is still in use - re-added to cache to prevent closing
+			logger.Warn("Preventing eviction of generator model with active references",
+				zap.String("model", item.Key()),
+				zap.Int("refCount", refCount),
+				zap.String("reason", reasonStr))
+			return
+		}
+		registry.refCountsMu.Unlock()
+
 		logger.Info("Evicting generator model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
@@ -218,7 +241,10 @@ func (r *GeneratorRegistry) discoverModels() error {
 	return nil
 }
 
-// Get returns a generator by name, loading it if necessary
+// Get returns a generator by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations to prevent
+// the model from being evicted during use. Get() does not track usage and
+// the returned generator may be closed if the cache evicts it.
 func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) {
 	// Check cache first
 	if item := r.cache.Get(modelName); item != nil {
@@ -237,6 +263,89 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 
 	// Load the model
 	return r.loadModel(info)
+}
+
+// Acquire returns a generator by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
+func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, error) {
+	gen, err := r.Get(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired generator model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+
+	return gen, nil
+}
+
+// Release decrements the reference count for a model.
+// Must be called after Acquire() when the caller is done using the generator.
+func (r *GeneratorRegistry) Release(modelName string) {
+	r.refCountsMu.Lock()
+	if r.refCounts[modelName] > 0 {
+		r.refCounts[modelName]--
+	}
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released generator model",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
+}
+
+// AcquireWithVariant returns a generator by name with a specific variant
+// and increments its reference count.
+// The caller MUST call ReleaseWithVariant() when done.
+func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (generation.Generator, error) {
+	gen, err := r.GetWithVariant(modelName, variant)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build cache key including variant
+	cacheKey := modelName
+	if variant != "" {
+		cacheKey = modelName + ":" + variant
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[cacheKey]++
+	count := r.refCounts[cacheKey]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired generator model with variant",
+		zap.String("model", cacheKey),
+		zap.Int("refCount", count))
+
+	return gen, nil
+}
+
+// ReleaseWithVariant decrements the reference count for a model variant.
+func (r *GeneratorRegistry) ReleaseWithVariant(modelName, variant string) {
+	// Build cache key including variant
+	cacheKey := modelName
+	if variant != "" {
+		cacheKey = modelName + ":" + variant
+	}
+
+	r.refCountsMu.Lock()
+	if r.refCounts[cacheKey] > 0 {
+		r.refCounts[cacheKey]--
+	}
+	count := r.refCounts[cacheKey]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Released generator model with variant",
+		zap.String("model", cacheKey),
+		zap.Int("refCount", count))
 }
 
 // loadModel loads a generator model from disk (base variant)
@@ -258,18 +367,14 @@ func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (gener
 	}
 
 	// Load the generator model
-	var model generation.Generator
-	var backendUsed hugot.BackendType
-	var loadErr error
-
-	if r.sessionManager != nil {
-		// Generative models only support ONNX backend currently
-		model, backendUsed, loadErr = generation.NewHugotGeneratorWithSessionManager(
-			modelPath, r.sessionManager, []string{"onnx"}, r.logger.Named(cacheKey))
-	} else {
-		model, loadErr = generation.NewHugotGeneratorWithSession(
-			modelPath, nil, r.logger.Named(cacheKey))
-	}
+	// This will try the pipeline-based approach first, then fall back to ortgenai
+	model, backendUsed, loadErr := generation.LoadGenerator(
+		modelPath,
+		1, // Use single pipeline, registry manages caching
+		r.logger.Named(cacheKey),
+		r.sessionManager,
+		[]string{"onnx"}, // Generative models currently only support ONNX
+	)
 
 	if loadErr != nil {
 		return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, loadErr)

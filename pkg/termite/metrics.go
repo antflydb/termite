@@ -121,6 +121,16 @@ var (
 		[]string{"model"},
 	)
 
+	transcriberRequestOps = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "antfly",
+			Subsystem: "termite",
+			Name:      "transcriber_request_ops_total",
+			Help:      "The total number of transcriber (Speech2Seq) requests.",
+		},
+		[]string{"model"},
+	)
+
 	modelLoadDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "antfly",
@@ -223,6 +233,7 @@ func init() {
 	prometheus.MustRegister(nerRequestOps)
 	prometheus.MustRegister(nerCreationOps)
 	prometheus.MustRegister(readerRequestOps)
+	prometheus.MustRegister(transcriberRequestOps)
 	prometheus.MustRegister(modelLoadDuration)
 	prometheus.MustRegister(requestDuration)
 	prometheus.MustRegister(cacheHits)
@@ -318,4 +329,9 @@ func RecordNERCreation(model string, count int) {
 // RecordReaderRequest increments the reader request counter
 func RecordReaderRequest(model string) {
 	readerRequestOps.WithLabelValues(model).Inc()
+}
+
+// RecordTranscriberRequest increments the transcriber request counter
+func RecordTranscriberRequest(model string) {
+	transcriberRequestOps.WithLabelValues(model).Inc()
 }

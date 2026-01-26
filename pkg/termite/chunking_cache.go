@@ -23,7 +23,7 @@ import (
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
-	"github.com/antflydb/termite/pkg/termite/lib/hugot"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/cespare/xxhash/v2"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -52,7 +52,7 @@ type ChunkResult struct {
 // If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
 func NewCachedChunker(
 	modelsDir string,
-	sessionManager *hugot.SessionManager,
+	sessionManager *backends.SessionManager,
 	poolSize int,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {

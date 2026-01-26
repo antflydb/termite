@@ -12,29 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package embeddings provides benchmarks comparing Hugot (ONNX) embedding performance.
+// Package embeddings provides benchmarks comparing embedding performance.
 //
 // # Usage
 //
 // Run all benchmarks:
 //
-//	HUGOT_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=. -benchmem
+//	EMBEDDING_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=. -benchmem
 //
-// Run Hugot benchmarks only:
+// Run embedder benchmarks only:
 //
-//	HUGOT_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=Hugot -benchmem
+//	EMBEDDING_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=Embedder -benchmem
 //
 // Run throughput analysis:
 //
-//	HUGOT_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=Throughput -benchmem
+//	EMBEDDING_MODEL_PATH=./models/bge-small-en-v1.5 go test -bench=Throughput -benchmem
 //
 // # Environment Variables
 //
-//   - HUGOT_MODEL_PATH: Path to ONNX model directory for Hugot benchmarks
+//   - EMBEDDING_MODEL_PATH: Path to ONNX model directory for embedder benchmarks
 //
 // # Benchmark Categories
 //
-//   - BenchmarkHugotEmbedder_*: Tests Hugot ONNX embedder with various text lengths
+//   - BenchmarkPooledEmbedder_*: Tests pooled embedder with various text lengths
 //   - BenchmarkLatency_*: Single-text embedding latency measurements
 //   - BenchmarkThroughput_*: Batch throughput analysis across different sizes
 //   - BenchmarkWarmup: Cold vs warm start performance analysis
@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
@@ -89,16 +90,33 @@ func generateBenchmarkTexts(count int, textType string) []string {
 	return texts
 }
 
-// BenchmarkHugotEmbedder_ShortTexts benchmarks Hugot with short texts
-func BenchmarkHugotEmbedder_ShortTexts(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
-	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping Hugot benchmark")
-	}
+// createTestEmbedder creates a PooledEmbedder for testing
+func createTestEmbedder(b *testing.B, modelPath string, poolSize int) *PooledEmbedder {
+	b.Helper()
 
 	logger := zap.NewNop()
-	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
+	sessionManager := backends.NewSessionManager()
+
+	cfg := PooledEmbedderConfig{
+		ModelPath: modelPath,
+		PoolSize:  poolSize,
+		Normalize: true,
+		Logger:    logger,
+	}
+
+	embedder, _, err := NewPooledEmbedder(cfg, sessionManager)
 	require.NoError(b, err)
+	return embedder
+}
+
+// BenchmarkPooledEmbedder_ShortTexts benchmarks embedder with short texts
+func BenchmarkPooledEmbedder_ShortTexts(b *testing.B) {
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
+	if modelPath == "" {
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping embedder benchmark")
+	}
+
+	embedder := createTestEmbedder(b, modelPath, 1)
 	defer func() { _ = embedder.Close() }()
 
 	texts := generateBenchmarkTexts(benchSmallBatchSize, "short")
@@ -113,16 +131,14 @@ func BenchmarkHugotEmbedder_ShortTexts(b *testing.B) {
 	}
 }
 
-// BenchmarkHugotEmbedder_MediumTexts benchmarks Hugot with medium-length texts
-func BenchmarkHugotEmbedder_MediumTexts(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
+// BenchmarkPooledEmbedder_MediumTexts benchmarks embedder with medium-length texts
+func BenchmarkPooledEmbedder_MediumTexts(b *testing.B) {
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
 	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping Hugot benchmark")
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping embedder benchmark")
 	}
 
-	logger := zap.NewNop()
-	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-	require.NoError(b, err)
+	embedder := createTestEmbedder(b, modelPath, 1)
 	defer func() { _ = embedder.Close() }()
 
 	texts := generateBenchmarkTexts(benchMediumBatchSize, "medium")
@@ -137,16 +153,14 @@ func BenchmarkHugotEmbedder_MediumTexts(b *testing.B) {
 	}
 }
 
-// BenchmarkHugotEmbedder_LongTexts benchmarks Hugot with long texts
-func BenchmarkHugotEmbedder_LongTexts(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
+// BenchmarkPooledEmbedder_LongTexts benchmarks embedder with long texts
+func BenchmarkPooledEmbedder_LongTexts(b *testing.B) {
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
 	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping Hugot benchmark")
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping embedder benchmark")
 	}
 
-	logger := zap.NewNop()
-	embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-	require.NoError(b, err)
+	embedder := createTestEmbedder(b, modelPath, 1)
 	defer func() { _ = embedder.Close() }()
 
 	texts := generateBenchmarkTexts(benchLargeBatchSize, "long")
@@ -161,64 +175,18 @@ func BenchmarkHugotEmbedder_LongTexts(b *testing.B) {
 	}
 }
 
-// BenchmarkHugotEmbedder_Quantized benchmarks quantized vs non-quantized models
-func BenchmarkHugotEmbedder_Quantized(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
-	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping Hugot benchmark")
-	}
-
-	texts := generateBenchmarkTexts(benchMediumBatchSize, "medium")
-	ctx := context.Background()
-
-	b.Run("Standard", func(b *testing.B) {
-		logger := zap.NewNop()
-		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-		require.NoError(b, err)
-		defer func() { _ = embedder.Close() }()
-
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := embeddings.EmbedText(ctx, embedder, texts)
-			if err != nil {
-				b.Fatalf("Embed failed: %v", err)
-			}
-		}
-	})
-
-	b.Run("Quantized", func(b *testing.B) {
-		logger := zap.NewNop()
-		embedder, err := NewPooledHugotEmbedder(modelPath, "model_i8.onnx", 1, logger)
-		if err != nil {
-			b.Skipf("Quantized model not available: %v", err)
-			return
-		}
-		defer func() { _ = embedder.Close() }()
-
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := embeddings.EmbedText(ctx, embedder, texts)
-			if err != nil {
-				b.Fatalf("Embed failed: %v", err)
-			}
-		}
-	})
-}
-
 // BenchmarkLatency_SingleText measures single-text embedding latency
 func BenchmarkLatency_SingleText(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
 	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping latency benchmark")
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping latency benchmark")
 	}
 
 	singleText := []string{benchMediumText}
 	ctx := context.Background()
 
-	b.Run("Hugot", func(b *testing.B) {
-		logger := zap.NewNop()
-		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-		require.NoError(b, err)
+	b.Run("PooledEmbedder", func(b *testing.B) {
+		embedder := createTestEmbedder(b, modelPath, 1)
 		defer func() { _ = embedder.Close() }()
 
 		b.ResetTimer()
@@ -233,9 +201,9 @@ func BenchmarkLatency_SingleText(b *testing.B) {
 
 // BenchmarkThroughput_BatchSizes compares throughput across different batch sizes
 func BenchmarkThroughput_BatchSizes(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
 	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping throughput benchmark")
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping throughput benchmark")
 	}
 
 	ctx := context.Background()
@@ -244,10 +212,8 @@ func BenchmarkThroughput_BatchSizes(b *testing.B) {
 	for _, batchSize := range batchSizes {
 		texts := generateBenchmarkTexts(batchSize, "medium")
 
-		b.Run(fmt.Sprintf("Hugot/BatchSize_%d", batchSize), func(b *testing.B) {
-			logger := zap.NewNop()
-			embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-			require.NoError(b, err)
+		b.Run(fmt.Sprintf("BatchSize_%d", batchSize), func(b *testing.B) {
+			embedder := createTestEmbedder(b, modelPath, 1)
 			defer func() { _ = embedder.Close() }()
 
 			b.ResetTimer()
@@ -267,9 +233,9 @@ func BenchmarkThroughput_BatchSizes(b *testing.B) {
 
 // BenchmarkWarmup tests cold vs warm start performance
 func BenchmarkWarmup(b *testing.B) {
-	modelPath := os.Getenv("HUGOT_MODEL_PATH")
+	modelPath := os.Getenv("EMBEDDING_MODEL_PATH")
 	if modelPath == "" {
-		b.Skip("HUGOT_MODEL_PATH not set, skipping warmup benchmark")
+		b.Skip("EMBEDDING_MODEL_PATH not set, skipping warmup benchmark")
 	}
 
 	texts := generateBenchmarkTexts(benchSmallBatchSize, "medium")
@@ -279,12 +245,10 @@ func BenchmarkWarmup(b *testing.B) {
 		b.ResetTimer()
 		for b.Loop() {
 			b.StopTimer()
-			logger := zap.NewNop()
-			embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-			require.NoError(b, err)
+			embedder := createTestEmbedder(b, modelPath, 1)
 			b.StartTimer()
 
-			_, err = embeddings.EmbedText(ctx, embedder, texts)
+			_, err := embeddings.EmbedText(ctx, embedder, texts)
 			if err != nil {
 				b.Fatalf("Embed failed: %v", err)
 			}
@@ -296,9 +260,7 @@ func BenchmarkWarmup(b *testing.B) {
 	})
 
 	b.Run("WarmStart", func(b *testing.B) {
-		logger := zap.NewNop()
-		embedder, err := NewPooledHugotEmbedder(modelPath, "model.onnx", 1, logger)
-		require.NoError(b, err)
+		embedder := createTestEmbedder(b, modelPath, 1)
 		defer func() { _ = embedder.Close() }()
 
 		// Warmup

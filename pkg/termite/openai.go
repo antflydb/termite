@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bytedance/sonic/encoder"
+	json "github.com/antflydb/antfly-go/libaf/json"
 	"go.uber.org/zap"
 )
 
@@ -108,7 +108,7 @@ func (ln *TermiteNode) handleOpenAIModels(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := encoder.NewStreamEncoder(w).Encode(resp); err != nil {
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		ln.logger.Error("encoding openai models response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
