@@ -7,6 +7,7 @@ codeberg.org/go-pdf/fpdf v0.10.0/go.mod h1:Y0DGRAdZ0OmnZPvjbMp/1bYxmIPxm0ws4tfoP
 git.sr.ht/~sbinet/gg v0.6.0 h1:RIzgkizAk+9r7uPzf/VfbJHBMKUr0F5hRFxTUGMnt38=
 git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm94=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
+github.com/ajroetker/go-highway v0.0.0-dev12 h1:Ekxi7ne8DhDudpt5eG97o8Sm5Oxn86I8K1HjRD2EY5U=
 github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131 h1:Mi95fLXHboyt2hlA3/8h9HMy2WN9cDfi8JYRd2eFg2s=
 github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131/go.mod h1:7Jnn48nRpz5Nk1SWGgsFGPV7DHEPSAvQIVpa6rsv9HE=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
@@ -68,6 +69,9 @@ github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 h1:DACJavvAHhabrF0
 github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0/go.mod h1:E/TSTwGwJL78qG/PmXZO1EjYhfJinVAhrmmHX6Z8B9k=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
+github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65 h1:3nq7wsMv2KpcTzj/P3hl8x9kRvLNuCnifbgsc5N2qq4=
+github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65/go.mod h1:iZG+LBo+jgnd44RMPJCVDfYmDaIH5P7mg5p2rVNoaIM=
+github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476 h1:QZSOtRM9836UiBEu3ZSlsmsUI9SR8KFkR72SORtIsuM=
 github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef h1:VvdOi4YQWr4P7krC0bC+Zs9RtSITt6fCO9HsgdL1TAw=
 github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef/go.mod h1:VQem9ICYDea4CwC5uFiLLdnvF4O2YPRiu5rzoRoWnk0=
 github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 h1:3FAQ+KA5WY/AzZ62JGg1AbkCgtSiYAZpZV37IaxdGws=
