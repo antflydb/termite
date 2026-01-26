@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build onnx && ORT
-
 package e2e
 
 import (
@@ -253,4 +251,13 @@ func getClassifierModelsDir() string {
 // getTranscriberModelsDir returns the transcribers subdirectory
 func getTranscriberModelsDir() string {
 	return filepath.Join(testModelsDir, "transcribers")
+}
+
+// fileExists checks if a file exists and is not a directory
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }

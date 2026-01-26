@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
-	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	termembeddings "github.com/antflydb/termite/pkg/termite/lib/embeddings"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
@@ -34,12 +36,37 @@ const DefaultKeepAlive = 5 * time.Minute
 
 // ModelInfo holds metadata about a discovered model (not loaded yet)
 type ModelInfo struct {
-	Name         string
-	Path         string
-	OnnxFilename string // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
-	PoolSize     int
-	ModelType    string   // "embedder", "chunker", "reranker"
-	Variants     []string // Available variant IDs (e.g., ["f16", "i8"])
+	Name             string
+	Path             string
+	OnnxFilename     string // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
+	PoolSize         int
+	ModelType        string   // "embedder", "chunker", "reranker"
+	Variants         []string // Available variant IDs (e.g., ["f16", "i8"])
+	RequiredBackends []string // If set, only use these backends (e.g., ["onnx"] for models with XLA-incompatible ops)
+}
+
+// modelsRequiringONNX lists model name patterns that require the ONNX backend.
+// These models use ONNX ops that aren't supported by the XLA/GoMLX backend.
+// This is a fallback for models without manifest backend specifications.
+var modelsRequiringONNX = []string{
+	"nomic-ai/nomic-embed-text-v1.5", // Uses dynamic Range op in rotary embeddings
+}
+
+// getRequiredBackends returns the required backends for a model.
+// Priority: manifest.Backends > hardcoded patterns > nil (all backends)
+func getRequiredBackends(modelName string, manifest *modelregistry.ModelManifest) []string {
+	// First check manifest if present
+	if manifest != nil && len(manifest.Backends) > 0 {
+		return manifest.Backends
+	}
+
+	// Fall back to hardcoded patterns
+	for _, pattern := range modelsRequiringONNX {
+		if strings.Contains(modelName, pattern) {
+			return []string{"onnx"}
+		}
+	}
+	return nil
 }
 
 // EmbedderRegistry manages embedding models with lazy loading and TTL-based unloading
@@ -223,12 +250,13 @@ func (r *EmbedderRegistry) discoverModels() error {
 			// Register standard precision multimodal model
 			if hasMultimodalStd {
 				r.discovered[registryFullName] = &ModelInfo{
-					Name:         registryFullName,
-					Path:         modelPath,
-					OnnxFilename: "", // CLIP uses multiple files, not a single ONNX
-					PoolSize:     poolSize,
-					ModelType:    "clip",
-					Variants:     []string{"default"},
+					Name:             registryFullName,
+					Path:             modelPath,
+					OnnxFilename:     "", // CLIP uses multiple files, not a single ONNX
+					PoolSize:         poolSize,
+					ModelType:        "clip",
+					Variants:         []string{"default"},
+					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
 				}
 			}
 
@@ -236,12 +264,13 @@ func (r *EmbedderRegistry) discoverModels() error {
 			if hasMultimodalQt {
 				quantizedName := registryFullName + "-i8-qt"
 				r.discovered[quantizedName] = &ModelInfo{
-					Name:         quantizedName,
-					Path:         modelPath,
-					OnnxFilename: "", // CLIP uses multiple files, not a single ONNX
-					PoolSize:     poolSize,
-					ModelType:    "clip-quantized",
-					Variants:     []string{"quantized"},
+					Name:             quantizedName,
+					Path:             modelPath,
+					OnnxFilename:     "", // CLIP uses multiple files, not a single ONNX
+					PoolSize:         poolSize,
+					ModelType:        "clip-quantized",
+					Variants:         []string{"quantized"},
+					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
 				}
 			}
 			continue // Skip standard embedder handling
@@ -274,12 +303,13 @@ func (r *EmbedderRegistry) discoverModels() error {
 			}
 
 			r.discovered[registryName] = &ModelInfo{
-				Name:         registryName,
-				Path:         modelPath,
-				OnnxFilename: onnxFilename,
-				PoolSize:     poolSize,
-				ModelType:    "embedder",
-				Variants:     variantIDs,
+				Name:             registryName,
+				Path:             modelPath,
+				OnnxFilename:     onnxFilename,
+				PoolSize:         poolSize,
+				ModelType:        "embedder",
+				Variants:         variantIDs,
+				RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
 			}
 		}
 	}
@@ -409,8 +439,8 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		cfg := termembeddings.PooledEmbedderConfig{
 			ModelPath:     info.Path,
 			PoolSize:      info.PoolSize,
-			Normalize:     true, // Enable L2 normalization for unit-length embeddings
-			ModelBackends: nil,  // Use all available backends
+			Normalize:     true,                  // Enable L2 normalization for unit-length embeddings
+			ModelBackends: info.RequiredBackends, // nil = all backends, or specific backends for compatibility
 			Logger:        r.logger.Named(info.Name),
 		}
 		embedder, backendUsed, err = termembeddings.NewPooledEmbedder(cfg, r.sessionManager)

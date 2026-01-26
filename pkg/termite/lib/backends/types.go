@@ -46,6 +46,10 @@ const (
 	// Supports TPU, CUDA, and optimized CPU. Requires XLA/PJRT runtime.
 	BackendXLA BackendType = "xla"
 
+	// BackendCoreML is the GoMLX backend with CoreML engine (macOS only)
+	// Uses Apple's Neural Engine, GPU, and CPU. Requires CGO on Darwin.
+	BackendCoreML BackendType = "coreml"
+
 	// BackendGo is the GoMLX backend with pure Go engine (no CGO)
 	// Always available, slower than XLA but no external dependencies.
 	BackendGo BackendType = "go"

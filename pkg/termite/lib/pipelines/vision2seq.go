@@ -42,6 +42,11 @@ type Vision2SeqModelConfig struct {
 	EncoderPath string
 	DecoderPath string
 
+	// Optional split decoder paths for XLA compatibility.
+	// These avoid 0-dimension tensors on the first decoder step.
+	DecoderFirstStepPath string // decoder_model.onnx (no past KV inputs)
+	DecoderWithPastPath  string // decoder_with_past_model.onnx (with past KV inputs)
+
 	// Decoder configuration
 	DecoderConfig *backends.DecoderConfig
 
@@ -93,6 +98,17 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 		"decoder_model.onnx",
 	})
 
+	// Find split decoder files for XLA compatibility
+	// First step decoder (no past KV inputs required)
+	decoderFirstStepPath := FindONNXFile(modelPath, []string{
+		"decoder_model.onnx", // Standard naming for first step decoder
+	})
+	// With past decoder (requires past KV inputs)
+	decoderWithPastPath := FindONNXFile(modelPath, []string{
+		"decoder_with_past_model.onnx",
+		"decoder_with_past.onnx",
+	})
+
 	// Load model configuration from config.json
 	rawConfig, err := loadRawVision2SeqConfig(modelPath)
 	if err != nil {
@@ -129,15 +145,17 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 	headDim := hiddenSize / numHeads
 
 	return &Vision2SeqModelConfig{
-		ModelPath:     modelPath,
-		EncoderPath:   encoderPath,
-		DecoderPath:   decoderPath,
-		DecoderConfig: decoderConfig,
-		ImageConfig:   imageConfig,
-		NumLayers:     numLayers,
-		NumHeads:      numHeads,
-		HeadDim:       headDim,
-		HiddenSize:    hiddenSize,
+		ModelPath:            modelPath,
+		EncoderPath:          encoderPath,
+		DecoderPath:          decoderPath,
+		DecoderFirstStepPath: decoderFirstStepPath,
+		DecoderWithPastPath:  decoderWithPastPath,
+		DecoderConfig:        decoderConfig,
+		ImageConfig:          imageConfig,
+		NumLayers:            numLayers,
+		NumHeads:             numHeads,
+		HeadDim:              headDim,
+		HiddenSize:           hiddenSize,
 	}, nil
 }
 
@@ -477,11 +495,17 @@ var _ backends.Model = (*vision2SeqModel)(nil)
 
 // vision2SeqModel implements backends.Model for image-to-text tasks.
 // It uses separate encoder and decoder sessions (TrOCR, Donut, etc.).
+// For XLA compatibility, it can use split decoders to avoid 0-dimension tensors.
 type vision2SeqModel struct {
 	config *Vision2SeqModelConfig
 
 	encoderSession backends.Session
-	decoderSession backends.Session
+	decoderSession backends.Session // Main decoder (merged or with-past)
+
+	// Optional split decoder sessions for XLA compatibility.
+	decoderFirstStepSession backends.Session // First step (no past KV inputs)
+	decoderWithPastSession  backends.Session // Subsequent steps (with past KV inputs)
+	useSplitDecoders        bool             // True if split decoders are loaded
 
 	backendType backends.BackendType
 }
@@ -523,19 +547,38 @@ func LoadVision2SeqModel(modelPath string, factory backends.SessionFactory, opts
 		return nil, fmt.Errorf("creating encoder session: %w", err)
 	}
 
-	// Create decoder session
+	// Create decoder session (main/merged decoder)
 	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
 	if err != nil {
 		encoderSession.Close()
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
 
-	return &vision2SeqModel{
+	model := &vision2SeqModel{
 		config:         config,
 		encoderSession: encoderSession,
 		decoderSession: decoderSession,
 		backendType:    factory.Backend(),
-	}, nil
+	}
+
+	// Try to load split decoders for XLA compatibility.
+	// These avoid 0-dimension tensors on the first decoder step.
+	if config.DecoderFirstStepPath != "" && config.DecoderWithPastPath != "" {
+		firstStepSession, err := factory.CreateSession(config.DecoderFirstStepPath, opts...)
+		if err == nil {
+			withPastSession, err := factory.CreateSession(config.DecoderWithPastPath, opts...)
+			if err == nil {
+				model.decoderFirstStepSession = firstStepSession
+				model.decoderWithPastSession = withPastSession
+				model.useSplitDecoders = true
+			} else {
+				// Clean up first step session if with-past failed
+				firstStepSession.Close()
+			}
+		}
+	}
+
+	return model, nil
 }
 
 // Forward runs encoder or decoder based on inputs.
@@ -632,14 +675,31 @@ func (m *vision2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 		}
 	}
 
-	// Build decoder inputs
-	tensorInputs, err := m.buildDecoderInputs(flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
+	// Choose the appropriate decoder session:
+	// - Use split decoders if available (for XLA compatibility)
+	// - Use first step decoder if no past KV cache
+	// - Use with-past decoder for subsequent steps
+	var decoderSession backends.Session
+	isFirstStep := pastKeyValues == nil || pastKeyValues.SeqLen == 0
+
+	if m.useSplitDecoders {
+		if isFirstStep {
+			decoderSession = m.decoderFirstStepSession
+		} else {
+			decoderSession = m.decoderWithPastSession
+		}
+	} else {
+		decoderSession = m.decoderSession
+	}
+
+	// Build decoder inputs using the selected session
+	tensorInputs, err := m.buildDecoderInputsForSession(decoderSession, flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
 	if err != nil {
 		return nil, fmt.Errorf("building decoder inputs: %w", err)
 	}
 
 	// Run decoder
-	outputs, err := m.decoderSession.Run(tensorInputs)
+	outputs, err := decoderSession.Run(tensorInputs)
 	if err != nil {
 		return nil, fmt.Errorf("running decoder: %w", err)
 	}
@@ -676,12 +736,13 @@ func (m *vision2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 	}, nil
 }
 
-// buildDecoderInputs creates the input tensors for the decoder.
-func (m *vision2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+// buildDecoderInputsForSession creates the input tensors for the specified decoder session.
+// This allows using different sessions for first step (no KV-cache) and subsequent steps.
+func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
-	// Get decoder input names from session
-	inputInfo := m.decoderSession.InputInfo()
+	// Get decoder input names from the specified session
+	inputInfo := session.InputInfo()
 	inputNames := make(map[string]bool)
 	for _, info := range inputInfo {
 		inputNames[info.Name] = true
@@ -855,6 +916,21 @@ func (m *vision2SeqModel) Close() error {
 			errs = append(errs, fmt.Errorf("closing decoder: %w", err))
 		}
 		m.decoderSession = nil
+	}
+
+	// Close split decoder sessions if loaded
+	if m.decoderFirstStepSession != nil {
+		if err := m.decoderFirstStepSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing first step decoder: %w", err))
+		}
+		m.decoderFirstStepSession = nil
+	}
+
+	if m.decoderWithPastSession != nil {
+		if err := m.decoderWithPastSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing with-past decoder: %w", err))
+		}
+		m.decoderWithPastSession = nil
 	}
 
 	if len(errs) > 0 {

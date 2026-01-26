@@ -251,4 +251,3 @@ func (p *PooledChunker) Close() error {
 	p.pipelines = nil
 	return lastErr
 }
-

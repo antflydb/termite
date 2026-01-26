@@ -341,8 +341,8 @@ func IsClassifierModel(modelPath string) bool {
 	}
 
 	var modelConfig struct {
-		ModelType string   `json:"model_type"`
-		Finetuned string   `json:"finetuning_task"`
+		ModelType string            `json:"model_type"`
+		Finetuned string            `json:"finetuning_task"`
 		ID2Label  map[string]string `json:"id2label"`
 	}
 	if err := json.Unmarshal(data, &modelConfig); err != nil {

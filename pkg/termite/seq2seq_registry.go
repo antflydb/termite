@@ -292,13 +292,14 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Load the Seq2Seq model using PooledSeq2Seq
-	// Restrict to ONNX backend only - CoreML cannot handle dynamic batch sizes > 1
-	// and large seq2seq models (like PEGASUS) exceed CoreML's model size limits.
+	// Load the Seq2Seq model using PooledSeq2Seq.
+	// Use nil for ModelBackends to allow all available backends (ONNX, XLA, Go).
+	// Note: CoreML is not suitable for seq2seq models due to dynamic batch sizes
+	// and model size limits, but this is handled by the session manager.
 	cfg := seq2seq.PooledSeq2SeqConfig{
 		ModelPath:     info.Path,
 		PoolSize:      1, // Registry manages pooling at a higher level
-		ModelBackends: []string{"onnx"},
+		ModelBackends: nil, // Use all available backends
 		Logger:        r.logger.Named(info.Name),
 	}
 	model, backendUsed, err := seq2seq.NewPooledSeq2Seq(cfg, r.sessionManager)

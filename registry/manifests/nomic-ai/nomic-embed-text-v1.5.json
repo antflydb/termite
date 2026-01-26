@@ -6,5 +6,6 @@
   "description": "Long-context embeddings with Matryoshka support. Flexible dimensions (64-768) and 8K token context.",
   "source": "nomic-ai/nomic-embed-text-v1.5",
   "files": [],
-  "variants": {}
+  "variants": {},
+  "backends": ["onnx"]
 }

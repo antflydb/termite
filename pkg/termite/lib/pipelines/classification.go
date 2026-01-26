@@ -18,12 +18,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/ajroetker/go-highway/hwy/contrib/algo"
+	"github.com/ajroetker/go-highway/hwy/contrib/nn"
 	"github.com/gomlx/go-huggingface/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
@@ -527,44 +528,24 @@ func (p *ClassificationPipeline) logitsToResults(logits [][]float32) []Classific
 	return results
 }
 
-// applySoftmax applies softmax to convert logits to probabilities.
+// applySoftmax applies softmax to convert logits to probabilities in-place using SIMD acceleration.
+// The input slice is modified and returned.
 func applySoftmax(logits []float32) []float32 {
 	if len(logits) == 0 {
 		return nil
 	}
-
-	// Find max for numerical stability
-	maxVal := logits[0]
-	for _, v := range logits[1:] {
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	// Compute exp(x - max) and sum
-	probs := make([]float32, len(logits))
-	var sum float64
-	for i, v := range logits {
-		exp := math.Exp(float64(v - maxVal))
-		probs[i] = float32(exp)
-		sum += exp
-	}
-
-	// Normalize
-	for i := range probs {
-		probs[i] = float32(float64(probs[i]) / sum)
-	}
-
-	return probs
+	nn.SoftmaxInPlace(logits)
+	return logits
 }
 
-// applySigmoid applies sigmoid to convert logits to probabilities (for multi-label).
+// applySigmoid applies sigmoid to convert logits to probabilities (for multi-label) in-place using SIMD acceleration.
+// The input slice is modified and returned.
 func applySigmoid(logits []float32) []float32 {
-	probs := make([]float32, len(logits))
-	for i, logit := range logits {
-		probs[i] = float32(1.0 / (1.0 + math.Exp(-float64(logit))))
+	if len(logits) == 0 {
+		return nil
 	}
-	return probs
+	algo.SigmoidTransform(logits, logits)
+	return logits
 }
 
 // Forward runs inference on the given inputs and returns the model outputs.

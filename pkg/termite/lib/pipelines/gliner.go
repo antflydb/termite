@@ -517,10 +517,10 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	attentionMask := make([]int64, seqLen)
 
 	// DeBERTa special token IDs
-	clsID := int64(1)  // DeBERTa [CLS]
-	sepID := int64(2)  // DeBERTa [SEP]
-	padID := int64(0)  // DeBERTa [PAD]
-	_ = padID // unused for now, padding handled later
+	clsID := int64(1) // DeBERTa [CLS]
+	sepID := int64(2) // DeBERTa [SEP]
+	padID := int64(0) // DeBERTa [PAD]
+	_ = padID         // unused for now, padding handled later
 
 	idx := 0
 	inputIDs[idx] = clsID

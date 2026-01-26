@@ -49,8 +49,8 @@ var (
 	registryMu sync.RWMutex
 
 	// priority defines the order to try backends when selecting default.
-	// Configurable via SetPriority(). Default: ONNX > XLA > Go
-	defaultPriority = []BackendType{BackendONNX, BackendXLA, BackendGo}
+	// Configurable via SetPriority(). Default: ONNX > XLA > CoreML > Go
+	defaultPriority = []BackendType{BackendONNX, BackendXLA, BackendCoreML, BackendGo}
 	configPriority  []BackendType
 	priorityMu      sync.RWMutex
 )
@@ -194,16 +194,18 @@ func ParseBackendType(s string) (BackendType, error) {
 		return BackendONNX, nil
 	case "xla":
 		return BackendXLA, nil
+	case "coreml":
+		return BackendCoreML, nil
 	case "go":
 		return BackendGo, nil
 	default:
-		return "", fmt.Errorf("unknown backend type: %q (valid: onnx, xla, go)", s)
+		return "", fmt.Errorf("unknown backend type: %q (valid: onnx, xla, coreml, go)", s)
 	}
 }
 
 // BackendTypeStrings returns valid backend type strings for documentation/validation.
 func BackendTypeStrings() []string {
-	return []string{"onnx", "xla", "go"}
+	return []string{"onnx", "xla", "coreml", "go"}
 }
 
 // ParseDeviceType parses a string into DeviceType.

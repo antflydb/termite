@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build onnx && ORT
+////go:build onnx && ORT
 
 package e2e
 

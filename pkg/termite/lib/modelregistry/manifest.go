@@ -451,6 +451,9 @@ type ModelIndexEntry struct {
 	Size int64 `json:"size,omitempty"`
 	// Variants lists available variant identifiers (e.g., ["f16", "i8"])
 	Variants []string `json:"variants,omitempty"`
+	// Backends lists required backends for this model (e.g., ["onnx"] for models with XLA-incompatible ops)
+	// If empty/nil, all backends are supported
+	Backends []string `json:"backends,omitempty"`
 }
 
 // ParseRegistryIndex parses a JSON registry index

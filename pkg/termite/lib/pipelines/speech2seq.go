@@ -40,6 +40,11 @@ type Speech2SeqModelConfig struct {
 	EncoderPath string
 	DecoderPath string
 
+	// Optional split decoder paths for XLA compatibility.
+	// When available, these avoid 0-dimension tensor issues on the first step.
+	DecoderFirstStepPath string // decoder_model.onnx (no past KV inputs)
+	DecoderWithPastPath  string // decoder_with_past_model.onnx (with past KV inputs)
+
 	// Decoder configuration
 	DecoderConfig *backends.DecoderConfig
 
@@ -78,13 +83,23 @@ func LoadSpeech2SeqModelConfig(modelPath string) (*Speech2SeqModelConfig, error)
 		"encoder.onnx",
 	})
 
-	// Find decoder ONNX file
+	// Find decoder ONNX file (merged or with-past)
 	decoderPath := FindONNXFile(modelPath, []string{
 		"decoder_model_merged.onnx", // Preferred: merged decoder with KV-cache
 		"decoder_with_past_model.onnx",
 		"decoder_with_past.onnx",
 		"decoder.onnx",
 		"decoder_model.onnx",
+	})
+
+	// Find split decoder files for XLA compatibility.
+	// These avoid 0-dimension tensor issues on the first decoder step.
+	decoderFirstStepPath := FindONNXFile(modelPath, []string{
+		"decoder_model.onnx", // First step decoder (no past KV inputs)
+	})
+	decoderWithPastPath := FindONNXFile(modelPath, []string{
+		"decoder_with_past_model.onnx", // Subsequent steps decoder (with past KV inputs)
+		"decoder_with_past.onnx",
 	})
 
 	// Load model configuration from config.json
@@ -109,15 +124,17 @@ func LoadSpeech2SeqModelConfig(modelPath string) (*Speech2SeqModelConfig, error)
 	headDim := hiddenSize / numHeads
 
 	return &Speech2SeqModelConfig{
-		ModelPath:     modelPath,
-		EncoderPath:   encoderPath,
-		DecoderPath:   decoderPath,
-		DecoderConfig: decoderConfig,
-		AudioConfig:   audioConfig,
-		NumLayers:     numLayers,
-		NumHeads:      numHeads,
-		HeadDim:       headDim,
-		HiddenSize:    hiddenSize,
+		ModelPath:            modelPath,
+		EncoderPath:          encoderPath,
+		DecoderPath:          decoderPath,
+		DecoderFirstStepPath: decoderFirstStepPath,
+		DecoderWithPastPath:  decoderWithPastPath,
+		DecoderConfig:        decoderConfig,
+		AudioConfig:          audioConfig,
+		NumLayers:            numLayers,
+		NumHeads:             numHeads,
+		HeadDim:              headDim,
+		HiddenSize:           hiddenSize,
 	}, nil
 }
 
@@ -184,9 +201,9 @@ type rawSpeech2SeqConfig struct {
 	HiddenSize            int `json:"hidden_size"`
 
 	// Sequence length
-	MaxLength            int `json:"max_length"`
-	MaxTargetPositions   int `json:"max_target_positions"`
-	MaxSourcePositions   int `json:"max_source_positions"`
+	MaxLength             int `json:"max_length"`
+	MaxTargetPositions    int `json:"max_target_positions"`
+	MaxSourcePositions    int `json:"max_source_positions"`
 	MaxPositionEmbeddings int `json:"max_position_embeddings"`
 
 	// Whisper-specific
@@ -196,15 +213,15 @@ type rawSpeech2SeqConfig struct {
 
 // rawAudioPreprocessorConfig represents preprocessor_config.json for audio models.
 type rawAudioPreprocessorConfig struct {
-	FeatureSize       int     `json:"feature_size"`
-	SamplingRate      int     `json:"sampling_rate"`
-	HopLength         int     `json:"hop_length"`
-	ChunkLength       int     `json:"chunk_length"`
-	NFft              int     `json:"n_fft"`
-	NMels             int     `json:"n_mels"`
-	PaddingValue      float32 `json:"padding_value"`
-	FeatureExtractor  string  `json:"feature_extractor_type"`
-	ProcessorClass    string  `json:"processor_class"`
+	FeatureSize      int     `json:"feature_size"`
+	SamplingRate     int     `json:"sampling_rate"`
+	HopLength        int     `json:"hop_length"`
+	ChunkLength      int     `json:"chunk_length"`
+	NFft             int     `json:"n_fft"`
+	NMels            int     `json:"n_mels"`
+	PaddingValue     float32 `json:"padding_value"`
+	FeatureExtractor string  `json:"feature_extractor_type"`
+	ProcessorClass   string  `json:"processor_class"`
 }
 
 // loadRawSpeech2SeqConfig loads the model configuration from config.json.
@@ -319,6 +336,12 @@ type speech2SeqModel struct {
 	encoderSession backends.Session
 	decoderSession backends.Session
 
+	// Optional split decoder sessions for XLA compatibility.
+	// When available, these avoid 0-dimension tensor issues on the first step.
+	decoderFirstStepSession backends.Session // First step (no past KV inputs)
+	decoderWithPastSession  backends.Session // Subsequent steps (with past KV inputs)
+	useSplitDecoders        bool             // True if split decoders are loaded
+
 	backendType backends.BackendType
 }
 
@@ -339,6 +362,8 @@ func NewSpeech2SeqModel(
 
 // LoadSpeech2SeqModel loads a speech2seq Model using the given session factory.
 // It automatically discovers encoder and decoder ONNX files and creates sessions.
+// When split decoders are available (decoder_model.onnx + decoder_with_past_model.onnx),
+// they are used for XLA compatibility to avoid 0-dimension tensor issues.
 func LoadSpeech2SeqModel(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (backends.Model, error) {
 	// Load configuration
 	config, err := LoadSpeech2SeqModelConfig(modelPath)
@@ -359,19 +384,44 @@ func LoadSpeech2SeqModel(modelPath string, factory backends.SessionFactory, opts
 		return nil, fmt.Errorf("creating encoder session: %w", err)
 	}
 
-	// Create decoder session
+	model := &speech2SeqModel{
+		config:         config,
+		encoderSession: encoderSession,
+		backendType:    factory.Backend(),
+	}
+
+	// Try to load split decoders for XLA compatibility.
+	// Split decoders avoid 0-dimension tensor issues on the first step.
+	if config.DecoderFirstStepPath != "" && config.DecoderWithPastPath != "" {
+		// Load first-step decoder (no past KV inputs)
+		firstStepSession, err := factory.CreateSession(config.DecoderFirstStepPath, opts...)
+		if err == nil {
+			// Load with-past decoder
+			withPastSession, err := factory.CreateSession(config.DecoderWithPastPath, opts...)
+			if err == nil {
+				model.decoderFirstStepSession = firstStepSession
+				model.decoderWithPastSession = withPastSession
+				model.useSplitDecoders = true
+				// Also keep the merged decoder as fallback (not needed but consistent)
+				decoderSession, _ := factory.CreateSession(config.DecoderPath, opts...)
+				model.decoderSession = decoderSession
+				return model, nil
+			}
+			// Failed to load with-past decoder, close first-step session
+			firstStepSession.Close()
+		}
+		// Fall through to use merged decoder
+	}
+
+	// Create merged decoder session (fallback)
 	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
 	if err != nil {
 		encoderSession.Close()
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
+	model.decoderSession = decoderSession
 
-	return &speech2SeqModel{
-		config:         config,
-		encoderSession: encoderSession,
-		decoderSession: decoderSession,
-		backendType:    factory.Backend(),
-	}, nil
+	return model, nil
 }
 
 // Forward runs encoder or decoder based on inputs.
@@ -487,14 +537,33 @@ func (m *speech2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 		}
 	}
 
+	// Choose the appropriate decoder session.
+	// When using split decoders (for XLA compatibility):
+	// - First step (no past KV): use decoderFirstStepSession
+	// - Subsequent steps (with past KV): use decoderWithPastSession
+	var decoderSession backends.Session
+	var isFirstStep bool
+	if m.useSplitDecoders {
+		if pastKeyValues == nil || pastKeyValues.SeqLen == 0 {
+			decoderSession = m.decoderFirstStepSession
+			isFirstStep = true
+		} else {
+			decoderSession = m.decoderWithPastSession
+			isFirstStep = false
+		}
+	} else {
+		decoderSession = m.decoderSession
+		isFirstStep = pastKeyValues == nil || pastKeyValues.SeqLen == 0
+	}
+
 	// Build decoder inputs
-	tensorInputs, err := m.buildDecoderInputs(flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
+	tensorInputs, err := m.buildDecoderInputs(flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues, decoderSession, isFirstStep)
 	if err != nil {
 		return nil, fmt.Errorf("building decoder inputs: %w", err)
 	}
 
 	// Run decoder
-	outputs, err := m.decoderSession.Run(tensorInputs)
+	outputs, err := decoderSession.Run(tensorInputs)
 	if err != nil {
 		return nil, fmt.Errorf("running decoder: %w", err)
 	}
@@ -532,11 +601,13 @@ func (m *speech2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 }
 
 // buildDecoderInputs creates the input tensors for the decoder.
-func (m *speech2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+// When using split decoders, the decoderSession parameter indicates which decoder is being used,
+// and isFirstStep indicates whether this is the first decoder step (no past KV needed).
+func (m *speech2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache, decoderSession backends.Session, isFirstStep bool) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
-	// Get decoder input names from session
-	inputInfo := m.decoderSession.InputInfo()
+	// Get decoder input names from the session being used
+	inputInfo := decoderSession.InputInfo()
 	inputNames := make(map[string]bool)
 	for _, info := range inputInfo {
 		inputNames[info.Name] = true
@@ -607,7 +678,10 @@ func (m *speech2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 		}
 	}
 
-	// Add past_key_values inputs if needed
+	// Add past_key_values inputs if needed.
+	// Note: When using split decoders, the first-step decoder (decoder_model.onnx) doesn't have
+	// past_key_values inputs, so this loop won't add anything for the first step.
+	// The with-past decoder (decoder_with_past_model.onnx) requires past_key_values.
 	encoderSeqLen := encoderOutput.Shape[1]
 	for _, info := range inputInfo {
 		if IsPastKeyValueInput(info.Name) {
@@ -620,6 +694,7 @@ func (m *speech2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 }
 
 // createPastKVTensor creates a tensor for past key/value cache.
+// Maps input names like "past_key_values.0.decoder.key" to stored output names like "present.0.decoder.key".
 func (m *speech2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
 	numHeads := m.config.NumHeads
 	headDim := m.config.HeadDim
@@ -631,7 +706,23 @@ func (m *speech2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCac
 		headDim = 64
 	}
 
-	// Determine sequence length based on whether we have past KV cache
+	// If we have past KV cache with stored tensors, look up the cached data.
+	// Map input name (past_key_values.*) to output name (present.*) for lookup.
+	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
+		outputName := mapPastToPresent(name)
+		if tensor, ok := pastKV.Tensors[outputName]; ok {
+			return backends.NamedTensor{
+				Name:  name,
+				Shape: tensor.Shape,
+				Data:  tensor.Data,
+			}
+		}
+	}
+
+	// No cached data - create empty tensor.
+	// Note: For XLA/GoMLX backends, we use split decoders to avoid this code path
+	// on the first step, since 0-dimension tensors cause issues with XLA.
+	// For ONNX Runtime, 0-dimension tensors work fine.
 	var seqLen int
 	if pastKV != nil && pastKV.SeqLen > 0 {
 		if isEncoderKVTensor(name) {
@@ -643,7 +734,6 @@ func (m *speech2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCac
 		seqLen = 0
 	}
 
-	// Create tensor with appropriate shape
 	size := batchSize * numHeads * seqLen * headDim
 	data := make([]float32, size)
 	return backends.NamedTensor{
@@ -738,6 +828,21 @@ func (m *speech2SeqModel) Close() error {
 			errs = append(errs, fmt.Errorf("closing decoder: %w", err))
 		}
 		m.decoderSession = nil
+	}
+
+	// Close split decoder sessions if loaded
+	if m.decoderFirstStepSession != nil {
+		if err := m.decoderFirstStepSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing first-step decoder: %w", err))
+		}
+		m.decoderFirstStepSession = nil
+	}
+
+	if m.decoderWithPastSession != nil {
+		if err := m.decoderWithPastSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing with-past decoder: %w", err))
+		}
+		m.decoderWithPastSession = nil
 	}
 
 	if len(errs) > 0 {

@@ -21,6 +21,9 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/ajroetker/go-highway/hwy/contrib/nn"
+	"github.com/ajroetker/go-highway/hwy/contrib/vec"
+
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
 
@@ -356,44 +359,22 @@ func applyRepetitionPenalty(logits []float32, generatedTokens []int32, penalty f
 	}
 }
 
-// Argmax returns the index of the maximum value.
+// Argmax returns the index of the maximum value using SIMD acceleration.
+// This is particularly beneficial for decoder vocab sizes (30k-100k elements).
 func Argmax(values []float32) int32 {
-	maxIdx := 0
-	maxVal := values[0]
-	for i, v := range values[1:] {
-		if v > maxVal {
-			maxVal = v
-			maxIdx = i + 1
-		}
+	if len(values) == 0 {
+		return 0
 	}
-	return int32(maxIdx)
+	return int32(vec.Argmax(values))
 }
 
-// Softmax applies softmax normalization.
+// Softmax applies softmax normalization using SIMD acceleration.
 func Softmax(logits []float32) []float32 {
-	// Find max for numerical stability
-	maxVal := logits[0]
-	for _, v := range logits[1:] {
-		if v > maxVal {
-			maxVal = v
-		}
+	if len(logits) == 0 {
+		return nil
 	}
-
-	// Compute exp and sum
 	probs := make([]float32, len(logits))
-	var sum float32
-	for i, v := range logits {
-		probs[i] = float32(math.Exp(float64(v - maxVal)))
-		sum += probs[i]
-	}
-
-	// Normalize
-	if sum > 0 {
-		for i := range probs {
-			probs[i] /= sum
-		}
-	}
-
+	nn.Softmax(logits, probs)
 	return probs
 }
 

@@ -144,8 +144,8 @@ type GenerativeSession interface {
 
 // GenerativeMessage represents a chat message for generative models.
 type GenerativeMessage struct {
-	Role     string   // "system", "user", "assistant"
-	Content  string   // Text content
+	Role      string   // "system", "user", "assistant"
+	Content   string   // Text content
 	ImageURLs []string // Optional image URLs for multimodal models
 }
 
@@ -177,9 +177,9 @@ type GenerativeResult struct {
 
 // GenerativeToken represents a single token in streaming output.
 type GenerativeToken struct {
-	Token    string
-	Index    int
-	IsFinal  bool
+	Token   string
+	Index   int
+	IsFinal bool
 }
 
 // GenerativeSessionFactory creates generative sessions from model directories.

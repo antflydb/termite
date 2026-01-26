@@ -1,5 +1,3 @@
-//go:build onnx && ORT
-
 // Copyright 2025 Antfly, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,15 +68,6 @@ const (
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-// fileExists checks if a file exists and is not a directory
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
-}
 
 // createTestImageWithText creates a simple test pattern image (not real text).
 // Note: This creates a dot pattern that OCR models won't recognize as text.

@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
-	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/cespare/xxhash/v2"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"

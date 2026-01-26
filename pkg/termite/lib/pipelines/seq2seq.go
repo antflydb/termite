@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gomlx/go-huggingface/tokenizers"
 
@@ -575,6 +576,9 @@ func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, in
 		inputNames[info.Name] = true
 	}
 
+	// Get encoder sequence length for encoder KV inputs
+	encoderSeqLen := encoderOutput.Shape[1]
+
 	// Add input_ids (or decoder_input_ids)
 	inputIDsName := "input_ids"
 	if inputNames["decoder_input_ids"] {
@@ -601,14 +605,13 @@ func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, in
 
 	// Add encoder attention mask if needed
 	if inputNames["encoder_attention_mask"] {
-		encSeqLen := encoderOutput.Shape[1]
-		mask := make([]int64, batchSize*encSeqLen)
+		mask := make([]int64, batchSize*encoderSeqLen)
 		for i := range mask {
 			mask[i] = 1
 		}
 		inputs = append(inputs, backends.NamedTensor{
 			Name:  "encoder_attention_mask",
-			Shape: []int64{int64(batchSize), int64(encSeqLen)},
+			Shape: []int64{int64(batchSize), int64(encoderSeqLen)},
 			Data:  mask,
 		})
 	}
@@ -649,7 +652,7 @@ func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, in
 	// Add past_key_values inputs if needed
 	for _, info := range inputInfo {
 		if IsPastKeyValueInput(info.Name) {
-			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize)
+			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize, encoderSeqLen)
 			inputs = append(inputs, tensor)
 		}
 	}
@@ -659,33 +662,51 @@ func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, in
 
 // createPastKVTensor creates a tensor for past key/value cache.
 // Maps input names like "past_key_values.0.decoder.key" to stored output names like "present.0.decoder.key".
-func (m *seq2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int) backends.NamedTensor {
-	// If no past KV or no stored tensors, create empty tensor
-	if pastKV == nil || pastKV.SeqLen == 0 || pastKV.Tensors == nil {
-		// Create zero-sized tensor for first step
-		// Shape: [batch, num_heads, 0, head_dim]
-		return backends.NamedTensor{
-			Name:  name,
-			Shape: []int64{int64(batchSize), int64(m.config.NumHeads), 0, int64(m.config.HeadDim)},
-			Data:  []float32{},
+//
+// For encoder-decoder models (BART/REBEL):
+// - Encoder KV (cross-attention): shape [batch, heads, encoder_seq_len, head_dim]
+// - Decoder KV (self-attention): shape [batch, heads, decoder_seq_len, head_dim]
+//
+// On the first step:
+// - Encoder KV should have encoder_seq_len dimension with zeros (will be computed from encoder output)
+// - Decoder KV should have 0 dimension (no decoder history yet)
+func (m *seq2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
+	// Check if we have past KV cache with stored tensors
+	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
+		// Map input name to output name
+		// "past_key_values.0.decoder.key" -> "present.0.decoder.key"
+		// "past_key_values.0.encoder.key" -> "present.0.encoder.key"
+		outputName := mapPastToPresent(name)
+
+		// Look up the stored tensor
+		if tensor, ok := pastKV.Tensors[outputName]; ok {
+			return backends.NamedTensor{
+				Name:  name,
+				Shape: tensor.Shape,
+				Data:  tensor.Data,
+			}
 		}
 	}
 
-	// Map input name to output name
-	// "past_key_values.0.decoder.key" -> "present.0.decoder.key"
-	// "past_key_values.0.encoder.key" -> "present.0.encoder.key"
-	outputName := mapPastToPresent(name)
+	// First step or tensor not found - create appropriate zero tensor
+	// Check if this is an encoder KV (cross-attention) or decoder KV (self-attention)
+	isEncoderKV := strings.Contains(name, ".encoder.")
 
-	// Look up the stored tensor
-	if tensor, ok := pastKV.Tensors[outputName]; ok {
+	if isEncoderKV {
+		// Encoder KV (cross-attention): use encoder sequence length
+		// Shape: [batch, num_heads, encoder_seq_len, head_dim]
+		// Data is zeros - the model will compute the actual values from encoder_hidden_states
+		tensorSize := batchSize * m.config.NumHeads * encoderSeqLen * m.config.HeadDim
 		return backends.NamedTensor{
 			Name:  name,
-			Shape: tensor.Shape,
-			Data:  tensor.Data,
+			Shape: []int64{int64(batchSize), int64(m.config.NumHeads), int64(encoderSeqLen), int64(m.config.HeadDim)},
+			Data:  make([]float32, tensorSize),
 		}
 	}
 
-	// Fallback: return empty tensor if not found
+	// Decoder KV (self-attention): use 0 dimension for first step
+	// Shape: [batch, num_heads, 0, head_dim]
+	// Note: This 0-dimension may cause issues on XLA - use split decoders for compatibility
 	return backends.NamedTensor{
 		Name:  name,
 		Shape: []int64{int64(batchSize), int64(m.config.NumHeads), 0, int64(m.config.HeadDim)},

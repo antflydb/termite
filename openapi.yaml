@@ -685,11 +685,89 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /transcribe:
+    post:
+      summary: Transcribe audio to text (speech-to-text)
+      description: |
+        Transcribes audio to text using Speech2Seq models like Whisper, Wav2Vec2, or HuBERT.
+
+        ## Models
+
+        Models are auto-discovered from `models_dir/transcribers/` at startup.
+        Use the `/api/models` endpoint to list available models.
+
+        - **Whisper**: OpenAI's Whisper models (multilingual, automatic language detection)
+        - **Wav2Vec2**: Facebook's Wav2Vec 2.0 models (English-focused)
+        - **HuBERT**: Facebook's HuBERT models (self-supervised)
+
+        ## Audio Input
+
+        Audio data should be base64-encoded. Supported formats depend on the model:
+        - WAV (recommended - raw PCM)
+        - MP3
+        - FLAC
+        - M4A/AAC
+
+        ## Example
+
+        ```json
+        {
+          "model": "openai/whisper-tiny",
+          "audio": "UklGRi..."
+        }
+        ```
+
+        With language hint:
+        ```json
+        {
+          "model": "openai/whisper-tiny",
+          "audio": "UklGRi...",
+          "language": "en"
+        }
+        ```
+      operationId: transcribeAudio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TranscribeRequest'
+      responses:
+        '200':
+          description: Audio transcribed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TranscribeResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Transcription service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, reranking, generator, NER, rewriter, and reader models.
+        Returns lists of available embedding, chunking, reranking, generator, NER, rewriter, reader, and transcriber models.
 
         ## Embedders
 
@@ -725,6 +803,11 @@ paths:
 
         - Vision2Seq models from `models_dir/readers/`
         - TrOCR, Donut, Florence-2 for OCR and document understanding
+
+        ## Transcribers
+
+        - Speech2Seq models from `models_dir/transcribers/`
+        - Whisper, Wav2Vec2, HuBERT for speech-to-text
 
         Models are discovered at service startup and cached.
       operationId: listModels
@@ -1324,6 +1407,40 @@ components:
           items:
             $ref: '#/components/schemas/ReadResult'
           description: Array of read results (one per input image)
+    TranscribeRequest:
+      type: object
+      required:
+        - audio
+      properties:
+        model:
+          type: string
+          description: Name of transcriber model from models_dir/transcribers/
+          example: openai/whisper-tiny
+        audio:
+          type: string
+          format: byte
+          description: Base64-encoded audio data (WAV, MP3, FLAC, etc.)
+        language:
+          type: string
+          description: Force specific language for transcription (optional, model-dependent)
+          example: en
+    TranscribeResponse:
+      type: object
+      required:
+        - model
+        - text
+      properties:
+        model:
+          type: string
+          description: Name of model used for transcription
+        text:
+          type: string
+          description: Transcribed text from the audio
+          example: Hello, how are you today?
+        language:
+          type: string
+          description: Detected or forced language
+          example: en
     ModelsResponse:
       type: object
       required:
@@ -1335,6 +1452,7 @@ components:
         - rewriters
         - classifiers
         - readers
+        - transcribers
       properties:
         chunkers:
           type: array
@@ -1407,6 +1525,14 @@ components:
           example:
             - microsoft/trocr-base-printed
             - naver-clova-ix/donut-base-finetuned-cord-v2
+        transcribers:
+          type: array
+          items:
+            type: string
+          description: Available transcriber/speech-to-text models from models_dir/transcribers/
+          example:
+            - openai/whisper-tiny
+            - openai/whisper-base
         recognizer_info:
           type: object
           additionalProperties:

@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"

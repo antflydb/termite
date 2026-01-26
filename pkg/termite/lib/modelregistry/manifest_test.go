@@ -276,6 +276,37 @@ func TestParseRegistryIndex(t *testing.T) {
 			t.Error("Expected error for schema version 0")
 		}
 	})
+
+	t.Run("index v2 with backends", func(t *testing.T) {
+		data := `{
+			"schemaVersion": 2,
+			"models": [
+				{"name": "nomic-embed-text-v1.5", "owner": "nomic-ai", "type": "embedder", "backends": ["onnx"]},
+				{"name": "bge-m3", "owner": "BAAI", "type": "embedder", "backends": ["onnx", "xla"]}
+			]
+		}`
+		index, err := ParseRegistryIndex([]byte(data))
+		if err != nil {
+			t.Fatalf("ParseRegistryIndex() error = %v", err)
+		}
+
+		if len(index.Models) != 2 {
+			t.Errorf("len(Models) = %v, want 2", len(index.Models))
+		}
+
+		// Check nomic model has backends = ["onnx"]
+		if len(index.Models[0].Backends) != 1 {
+			t.Errorf("Models[0].Backends = %v, want 1 backend", index.Models[0].Backends)
+		}
+		if len(index.Models[0].Backends) > 0 && index.Models[0].Backends[0] != "onnx" {
+			t.Errorf("Models[0].Backends[0] = %v, want onnx", index.Models[0].Backends[0])
+		}
+
+		// Check bge-m3 model has backends = ["onnx", "xla"]
+		if len(index.Models[1].Backends) != 2 {
+			t.Errorf("Models[1].Backends = %v, want 2 backends", index.Models[1].Backends)
+		}
+	})
 }
 
 func TestManifestValidate(t *testing.T) {

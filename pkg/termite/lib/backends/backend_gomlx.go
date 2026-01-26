@@ -21,12 +21,13 @@ import (
 	"path/filepath"
 	"sync"
 
+	hfmodels "github.com/ajroetker/huggingface-gomlx"
+	"github.com/ajroetker/huggingface-gomlx/architectures/bert"
 	"github.com/gomlx/gomlx/backends"
+	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	mlctx "github.com/gomlx/gomlx/pkg/ml/context"
-	hfmodels "github.com/ajroetker/huggingface-gomlx"
-	"github.com/ajroetker/huggingface-gomlx/architectures/bert"
 	"github.com/gomlx/onnx-gomlx/onnx"
 
 	// Import Go backend - always available (pure Go, no CGO)
@@ -71,6 +72,8 @@ func (b *gomlxBackend) Name() string {
 	switch b.backendType {
 	case BackendXLA:
 		return "GoMLX (XLA)"
+	case BackendCoreML:
+		return "GoMLX (CoreML)"
 	case BackendGo:
 		return "GoMLX (Go)"
 	default:
@@ -106,6 +109,9 @@ func (b *gomlxBackend) Priority() int {
 	case BackendXLA:
 		// XLA has higher priority than Go (lower number = higher priority)
 		return 20
+	case BackendCoreML:
+		// CoreML is between XLA and Go (macOS only)
+		return 25
 	case BackendGo:
 		// Go is always available fallback
 		return 100
@@ -119,6 +125,15 @@ func (b *gomlxBackend) Loader() ModelLoader {
 		b.engineMgr = newEngineManager()
 	}
 	return &gomlxModelLoader{backend: b}
+}
+
+// SessionFactory returns a SessionFactory for creating raw GoMLX sessions.
+// This provides low-level access for building custom model types (e.g., seq2seq).
+func (b *gomlxBackend) SessionFactory() SessionFactory {
+	if b.engineMgr == nil {
+		b.engineMgr = newEngineManager()
+	}
+	return &gomlxSessionFactory{backend: b}
 }
 
 // engineManager manages GoMLX backend engines.
@@ -147,11 +162,11 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 		return m.defaultEngine, nil
 	}
 
-	// Auto-detect: try xla first, fall back to simplego
+	// Auto-detect: try xla first, fall back to go (simplego)
 	engine, err := safeNewBackend("xla")
 	if err != nil {
-		// XLA not available, use simplego
-		engine, err = safeNewBackend("simplego")
+		// XLA not available, use go (simplego)
+		engine, err = safeNewBackend("go")
 		if err != nil {
 			return nil, err
 		}
@@ -574,37 +589,474 @@ func (m *onnxModel) forward(ctx context.Context, inputIDs [][]int32, attentionMa
 		return nil, fmt.Errorf("no output from ONNX model")
 	}
 
-	// First output should be last_hidden_state [batch, seq, hidden]
+	// First output: either last_hidden_state [batch, seq, hidden] or logits [batch, classes]
 	output := results[0]
 	shape := output.Shape()
 
-	if len(shape.Dimensions) < 3 {
-		return nil, fmt.Errorf("unexpected output shape: %v", shape.Dimensions)
+	// Handle different output shapes:
+	// - 3D [batch, seq, hidden]: hidden states (encoder models, embeddings)
+	// - 2D [batch, classes]: logits (classification models, rerankers)
+	switch len(shape.Dimensions) {
+	case 3:
+		// Standard encoder output: [batch, seq, hidden]
+		data := output.Value().([][][]float32)
+
+		// Reshape to our format
+		lastHiddenState := make([][][]float32, batchSize)
+		for i := range batchSize {
+			lastHiddenState[i] = data[i]
+		}
+
+		// Apply pooling
+		embeddings := PoolHiddenStates(lastHiddenState, attentionMask, PoolingStrategy(m.pooling))
+
+		// Apply normalization if requested
+		if m.normalize {
+			NormalizeEmbeddings(embeddings)
+		}
+
+		return &ModelOutput{
+			LastHiddenState: lastHiddenState,
+			Embeddings:      embeddings,
+		}, nil
+
+	case 2:
+		// Classification/reranker output: [batch, classes] - logits
+		data := output.Value().([][]float32)
+		numClasses := int(shape.Dimensions[1])
+
+		logits := make([][]float32, batchSize)
+		for i := range batchSize {
+			logits[i] = make([]float32, numClasses)
+			copy(logits[i], data[i])
+		}
+
+		return &ModelOutput{
+			Logits: logits,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected output shape: %v (expected 2D or 3D)", shape.Dimensions)
 	}
-
-	// Extract data
-	data := output.Value().([][][]float32)
-
-	// Reshape to our format
-	lastHiddenState := make([][][]float32, batchSize)
-	for i := range batchSize {
-		lastHiddenState[i] = data[i]
-	}
-
-	// Apply pooling
-	embeddings := PoolHiddenStates(lastHiddenState, attentionMask, PoolingStrategy(m.pooling))
-
-	// Apply normalization if requested
-	if m.normalize {
-		NormalizeEmbeddings(embeddings)
-	}
-
-	return &ModelOutput{
-		LastHiddenState: lastHiddenState,
-		Embeddings:      embeddings,
-	}, nil
 }
 
 func (m *onnxModel) close() error {
 	return nil
+}
+
+// =============================================================================
+// SessionFactory Implementation (for seq2seq and other multi-model pipelines)
+// =============================================================================
+
+// gomlxSessionFactory creates sessions from ONNX model files using GoMLX.
+type gomlxSessionFactory struct {
+	backend *gomlxBackend
+}
+
+func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOption) (Session, error) {
+	// Get the inference backend
+	engine, err := f.backend.engineMgr.getEngine(f.backend.engineType)
+	if err != nil {
+		return nil, fmt.Errorf("getting GoMLX engine: %w", err)
+	}
+
+	// Load the ONNX model
+	om, err := onnx.ReadFile(modelPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading ONNX model: %w", err)
+	}
+
+	// Create context and load variables
+	ctx := mlctx.New()
+	if err := om.VariablesToContext(ctx); err != nil {
+		return nil, fmt.Errorf("loading ONNX variables: %w", err)
+	}
+
+	// Get input/output info
+	inputNames, inputShapes := om.Inputs()
+	outputNames, outputShapes := om.Outputs()
+
+	inputInfo := make([]TensorInfo, len(inputNames))
+	for i, name := range inputNames {
+		inputInfo[i] = TensorInfo{
+			Name:     name,
+			Shape:    intsToInt64s(inputShapes[i].Dimensions),
+			DataType: gomlxDataType(inputShapes[i].DType),
+		}
+	}
+
+	outputInfo := make([]TensorInfo, len(outputNames))
+	for i, name := range outputNames {
+		outputInfo[i] = TensorInfo{
+			Name:     name,
+			Shape:    intsToInt64s(outputShapes[i].Dimensions),
+			DataType: gomlxDataType(outputShapes[i].DType),
+		}
+	}
+
+	return &gomlxSession{
+		onnxModel:   om,
+		ctx:         ctx,
+		engine:      engine,
+		inputInfo:   inputInfo,
+		outputInfo:  outputInfo,
+		inputNames:  inputNames,
+		outputNames: outputNames,
+	}, nil
+}
+
+func (f *gomlxSessionFactory) Backend() BackendType {
+	return f.backend.backendType
+}
+
+// gomlxSession implements Session for raw tensor I/O using GoMLX.
+type gomlxSession struct {
+	onnxModel   *onnx.Model
+	ctx         *mlctx.Context
+	engine      backends.Backend
+	inputInfo   []TensorInfo
+	outputInfo  []TensorInfo
+	inputNames  []string
+	outputNames []string
+	mu          sync.Mutex
+}
+
+func (s *gomlxSession) Run(inputs []NamedTensor) ([]NamedTensor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.onnxModel == nil {
+		return nil, fmt.Errorf("session is closed")
+	}
+
+	// Build a map of input name -> tensor for fast lookup
+	inputMap := make(map[string]NamedTensor, len(inputs))
+	for _, input := range inputs {
+		inputMap[input.Name] = input
+	}
+
+	// Convert inputs to GoMLX tensors in the order expected by the model
+	gomlxInputs := make([]*tensors.Tensor, len(s.inputNames))
+	for i, name := range s.inputNames {
+		input, ok := inputMap[name]
+		if !ok {
+			return nil, fmt.Errorf("missing input tensor: %s", name)
+		}
+		tensor, err := namedTensorToGoMLX(input)
+		if err != nil {
+			return nil, fmt.Errorf("converting input tensor %s: %w", name, err)
+		}
+		gomlxInputs[i] = tensor
+	}
+
+	// Build the ONNX graph function
+	graphFn := func(mlCtx *mlctx.Context, graphInputs []*graph.Node) []*graph.Node {
+		inputNodeMap := make(map[string]*graph.Node, len(s.inputNames))
+		for i, name := range s.inputNames {
+			inputNodeMap[name] = graphInputs[i]
+		}
+		return s.onnxModel.CallGraph(mlCtx.Reuse(), graphInputs[0].Graph(), inputNodeMap)
+	}
+
+	// Execute - convert []*tensors.Tensor to []any for variadic call
+	args := make([]any, len(gomlxInputs))
+	for i, t := range gomlxInputs {
+		args[i] = t
+	}
+	results, err := mlctx.ExecOnceN(s.engine, s.ctx, graphFn, args...)
+	if err != nil {
+		return nil, fmt.Errorf("executing ONNX graph: %w", err)
+	}
+
+	// Convert outputs to NamedTensors
+	outputs := make([]NamedTensor, len(results))
+	for i, result := range results {
+		name := ""
+		if i < len(s.outputNames) {
+			name = s.outputNames[i]
+		}
+		output, err := gomlxToNamedTensor(result, name)
+		if err != nil {
+			return nil, fmt.Errorf("converting output tensor %d: %w", i, err)
+		}
+		outputs[i] = output
+	}
+
+	return outputs, nil
+}
+
+func (s *gomlxSession) InputInfo() []TensorInfo {
+	return s.inputInfo
+}
+
+func (s *gomlxSession) OutputInfo() []TensorInfo {
+	return s.outputInfo
+}
+
+func (s *gomlxSession) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onnxModel = nil
+	s.ctx = nil
+	return nil
+}
+
+// =============================================================================
+// Helper functions for tensor conversion
+// =============================================================================
+
+// intsToInt64s converts []int to []int64.
+func intsToInt64s(dims []int) []int64 {
+	result := make([]int64, len(dims))
+	for i, d := range dims {
+		result[i] = int64(d)
+	}
+	return result
+}
+
+// gomlxDataType converts GoMLX DType to our DataType.
+func gomlxDataType(dt dtypes.DType) DataType {
+	switch dt {
+	case dtypes.Float32:
+		return DataTypeFloat32
+	case dtypes.Float64:
+		return DataTypeFloat32 // Downgrade to float32 for compatibility
+	case dtypes.Float16, dtypes.BFloat16:
+		return DataTypeFloat16
+	case dtypes.Int64:
+		return DataTypeInt64
+	case dtypes.Int32:
+		return DataTypeInt32
+	case dtypes.Int8, dtypes.Int16:
+		return DataTypeInt32 // Upgrade to int32 for compatibility
+	case dtypes.Bool:
+		return DataTypeBool
+	default:
+		return DataTypeFloat32 // Default to float32
+	}
+}
+
+// namedTensorToGoMLX converts a NamedTensor to a GoMLX tensor.
+func namedTensorToGoMLX(nt NamedTensor) (*tensors.Tensor, error) {
+	dims := make([]int, len(nt.Shape))
+	for i, d := range nt.Shape {
+		dims[i] = int(d)
+	}
+
+	switch data := nt.Data.(type) {
+	case []float32:
+		return tensors.FromFlatDataAndDimensions(data, dims...), nil
+	case []float64:
+		// Convert float64 to float32
+		f32 := make([]float32, len(data))
+		for i, v := range data {
+			f32[i] = float32(v)
+		}
+		return tensors.FromFlatDataAndDimensions(f32, dims...), nil
+	case []int64:
+		return tensors.FromFlatDataAndDimensions(data, dims...), nil
+	case []int32:
+		// Convert int32 to int64
+		i64 := make([]int64, len(data))
+		for i, v := range data {
+			i64[i] = int64(v)
+		}
+		return tensors.FromFlatDataAndDimensions(i64, dims...), nil
+	case []int:
+		// Convert int to int64
+		i64 := make([]int64, len(data))
+		for i, v := range data {
+			i64[i] = int64(v)
+		}
+		return tensors.FromFlatDataAndDimensions(i64, dims...), nil
+	case []bool:
+		return tensors.FromFlatDataAndDimensions(data, dims...), nil
+	default:
+		return nil, fmt.Errorf("unsupported tensor data type: %T", data)
+	}
+}
+
+// gomlxToNamedTensor converts a GoMLX tensor to a NamedTensor.
+func gomlxToNamedTensor(t *tensors.Tensor, name string) (NamedTensor, error) {
+	shape := t.Shape()
+	dims := make([]int64, shape.Rank())
+	for i := range shape.Rank() {
+		dims[i] = int64(shape.Dimensions[i])
+	}
+
+	// Extract data based on dtype
+	var data interface{}
+	switch shape.DType {
+	case dtypes.Float32:
+		data = extractFloat32Data(t)
+	case dtypes.Float64:
+		data = extractFloat64Data(t)
+	case dtypes.Int64:
+		data = extractInt64Data(t)
+	case dtypes.Int32:
+		data = extractInt32Data(t)
+	case dtypes.Bool:
+		data = extractBoolData(t)
+	default:
+		// Try float32 as default
+		data = extractFloat32Data(t)
+	}
+
+	return NamedTensor{
+		Name:  name,
+		Shape: dims,
+		Data:  data,
+	}, nil
+}
+
+// extractFloat32Data extracts float32 data from a tensor as a flat slice.
+func extractFloat32Data(t *tensors.Tensor) []float32 {
+	val := t.Value()
+	return flattenFloat32(val)
+}
+
+// extractFloat64Data extracts float64 data from a tensor as a flat slice.
+func extractFloat64Data(t *tensors.Tensor) []float64 {
+	val := t.Value()
+	return flattenFloat64(val)
+}
+
+// extractInt64Data extracts int64 data from a tensor as a flat slice.
+func extractInt64Data(t *tensors.Tensor) []int64 {
+	val := t.Value()
+	return flattenInt64(val)
+}
+
+// extractInt32Data extracts int32 data from a tensor as a flat slice.
+func extractInt32Data(t *tensors.Tensor) []int32 {
+	val := t.Value()
+	return flattenInt32(val)
+}
+
+// extractBoolData extracts bool data from a tensor as a flat slice.
+func extractBoolData(t *tensors.Tensor) []bool {
+	val := t.Value()
+	return flattenBool(val)
+}
+
+// flattenFloat32 recursively flattens multi-dimensional float32 data.
+func flattenFloat32(val interface{}) []float32 {
+	switch v := val.(type) {
+	case []float32:
+		return v
+	case [][]float32:
+		var result []float32
+		for _, row := range v {
+			result = append(result, row...)
+		}
+		return result
+	case [][][]float32:
+		var result []float32
+		for _, matrix := range v {
+			for _, row := range matrix {
+				result = append(result, row...)
+			}
+		}
+		return result
+	case [][][][]float32:
+		var result []float32
+		for _, cube := range v {
+			for _, matrix := range cube {
+				for _, row := range matrix {
+					result = append(result, row...)
+				}
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// flattenFloat64 recursively flattens multi-dimensional float64 data.
+func flattenFloat64(val interface{}) []float64 {
+	switch v := val.(type) {
+	case []float64:
+		return v
+	case [][]float64:
+		var result []float64
+		for _, row := range v {
+			result = append(result, row...)
+		}
+		return result
+	case [][][]float64:
+		var result []float64
+		for _, matrix := range v {
+			for _, row := range matrix {
+				result = append(result, row...)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// flattenInt64 recursively flattens multi-dimensional int64 data.
+func flattenInt64(val interface{}) []int64 {
+	switch v := val.(type) {
+	case []int64:
+		return v
+	case [][]int64:
+		var result []int64
+		for _, row := range v {
+			result = append(result, row...)
+		}
+		return result
+	case [][][]int64:
+		var result []int64
+		for _, matrix := range v {
+			for _, row := range matrix {
+				result = append(result, row...)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// flattenInt32 recursively flattens multi-dimensional int32 data.
+func flattenInt32(val interface{}) []int32 {
+	switch v := val.(type) {
+	case []int32:
+		return v
+	case [][]int32:
+		var result []int32
+		for _, row := range v {
+			result = append(result, row...)
+		}
+		return result
+	case [][][]int32:
+		var result []int32
+		for _, matrix := range v {
+			for _, row := range matrix {
+				result = append(result, row...)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+// flattenBool recursively flattens multi-dimensional bool data.
+func flattenBool(val interface{}) []bool {
+	switch v := val.(type) {
+	case []bool:
+		return v
+	case [][]bool:
+		var result []bool
+		for _, row := range v {
+			result = append(result, row...)
+		}
+		return result
+	default:
+		return nil
+	}
 }

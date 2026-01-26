@@ -1,5 +1,3 @@
-//go:build onnx && ORT
-
 // Copyright 2025 Antfly, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

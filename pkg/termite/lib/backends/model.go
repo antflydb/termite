@@ -17,7 +17,8 @@ package backends
 import (
 	"context"
 	"fmt"
-	"math"
+
+	"github.com/ajroetker/go-highway/hwy/contrib/vec"
 )
 
 // Model represents an inference model that can process inputs.
@@ -172,7 +173,7 @@ const (
 	// GoMLXBackendAuto auto-detects the best available backend (xla if available, else simplego)
 	GoMLXBackendAuto GoMLXBackendType = ""
 	// GoMLXBackendSimpleGo uses pure Go inference (slow but always available)
-	GoMLXBackendSimpleGo GoMLXBackendType = "simplego"
+	GoMLXBackendSimpleGo GoMLXBackendType = "go"
 	// GoMLXBackendXLA uses XLA/PJRT for hardware acceleration (CUDA, TPU, optimized CPU)
 	GoMLXBackendXLA GoMLXBackendType = "xla"
 )
@@ -382,28 +383,16 @@ func PoolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32, pooli
 	return embeddings
 }
 
-// NormalizeL2 performs L2 normalization on a vector.
-func NormalizeL2(vec []float32) []float32 {
-	var sum float32
-	for _, v := range vec {
-		sum += v * v
-	}
-
-	if sum == 0 {
-		return vec
-	}
-
-	norm := float32(1.0 / math.Sqrt(float64(sum)))
-	result := make([]float32, len(vec))
-	for i, v := range vec {
-		result[i] = v * norm
-	}
-	return result
+// NormalizeL2 performs L2 normalization on a vector in-place using SIMD acceleration.
+func NormalizeL2(v []float32) []float32 {
+	vec.Normalize(v)
+	return v
 }
 
 // NormalizeEmbeddings applies L2 normalization to all embeddings in a batch.
+// Uses in-place SIMD normalization to avoid allocations.
 func NormalizeEmbeddings(embeddings [][]float32) {
 	for i := range embeddings {
-		embeddings[i] = NormalizeL2(embeddings[i])
+		vec.Normalize(embeddings[i])
 	}
 }

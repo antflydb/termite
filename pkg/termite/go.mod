@@ -7,6 +7,7 @@ replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-202512210449
 replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
 
 require (
+	github.com/ajroetker/go-highway v0.0.0-dev12
 	github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260119040111-36db55706c38
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -14,8 +15,9 @@ require (
 	github.com/eliben/go-sentencepiece v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/goccy/go-json v0.10.2
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
-	github.com/gomlx/gomlx v0.26.1-0.20260114072028-dd1b582c66f7
+	github.com/gomlx/gomlx v0.26.1-0.20260121051322-dbf0e3293e25
 	github.com/gomlx/onnx-gomlx v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.0.3
@@ -50,7 +52,8 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-xla v0.1.4 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65 // indirect
+	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect

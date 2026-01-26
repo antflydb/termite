@@ -181,6 +181,9 @@ func (c *HuggingFaceClient) generateAndSaveManifest(
 	}
 
 	// Create manifest
+	// Note: Backends is left empty (nil) meaning all backends are supported.
+	// Models that require specific backends (e.g., ONNX-only due to unsupported ops)
+	// should specify this in the registry manifest or hardcoded list.
 	manifest := &ModelManifest{
 		SchemaVersion: CurrentSchemaVersion,
 		Name:          ref.Name,
@@ -188,7 +191,6 @@ func (c *HuggingFaceClient) generateAndSaveManifest(
 		Owner:         ref.Owner,
 		Type:          modelType,
 		Files:         files,
-		Backends:      []string{"onnx"},
 		Provenance: &ModelProvenance{
 			DownloadedFrom: "huggingface",
 			DownloadedAt:   time.Now(),

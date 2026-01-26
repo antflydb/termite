@@ -7,6 +7,8 @@ codeberg.org/go-pdf/fpdf v0.10.0/go.mod h1:Y0DGRAdZ0OmnZPvjbMp/1bYxmIPxm0ws4tfoP
 git.sr.ht/~sbinet/gg v0.6.0 h1:RIzgkizAk+9r7uPzf/VfbJHBMKUr0F5hRFxTUGMnt38=
 git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm94=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
+github.com/ajroetker/go-highway v0.0.0-dev12 h1:Ekxi7ne8DhDudpt5eG97o8Sm5Oxn86I8K1HjRD2EY5U=
+github.com/ajroetker/go-highway v0.0.0-dev12/go.mod h1:Glt5oWMfWe2KW0MzcQ6UyGjG+XOdS6cZIsbbH7sZLC0=
 github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131 h1:Mi95fLXHboyt2hlA3/8h9HMy2WN9cDfi8JYRd2eFg2s=
 github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131/go.mod h1:7Jnn48nRpz5Nk1SWGgsFGPV7DHEPSAvQIVpa6rsv9HE=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
@@ -82,10 +84,14 @@ github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0/go.mod h1:E/TSTwGw
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
+github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65 h1:3nq7wsMv2KpcTzj/P3hl8x9kRvLNuCnifbgsc5N2qq4=
+github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65/go.mod h1:iZG+LBo+jgnd44RMPJCVDfYmDaIH5P7mg5p2rVNoaIM=
+github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476 h1:QZSOtRM9836UiBEu3ZSlsmsUI9SR8KFkR72SORtIsuM=
+github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476/go.mod h1:sdYwMfo0mLtu2/+ir2+FrBsaBL6V8nKguZWprnhu580=
 github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef h1:VvdOi4YQWr4P7krC0bC+Zs9RtSITt6fCO9HsgdL1TAw=
 github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef/go.mod h1:VQem9ICYDea4CwC5uFiLLdnvF4O2YPRiu5rzoRoWnk0=
-github.com/gomlx/go-xla v0.1.4 h1:7u1RcRBuCBZefQcmcQXSrJ9PmpxXMbmszmDT4dubibw=
-github.com/gomlx/go-xla v0.1.4/go.mod h1:6OfAcL+h+es7KHz6q0Ql9Vzi5MTys99MJ7aR3Nhko/o=
+github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 h1:3FAQ+KA5WY/AzZ62JGg1AbkCgtSiYAZpZV37IaxdGws=
+github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88/go.mod h1:K/hj2IVnPJPuyypawBeTju2IgaP/CUlf1ziOZzPiWjw=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 
 	"github.com/daulet/tokenizers"
-	"github.com/gomlx/go-huggingface/tokenizers/api"
 	goTokenizers "github.com/gomlx/go-huggingface/tokenizers"
+	"github.com/gomlx/go-huggingface/tokenizers/api"
 )
 
 // rustTokenizer wraps the Rust HuggingFace tokenizers library.

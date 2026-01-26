@@ -72,8 +72,8 @@ func (m Message) HasImages() bool {
 
 // ContentPart represents a part of multimodal content.
 type ContentPart struct {
-	Type     string `json:"type"`               // "text" or "image_url"
-	Text     string `json:"text,omitempty"`     // For type="text"
+	Type     string `json:"type"`                // "text" or "image_url"
+	Text     string `json:"text,omitempty"`      // For type="text"
 	ImageURL string `json:"image_url,omitempty"` // For type="image_url"
 }
 
