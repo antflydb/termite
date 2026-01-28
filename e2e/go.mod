@@ -6,6 +6,7 @@ require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260119040111-36db55706c38
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
+	github.com/gomlx/gomlx v0.26.1-0.20260121051322-dbf0e3293e25
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
@@ -33,7 +34,6 @@ require (
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476 // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
-	github.com/gomlx/gomlx v0.26.1-0.20260121051322-dbf0e3293e25 // indirect
 	github.com/gomlx/onnx-gomlx v0.3.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect

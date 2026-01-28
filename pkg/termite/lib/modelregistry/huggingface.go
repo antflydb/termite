@@ -200,9 +200,12 @@ func (c *HuggingFaceClient) generateAndSaveManifest(
 	// Discover variants from downloaded files
 	manifest.Variants = discoverVariantsFromFiles(files)
 
-	// Detect capabilities for multimodal models
+	// Detect capabilities for multimodal models (CLIP for visual, CLAP for audio)
 	for _, f := range files {
-		if f.Name == "visual_model.onnx" || f.Name == "text_model.onnx" {
+		switch f.Name {
+		case "visual_model.onnx", "visual_model_quantized.onnx",
+			"audio_model.onnx", "audio_model_quantized.onnx",
+			"text_model.onnx", "text_model_quantized.onnx":
 			manifest.Capabilities = append(manifest.Capabilities, CapabilityMultimodal)
 			break
 		}
@@ -386,6 +389,7 @@ func extractModelSize(path string) int {
 
 // selectONNXFiles filters files based on variant preference.
 // It returns tokenizer files plus the ONNX model file(s) matching the variant.
+// For multimodal models, it also includes separate encoder files (text_model, visual_model, audio_model).
 func selectONNXFiles(files []string, variant string) []string {
 	var result []string
 
@@ -400,27 +404,52 @@ func selectONNXFiles(files []string, variant string) []string {
 		}
 	}
 
-	// Determine ONNX file pattern based on variant
-	var onnxBase string
+	// Determine ONNX file patterns based on variant
+	var onnxBases []string
+	var quantizedSuffix string
 	switch variant {
 	case "fp16":
-		onnxBase = "model_fp16"
+		onnxBases = []string{"model_fp16", "text_model_fp16", "visual_model_fp16", "audio_model_fp16"}
+		quantizedSuffix = "_fp16"
 	case "q4":
-		onnxBase = "model_q4"
+		onnxBases = []string{"model_q4", "text_model_q4", "visual_model_q4", "audio_model_q4"}
+		quantizedSuffix = "_q4"
 	case "q4f16":
-		onnxBase = "model_q4f16"
+		onnxBases = []string{"model_q4f16", "text_model_q4f16", "visual_model_q4f16", "audio_model_q4f16"}
+		quantizedSuffix = "_q4f16"
 	case "quantized":
-		onnxBase = "model_quantized"
+		onnxBases = []string{"model_quantized", "text_model_quantized", "visual_model_quantized", "audio_model_quantized"}
+		quantizedSuffix = "_quantized"
 	default:
-		onnxBase = "model"
+		// Default variant - include both standard and quantized multimodal encoders
+		onnxBases = []string{"model", "text_model", "visual_model", "audio_model"}
+		quantizedSuffix = ""
 	}
 
 	// Find matching ONNX files (model.onnx + model.onnx_data)
 	for _, f := range files {
 		base := filepath.Base(f)
-		// Match exact model file or its data file
-		if base == onnxBase+".onnx" || base == onnxBase+".onnx_data" {
-			result = append(result, f)
+		for _, onnxBase := range onnxBases {
+			// Match exact model file or its data file
+			if base == onnxBase+".onnx" || base == onnxBase+".onnx_data" {
+				result = append(result, f)
+				break
+			}
+		}
+	}
+
+	// For default variant, also include quantized versions of multimodal encoders if they exist
+	// (some repos like Xenova/clap-htsat-unfused only have quantized encoders in onnx/ subdir)
+	if quantizedSuffix == "" {
+		quantizedEncoders := []string{"text_model_quantized", "visual_model_quantized", "audio_model_quantized"}
+		for _, f := range files {
+			base := filepath.Base(f)
+			for _, encoder := range quantizedEncoders {
+				if base == encoder+".onnx" || base == encoder+".onnx_data" {
+					result = append(result, f)
+					break
+				}
+			}
 		}
 	}
 
@@ -562,7 +591,8 @@ func (c *HuggingFaceClient) DetectGeneratorVariants(ctx context.Context, repoID 
 
 // DetectModelType attempts to detect the model type from repo contents.
 // It checks for genai_config.json (generator), encoder/decoder (rewriter),
-// visual/text models (multimodal embedder), or regular model.onnx.
+// visual/text models (CLIP multimodal embedder), audio/text models (CLAP multimodal embedder),
+// or regular model.onnx.
 func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) (ModelType, error) {
 	files, err := c.ListRepoFiles(ctx, repoID)
 	if err != nil {
@@ -573,6 +603,7 @@ func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) 
 	hasEncoder := false
 	hasDecoder := false
 	hasVisual := false
+	hasAudio := false
 	hasText := false
 	hasModelOnnx := false
 
@@ -585,9 +616,11 @@ func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) 
 			hasEncoder = true
 		case "decoder.onnx":
 			hasDecoder = true
-		case "visual_model.onnx":
+		case "visual_model.onnx", "visual_model_quantized.onnx":
 			hasVisual = true
-		case "text_model.onnx":
+		case "audio_model.onnx", "audio_model_quantized.onnx":
+			hasAudio = true
+		case "text_model.onnx", "text_model_quantized.onnx":
 			hasText = true
 		case "model.onnx":
 			hasModelOnnx = true
@@ -604,8 +637,13 @@ func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) 
 		return ModelTypeRewriter, nil
 	}
 
-	// Check for multimodal (could be embedder with CLIP)
+	// Check for multimodal CLIP (visual + text embedder)
 	if hasVisual && hasText {
+		return ModelTypeEmbedder, nil
+	}
+
+	// Check for multimodal CLAP (audio + text embedder)
+	if hasAudio && hasText {
 		return ModelTypeEmbedder, nil
 	}
 

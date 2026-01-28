@@ -337,6 +337,7 @@ func DefaultAudioConfig() *AudioConfig {
 	}
 }
 
+
 // GenerationConfig holds parameters for text generation.
 type GenerationConfig struct {
 	// MaxNewTokens is the maximum number of tokens to generate.

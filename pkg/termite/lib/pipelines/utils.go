@@ -32,11 +32,17 @@ func FirstNonZero(values ...int) int {
 
 // FindONNXFile looks for an ONNX file in the given directory.
 // It searches for the first matching file from the candidates list.
+// Also checks the "onnx/" subdirectory where some HuggingFace models store encoder files.
 func FindONNXFile(dir string, candidates []string) string {
-	for _, name := range candidates {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err == nil {
-			return path
+	// Search directories: root directory and onnx/ subdirectory
+	searchDirs := []string{dir, filepath.Join(dir, "onnx")}
+
+	for _, searchDir := range searchDirs {
+		for _, name := range candidates {
+			path := filepath.Join(searchDir, name)
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
 	}
 	return ""

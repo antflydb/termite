@@ -34,7 +34,7 @@ import (
 // ============================================================================
 
 // EmbeddingModelConfig holds parsed configuration for an embedding model.
-// Supports text-only, image-only, or multimodal (both) configurations.
+// Supports text-only, image-only, audio-only, or multimodal configurations.
 type EmbeddingModelConfig struct {
 	// Path to the model directory
 	ModelPath string
@@ -45,19 +45,51 @@ type EmbeddingModelConfig struct {
 	// Visual encoder (optional - nil if no visual encoder found)
 	VisualEncoderFile string
 
+	// Audio encoder (optional - nil if no audio encoder found)
+	AudioEncoderFile string
+
 	// Embedding dimension (projection_dim for CLIP, hidden_size for BERT, etc.)
 	EmbeddingDim int
 
 	// Image preprocessing config (for visual encoder)
 	ImageConfig *backends.ImageConfig
 
-	// Model architecture type (clip, siglip, bert, vit, etc.)
+	// Audio preprocessing config (for audio encoder)
+	AudioConfig *backends.AudioConfig
+
+	// Model architecture type (clip, siglip, clap, bert, vit, etc.)
 	ModelType string
 }
 
-// IsMultimodal returns true if the model has both text and visual encoders.
-func (c *EmbeddingModelConfig) IsMultimodal() bool {
-	return c.TextEncoderFile != "" && c.VisualEncoderFile != ""
+// EmbeddingCapabilities describes what modalities an embedding model supports.
+type EmbeddingCapabilities struct {
+	Text   bool
+	Visual bool
+	Audio  bool
+}
+
+// HasText returns true if the model supports text.
+func (c EmbeddingCapabilities) HasText() bool {
+	return c.Text
+}
+
+// HasVisual returns true if the model supports visual (images).
+func (c EmbeddingCapabilities) HasVisual() bool {
+	return c.Visual
+}
+
+// HasAudio returns true if the model supports audio.
+func (c EmbeddingCapabilities) HasAudio() bool {
+	return c.Audio
+}
+
+// Capabilities returns the modalities this model supports.
+func (c *EmbeddingModelConfig) Capabilities() EmbeddingCapabilities {
+	return EmbeddingCapabilities{
+		Text:   c.TextEncoderFile != "",
+		Visual: c.VisualEncoderFile != "",
+		Audio:  c.AudioEncoderFile != "",
+	}
 }
 
 // HasTextEncoder returns true if the model has a text encoder.
@@ -68,6 +100,11 @@ func (c *EmbeddingModelConfig) HasTextEncoder() bool {
 // HasVisualEncoder returns true if the model has a visual encoder.
 func (c *EmbeddingModelConfig) HasVisualEncoder() bool {
 	return c.VisualEncoderFile != ""
+}
+
+// HasAudioEncoder returns true if the model has an audio encoder.
+func (c *EmbeddingModelConfig) HasAudioEncoder() bool {
+	return c.AudioEncoderFile != ""
 }
 
 // LoadEmbeddingModelConfig loads and parses configuration for an embedding model.
@@ -92,6 +129,14 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 		"vision_model.onnx",
 		"vision_model_quantized.onnx",
 		"image_model.onnx",
+	})
+
+	// Detect audio encoder
+	config.AudioEncoderFile = FindONNXFile(modelPath, []string{
+		"audio_model.onnx",
+		"audio_model_quantized.onnx",
+		"audio_model_fp16.onnx",
+		"audio_encoder.onnx",
 	})
 
 	// If we found model.onnx but also have a visual encoder, it's likely a multimodal model
@@ -129,7 +174,26 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 		config.ImageConfig = buildEmbeddingImageConfig(rawConfig)
 	}
 
+	// Build audio config if we have an audio encoder
+	if config.AudioEncoderFile != "" {
+		config.AudioConfig = buildCLAPAudioConfig()
+	}
+
 	return config, nil
+}
+
+// buildCLAPAudioConfig returns audio config for CLAP models.
+// CLAP uses 48kHz sample rate, 64 mel bins, and 10 second max length.
+func buildCLAPAudioConfig() *backends.AudioConfig {
+	return &backends.AudioConfig{
+		SampleRate:   48000,
+		FeatureSize:  64,
+		NFft:         1024,
+		HopLength:    480,
+		ChunkLength:  10,
+		NMels:        64,
+		PaddingValue: 0.0,
+	}
 }
 
 // IsEmbeddingModel checks if a model path contains an embedding model.
@@ -194,8 +258,19 @@ func loadRawEmbeddingConfig(modelPath string) (*rawEmbeddingConfig, error) {
 
 // detectEmbeddingModelType attempts to detect the model type from files and config.
 func detectEmbeddingModelType(modelPath string, config *EmbeddingModelConfig) string {
-	// Check for multimodal models
-	if config.IsMultimodal() {
+	caps := config.Capabilities()
+
+	// Check for audio multimodal models (CLAP)
+	if caps.HasText() && caps.HasAudio() {
+		lowerPath := strings.ToLower(modelPath)
+		if strings.Contains(lowerPath, "clap") {
+			return "clap"
+		}
+		return "clap" // Default audio multimodal type
+	}
+
+	// Check for visual multimodal models (CLIP, SigLIP, etc.)
+	if caps.HasText() && caps.HasVisual() {
 		// Could be CLIP, SigLIP, ALIGN, etc.
 		lowerPath := strings.ToLower(modelPath)
 		if strings.Contains(lowerPath, "siglip") {
@@ -288,6 +363,9 @@ type EmbeddingPipeline struct {
 	// ImageProcessor handles image preprocessing (required for image mode).
 	ImageProcessor *ImageProcessor
 
+	// AudioProcessor handles audio preprocessing (required for audio mode).
+	AudioProcessor *AudioProcessor
+
 	// Config holds pipeline configuration.
 	Config *EmbeddingPipelineConfig
 }
@@ -309,6 +387,10 @@ type EmbeddingPipelineConfig struct {
 	// ImageConfig holds image preprocessing configuration (image mode).
 	// If nil, defaults will be used when EmbedImages is called.
 	ImageConfig *backends.ImageConfig
+
+	// AudioConfig holds audio preprocessing configuration (audio mode).
+	// If nil, defaults will be used when EmbedAudio is called.
+	AudioConfig *backends.AudioConfig
 }
 
 // DefaultEmbeddingPipelineConfig returns sensible defaults for embedding.
@@ -354,6 +436,27 @@ func NewImageEmbeddingPipeline(
 	return &EmbeddingPipeline{
 		Model:          model,
 		ImageProcessor: NewImageProcessor(imageConfig),
+		Config:         config,
+	}
+}
+
+// NewAudioEmbeddingPipeline creates a new EmbeddingPipeline for audio embeddings.
+// Use this for audio encoders like CLAP's audio encoder.
+func NewAudioEmbeddingPipeline(
+	model backends.Model,
+	audioConfig *backends.AudioConfig,
+	config *EmbeddingPipelineConfig,
+) *EmbeddingPipeline {
+	if config == nil {
+		config = DefaultEmbeddingPipelineConfig()
+	}
+	if audioConfig == nil {
+		audioConfig = buildCLAPAudioConfig()
+	}
+	config.AudioConfig = audioConfig
+	return &EmbeddingPipeline{
+		Model:          model,
+		AudioProcessor: NewAudioProcessor(audioConfig),
 		Config:         config,
 	}
 }
@@ -586,6 +689,50 @@ func (p *EmbeddingPipeline) EmbedImageBytes(ctx context.Context, imageData [][]b
 	return p.EmbedImages(ctx, images)
 }
 
+// EmbedAudio generates embeddings for a batch of audio files.
+// Use this for audio encoders like CLAP's audio encoder.
+// The pipeline must have an AudioProcessor configured (use NewAudioEmbeddingPipeline).
+func (p *EmbeddingPipeline) EmbedAudio(ctx context.Context, audioData [][]byte) ([][]float32, error) {
+	if len(audioData) == 0 {
+		return nil, nil
+	}
+
+	if p.AudioProcessor == nil {
+		return nil, fmt.Errorf("EmbedAudio requires an AudioProcessor; use NewAudioEmbeddingPipeline")
+	}
+
+	// Process all audio files and collect mel spectrograms
+	// For now, process one at a time since AudioProcessor.Process expects single audio
+	results := make([][]float32, len(audioData))
+	for i, data := range audioData {
+		// Process audio to mel spectrogram
+		melSpec, numFrames, err := p.AudioProcessor.Process(data)
+		if err != nil {
+			return nil, fmt.Errorf("preprocessing audio %d: %w", i, err)
+		}
+
+		// Create model inputs with audio data
+		inputs := &backends.ModelInputs{
+			AudioFeatures: melSpec,
+			AudioBatch:    1,
+			AudioTime:     numFrames,
+			AudioMels:     p.AudioProcessor.Config.NMels,
+		}
+
+		// Run inference
+		embeddings, err := p.EmbedBatch(ctx, inputs)
+		if err != nil {
+			return nil, fmt.Errorf("embedding audio %d: %w", i, err)
+		}
+		if len(embeddings) == 0 {
+			return nil, fmt.Errorf("no embedding returned for audio %d", i)
+		}
+		results[i] = embeddings[0]
+	}
+
+	return results, nil
+}
+
 // SupportsImages returns true if this pipeline can embed images.
 func (p *EmbeddingPipeline) SupportsImages() bool {
 	return p.ImageProcessor != nil
@@ -594,6 +741,11 @@ func (p *EmbeddingPipeline) SupportsImages() bool {
 // SupportsText returns true if this pipeline can embed text.
 func (p *EmbeddingPipeline) SupportsText() bool {
 	return p.Tokenizer != nil
+}
+
+// SupportsAudio returns true if this pipeline can embed audio.
+func (p *EmbeddingPipeline) SupportsAudio() bool {
+	return p.AudioProcessor != nil
 }
 
 // Forward runs inference on the given inputs and returns the model outputs.
@@ -645,6 +797,7 @@ type embeddingLoaderConfig struct {
 	maxLength   int
 	quantized   bool
 	imageConfig *backends.ImageConfig
+	audioConfig *backends.AudioConfig
 }
 
 // WithEmbeddingNormalization enables L2 normalization of embeddings.
@@ -679,6 +832,13 @@ func WithQuantized(quantized bool) EmbeddingLoaderOption {
 func WithEmbeddingImageConfig(imageConfig *backends.ImageConfig) EmbeddingLoaderOption {
 	return func(c *embeddingLoaderConfig) {
 		c.imageConfig = imageConfig
+	}
+}
+
+// WithEmbeddingAudioConfig overrides the audio preprocessing configuration.
+func WithEmbeddingAudioConfig(audioConfig *backends.AudioConfig) EmbeddingLoaderOption {
+	return func(c *embeddingLoaderConfig) {
+		c.audioConfig = audioConfig
 	}
 }
 
@@ -750,8 +910,14 @@ func loadTextEmbeddingPipeline(
 		return nil, fmt.Errorf("loading tokenizer: %w", err)
 	}
 
+	// Compute relative path for the ONNX file (may be in onnx/ subdirectory)
+	onnxRelPath, err := filepath.Rel(modelPath, config.TextEncoderFile)
+	if err != nil {
+		onnxRelPath = filepath.Base(config.TextEncoderFile)
+	}
+
 	// Load model
-	model, err := loader.Load(modelPath, backends.WithONNXFile(filepath.Base(config.TextEncoderFile)))
+	model, err := loader.Load(modelPath, backends.WithONNXFile(onnxRelPath))
 	if err != nil {
 		return nil, fmt.Errorf("loading text model: %w", err)
 	}
@@ -777,8 +943,14 @@ func loadVisualEmbeddingPipeline(
 	loader backends.ModelLoader,
 	loaderCfg *embeddingLoaderConfig,
 ) (*EmbeddingPipeline, error) {
+	// Compute relative path for the ONNX file (may be in onnx/ subdirectory)
+	onnxRelPath, err := filepath.Rel(modelPath, config.VisualEncoderFile)
+	if err != nil {
+		onnxRelPath = filepath.Base(config.VisualEncoderFile)
+	}
+
 	// Load model
-	model, err := loader.Load(modelPath, backends.WithONNXFile(filepath.Base(config.VisualEncoderFile)))
+	model, err := loader.Load(modelPath, backends.WithONNXFile(onnxRelPath))
 	if err != nil {
 		return nil, fmt.Errorf("loading visual model: %w", err)
 	}
@@ -791,7 +963,11 @@ func loadVisualEmbeddingPipeline(
 		"vision_projection.onnx",
 	})
 	if projectionFile != "" {
-		projector, err = loader.Load(modelPath, backends.WithONNXFile(filepath.Base(projectionFile)))
+		projRelPath, err := filepath.Rel(modelPath, projectionFile)
+		if err != nil {
+			projRelPath = filepath.Base(projectionFile)
+		}
+		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
 		if err != nil {
 			model.Close()
 			return nil, fmt.Errorf("loading visual projection: %w", err)
@@ -818,6 +994,121 @@ func loadVisualEmbeddingPipeline(
 	}
 
 	pipeline := NewImageEmbeddingPipeline(model, imageConfig, pipelineConfig)
+	pipeline.Projector = projector
+	return pipeline, nil
+}
+
+// LoadCLAPPipelines loads CLAP embedding pipelines from a model directory.
+// Returns text and/or audio pipelines based on what's available.
+// For text-only models, audioPipeline will be nil.
+// For audio-only models, textPipeline will be nil.
+// For CLAP models, both will be returned.
+func LoadCLAPPipelines(
+	modelPath string,
+	sessionManager *backends.SessionManager,
+	modelBackends []string,
+	opts ...EmbeddingLoaderOption,
+) (textPipeline, audioPipeline *EmbeddingPipeline, backendType backends.BackendType, err error) {
+	// Apply options
+	loaderCfg := &embeddingLoaderConfig{}
+	for _, opt := range opts {
+		opt(loaderCfg)
+	}
+
+	// Load model configuration
+	config, err := LoadEmbeddingModelConfig(modelPath)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("loading embedding config: %w", err)
+	}
+
+	if !config.HasTextEncoder() && !config.HasAudioEncoder() {
+		return nil, nil, "", fmt.Errorf("no text or audio encoder found in %s", modelPath)
+	}
+
+	// Get a loader for the model
+	loader, backendType, err := sessionManager.GetLoaderForModel(modelBackends)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("getting model loader: %w", err)
+	}
+
+	// Load text encoder pipeline if available
+	if config.HasTextEncoder() {
+		textPipeline, err = loadTextEmbeddingPipeline(modelPath, config, loader, loaderCfg)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("loading text encoder: %w", err)
+		}
+	}
+
+	// Load audio encoder pipeline if available
+	if config.HasAudioEncoder() {
+		audioPipeline, err = loadAudioEmbeddingPipeline(modelPath, config, loader, loaderCfg)
+		if err != nil {
+			if textPipeline != nil {
+				textPipeline.Close()
+			}
+			return nil, nil, "", fmt.Errorf("loading audio encoder: %w", err)
+		}
+	}
+
+	return textPipeline, audioPipeline, backendType, nil
+}
+
+// loadAudioEmbeddingPipeline loads the audio encoder as an EmbeddingPipeline.
+func loadAudioEmbeddingPipeline(
+	modelPath string,
+	config *EmbeddingModelConfig,
+	loader backends.ModelLoader,
+	loaderCfg *embeddingLoaderConfig,
+) (*EmbeddingPipeline, error) {
+	// Compute relative path for the ONNX file (may be in onnx/ subdirectory)
+	onnxRelPath, err := filepath.Rel(modelPath, config.AudioEncoderFile)
+	if err != nil {
+		onnxRelPath = filepath.Base(config.AudioEncoderFile)
+	}
+
+	// Load model
+	model, err := loader.Load(modelPath, backends.WithONNXFile(onnxRelPath))
+	if err != nil {
+		return nil, fmt.Errorf("loading audio model: %w", err)
+	}
+
+	// Check for audio projection model (e.g., audio_projection.onnx for CLAP)
+	var projector backends.Model
+	projectionFile := FindONNXFile(modelPath, []string{
+		"audio_projection.onnx",
+	})
+	if projectionFile != "" {
+		projRelPath, err := filepath.Rel(modelPath, projectionFile)
+		if err != nil {
+			projRelPath = filepath.Base(projectionFile)
+		}
+		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
+		if err != nil {
+			model.Close()
+			return nil, fmt.Errorf("loading audio projection: %w", err)
+		}
+	}
+
+	// Use provided audio config or the one from model config
+	audioConfig := loaderCfg.audioConfig
+	if audioConfig == nil {
+		audioConfig = config.AudioConfig
+	}
+	if audioConfig == nil {
+		audioConfig = buildCLAPAudioConfig()
+	}
+
+	// Build pipeline config
+	pipelineConfig := &EmbeddingPipelineConfig{
+		Normalize:   loaderCfg.normalize,
+		Pooling:     loaderCfg.pooling,
+		AudioConfig: audioConfig,
+	}
+	if pipelineConfig.Pooling == "" {
+		pipelineConfig.Pooling = backends.PoolingMean
+	}
+
+	pipeline := NewAudioEmbeddingPipeline(model, audioConfig, pipelineConfig)
 	pipeline.Projector = projector
 	return pipeline, nil
 }
