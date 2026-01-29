@@ -1304,27 +1304,6 @@ paths:
         Supports multiple content types via Accept header:
         - `application/octet-stream`: Binary serialization (default, most efficient)
         - `application/json`: JSON response with model name and embeddings
-
-        ## Examples
-
-        Text embedding (Ollama-compatible):
-        ```json
-        {
-          "model": "BAAI/bge-small-en-v1.5",
-          "input": ["hello world", "machine learning"]
-        }
-        ```
-
-        Multimodal embedding (OpenAI-compatible):
-        ```json
-        {
-          "model": "openai/clip-vit-base-patch32",
-          "input": [
-            {"type": "text", "text": "a photo of a cat"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}}
-          ]
-        }
-        ```
       operationId: generateEmbeddings
       requestBody:
         required: true
@@ -1384,20 +1363,6 @@ paths:
         ## Caching
 
         Results are cached in memory for 2 minutes. Cache key includes both config and text content.
-
-        ## Example
-
-        ```json
-        {
-          "text": "This is a long document...",
-          "config": {
-            "model": "fixed",
-            "target_tokens": 500,
-            "overlap_tokens": 50,
-            "separator": "\n\n"
-          }
-        }
-        ```
       operationId: chunkText
       requestBody:
         required: true
@@ -1445,19 +1410,6 @@ paths:
         - Models are auto-discovered from `models_dir/rerankers/`
         - Supports quantized models (`model_quantized.onnx`)
         - Automatically prefers quantized variants if available
-
-        ## Example
-
-        ```json
-        {
-          "model": "BAAI/bge-reranker-v2-m3",
-          "query": "machine learning applications",
-          "prompts": [
-            "Introduction to Machine Learning: This guide covers...",
-            "Deep Learning Fundamentals: Neural networks are..."
-          ]
-        }
-        ```
 
         For document-based reranking with field extraction, use the client-side
         `lib/reranking` package which handles rendering before calling this endpoint.
@@ -1520,42 +1472,8 @@ paths:
 
         ## Input Format
 
-        Uses OpenAI-compatible chat format with messages array:
-        ```json
-        {
-          "model": "google/gemma-3-1b-it",
-          "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello!"}
-          ],
-          "max_tokens": 256,
-          "stream": false
-        }
-        ```
-
-        ## Example (Non-streaming)
-
-        ```bash
-        curl -X POST http://localhost:8080/api/generate \
-          -H "Content-Type: application/json" \
-          -d '{
-            "model": "google/gemma-3-1b-it",
-            "messages": [{"role": "user", "content": "What is machine learning?"}],
-            "max_tokens": 100
-          }'
-        ```
-
-        ## Example (Streaming)
-
-        ```bash
-        curl -X POST http://localhost:8080/api/generate \
-          -H "Content-Type: application/json" \
-          -d '{
-            "model": "google/gemma-3-1b-it",
-            "messages": [{"role": "user", "content": "Hello!"}],
-            "stream": true
-          }'
-        ```
+        Uses OpenAI-compatible chat format with messages array containing role
+        (system, user, assistant) and content. Set `stream: true` for streaming responses.
       operationId: generateContent
       requestBody:
         required: true
@@ -1620,15 +1538,6 @@ paths:
         - Supports quantized variants (model_i8.onnx)
         - Compatible with HuggingFace BERT-based recognition models
         - GLiNER models support custom entity labels via the `labels` parameter
-
-        ## Example
-
-        ```json
-        {
-          "model": "dslim/bert-base-NER",
-          "texts": ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
-        }
-        ```
       operationId: recognizeEntities
       requestBody:
         required: true
@@ -1693,28 +1602,10 @@ paths:
         - **Intent Detection**: Identify user intents from text
         - **Content Moderation**: Detect inappropriate content types
 
-        ## Example
-
-        ```json
-        {
-          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
-          "texts": ["I love this product!", "The service was terrible."],
-          "labels": ["positive", "negative", "neutral"]
-        }
-        ```
-
         ## Multilingual Support
 
         The mDeBERTa-mnli-xnli model supports 100+ languages. You can classify text
-        in any supported language using labels in that language:
-
-        ```json
-        {
-          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
-          "texts": ["J'adore ce produit!"],
-          "labels": ["positif", "négatif", "neutre"]
-        }
-        ```
+        in any supported language using labels in that language.
       operationId: classifyText
       requestBody:
         required: true
@@ -1772,16 +1663,6 @@ paths:
         - **Query Generation**: Generate search queries from documents
         - **Paraphrasing**: Rewrite text in different words
         - **Translation**: Translate text between languages
-
-        ## Example
-
-        For question generation with LMQG models:
-        ```json
-        {
-          "model": "lmqg/flan-t5-small-squad-qg",
-          "inputs": ["generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."]
-        }
-        ```
       operationId: rewriteText
       requestBody:
         required: true
@@ -1844,27 +1725,6 @@ paths:
         - **Donut DocVQA**: `<s_docvqa><s_question>...</s_question><s_answer>` for visual QA
         - **Florence-2 OCR**: `<OCR>` for text extraction
         - **Florence-2 Caption**: `<CAPTION>` for image description
-
-        ## Example
-
-        ```json
-        {
-          "model": "microsoft/trocr-base-printed",
-          "images": [
-            {"url": "data:image/png;base64,iVBORw0KGgo..."}
-          ],
-          "max_tokens": 256
-        }
-        ```
-
-        With Donut for receipt parsing:
-        ```json
-        {
-          "model": "naver-clova-ix/donut-base-finetuned-cord-v2",
-          "images": [{"url": "data:image/png;base64,..."}],
-          "prompt": "<s_cord-v2>"
-        }
-        ```
       operationId: readImages
       requestBody:
         required: true
