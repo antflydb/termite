@@ -94,10 +94,12 @@ func ensureGLiNER2Model(t *testing.T) string {
 
 // getProjectRoot returns the project root directory.
 func getProjectRoot() string {
-	// Start from current working directory and walk up to find go.mod
+	// Start from current working directory and walk up to find project root
+	// We look for Makefile which is only in the true project root (not in submodules)
 	dir, _ := os.Getwd()
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		// Check for Makefile which is unique to the project root
+		if _, err := os.Stat(filepath.Join(dir, "Makefile")); err == nil {
 			return dir
 		}
 		parent := filepath.Dir(dir)

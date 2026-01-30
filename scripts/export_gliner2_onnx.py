@@ -127,22 +127,27 @@ class GLiNER2SpanWrapper(nn.Module):
         span_idx_offset = text_start_idx.unsqueeze(-1).expand(-1, num_spans, 2)  # [batch, num_spans, 2]
         span_idx_abs = span_idx + span_idx_offset  # [batch, num_spans, 2]
 
-        # 4. Project hidden states for start and end representations
+        # 4. Clamp indices to valid range [0, seq_len-1] to avoid out-of-bounds access
+        # Invalid spans (where original end >= text_length) are masked by span_mask anyway
+        seq_len = hidden_states.shape[1]
+        span_idx_abs = span_idx_abs.clamp(0, seq_len - 1)
+
+        # 5. Project hidden states for start and end representations
         start_rep = self.project_start(hidden_states)  # [batch, seq_len, hidden_size]
         end_rep = self.project_end(hidden_states)      # [batch, seq_len, hidden_size]
 
-        # 5. Gather start/end representations using absolute indices
+        # 6. Gather start/end representations using absolute indices
         start_indices = span_idx_abs[:, :, 0].unsqueeze(-1).expand(-1, -1, self.hidden_size)
         end_indices = span_idx_abs[:, :, 1].unsqueeze(-1).expand(-1, -1, self.hidden_size)
 
         start_span_rep = torch.gather(start_rep, 1, start_indices)  # [batch, num_spans, hidden_size]
         end_span_rep = torch.gather(end_rep, 1, end_indices)        # [batch, num_spans, hidden_size]
 
-        # 6. Concatenate and project (mimics SpanMarkerV0 logic)
+        # 7. Concatenate and project (mimics SpanMarkerV0 logic)
         cat = torch.cat([start_span_rep, end_span_rep], dim=-1).relu()  # [batch, num_spans, hidden_size*2]
         span_reps = self.out_project(cat)  # [batch, num_spans, hidden_size]
 
-        # 7. Apply classifier to get span scores
+        # 8. Apply classifier to get span scores
         logits = self.classifier(span_reps)  # [batch, num_spans, 1]
 
         return logits
