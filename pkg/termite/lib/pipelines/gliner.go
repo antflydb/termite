@@ -47,6 +47,9 @@ const (
 	GLiNERModelTokenLevel GLiNERModelType = "token_level"
 	// GLiNERModelMultiTask supports multiple tasks: NER, classification, QA, relation extraction.
 	GLiNERModelMultiTask GLiNERModelType = "multitask"
+	// GLiNERModelGLiNER2 is the unified GLiNER2 multi-task model from Fastino.
+	// Supports NER, classification, structured extraction, and relation extraction.
+	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
 )
 
 // GLiNERModelConfig holds parsed configuration for a GLiNER model.
@@ -177,6 +180,14 @@ type rawGLiNERConfig struct {
 // detectGLiNERModelType attempts to detect the model type from the model name.
 func detectGLiNERModelType(modelPath string) GLiNERModelType {
 	modelName := strings.ToLower(filepath.Base(modelPath))
+	parentDir := strings.ToLower(filepath.Base(filepath.Dir(modelPath)))
+
+	// Check for GLiNER2 models (from Fastino)
+	// GLiNER2 models have "gliner2" in name or are from "fastino" organization
+	if strings.Contains(modelName, "gliner2") ||
+		(strings.Contains(parentDir, "fastino") && strings.Contains(modelName, "gliner")) {
+		return GLiNERModelGLiNER2
+	}
 
 	switch {
 	case strings.Contains(modelName, "multitask"):
