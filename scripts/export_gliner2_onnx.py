@@ -25,61 +25,64 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-class GLiNER2ONNXWrapper(nn.Module):
+class GLiNER2SpanWrapper(nn.Module):
     """
     ONNX-exportable wrapper for GLiNER2 models.
 
-    This wrapper adapts GLiNER2's forward pass to match the GLiNER v1 ONNX
-    interface expected by Termite's GLiNER pipeline:
+    This wrapper extracts the core components from GLiNER2 and creates
+    an ONNX-exportable forward pass that matches the GLiNER v1 interface.
 
-    Inputs:
-        - input_ids: [batch, seq_len] - Token IDs
-        - attention_mask: [batch, seq_len] - Attention mask
-        - words_mask: [batch, seq_len] - Word boundary tracking
-        - text_lengths: [batch, 1] - Number of text tokens
-        - span_idx: [batch, num_spans, 2] - Span start/end positions
-        - span_mask: [batch, num_spans] - Valid span mask
+    The key challenge is that:
+    - span_idx contains indices relative to text tokens (0 to text_length-1)
+    - hidden_states has shape [batch, seq_len, hidden] where text tokens
+      start at some offset in the sequence (after [CLS] and label tokens)
+    - GLiNER2's SpanRepLayer expects hidden_states size to match num_spans
 
-    Outputs:
-        - logits: [batch, num_tokens, max_width, num_labels] - Span scores
+    Solution: We extract the projection layers from GLiNER2's span_rep and
+    implement our own span representation that:
+    1. Finds text token offset using words_mask
+    2. Adjusts span_idx to absolute sequence positions
+    3. Gathers start/end representations correctly
+
+    ONNX Interface (matches GLiNER v1):
+        Inputs:
+            - input_ids: [batch, seq_len] - Token IDs
+            - attention_mask: [batch, seq_len] - Attention mask
+            - words_mask: [batch, seq_len] - Word boundary (>0 for text tokens)
+            - text_lengths: [batch, 1] - Number of text tokens
+            - span_idx: [batch, num_spans, 2] - Span positions (text-relative)
+            - span_mask: [batch, num_spans] - Valid span mask
+
+        Outputs:
+            - logits: [batch, num_spans, 1] - Span scores (sigmoid-ready)
     """
 
-    def __init__(self, model, max_width: int = 12):
+    def __init__(self, gliner2_model, max_width: int = 8):
         super().__init__()
-        self.model = model
+
+        # GLiNER2 model components
+        self.encoder = gliner2_model.encoder
+        self.classifier = gliner2_model.classifier
+
+        # Extract projection layers from span_rep's internal span_rep_layer
+        # GLiNER2 uses SpanRepLayer which contains SpanMarkerV0 as span_rep_layer
+        span_layer = gliner2_model.span_rep.span_rep_layer
+        self.project_start = span_layer.project_start
+        self.project_end = span_layer.project_end
+        self.out_project = span_layer.out_project
+
         self.max_width = max_width
-
-        # Extract the encoder and span classifier from GLiNER2
-        # GLiNER2 typically has these components:
-        # - encoder: DeBERTa or similar transformer encoder
-        # - span_rep_layer: Span representation layer
-        # - entity_classifier: Classification head
-
-        # Access model components (adapt based on actual GLiNER2 structure)
-        if hasattr(model, 'model'):
-            # GLiNER2 wraps the actual model
-            self.encoder = model.model.encoder if hasattr(model.model, 'encoder') else model.model
-            self.span_rep_layer = getattr(model.model, 'span_rep_layer', None)
-            self.entity_classifier = getattr(model.model, 'entity_classifier', None)
-        else:
-            self.encoder = getattr(model, 'encoder', model)
-            self.span_rep_layer = getattr(model, 'span_rep_layer', None)
-            self.entity_classifier = getattr(model, 'entity_classifier', None)
-
-        # Get hidden size from encoder config
-        if hasattr(self.encoder, 'config'):
-            self.hidden_size = self.encoder.config.hidden_size
-        else:
-            self.hidden_size = 768  # Default for DeBERTa-base
+        self.hidden_size = gliner2_model.hidden_size
 
     def forward(
         self,
@@ -91,92 +94,76 @@ class GLiNER2ONNXWrapper(nn.Module):
         span_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Forward pass matching GLiNER v1 ONNX interface.
+        Forward pass for ONNX export.
 
         Args:
             input_ids: [batch, seq_len] Token IDs
             attention_mask: [batch, seq_len] Attention mask
-            words_mask: [batch, seq_len] Word boundary tracking
+            words_mask: [batch, seq_len] Word boundary tracking (>0 for text tokens)
             text_lengths: [batch, 1] Number of text tokens
-            span_idx: [batch, num_spans, 2] Span positions (start, end)
+            span_idx: [batch, num_spans, 2] Span positions relative to text start
             span_mask: [batch, num_spans] Valid span mask
 
         Returns:
-            logits: [batch, num_tokens, max_width, num_labels] Span classification scores
+            logits: [batch, num_spans, 1] Span classification scores
         """
         batch_size = input_ids.shape[0]
-        seq_len = input_ids.shape[1]
         num_spans = span_idx.shape[1]
 
-        # Get encoder outputs
+        # 1. Encode input through DeBERTa
         encoder_outputs = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
+        hidden_states = encoder_outputs.last_hidden_state  # [batch, seq_len, hidden_size]
 
-        # Get hidden states
-        if hasattr(encoder_outputs, 'last_hidden_state'):
-            hidden_states = encoder_outputs.last_hidden_state
-        else:
-            hidden_states = encoder_outputs[0]
+        # 2. Find text token offset from words_mask
+        # words_mask > 0 indicates text tokens; we need the first such position
+        text_mask = (words_mask > 0).long()  # [batch, seq_len]
+        # argmax returns the first occurrence of max value (1)
+        text_start_idx = text_mask.argmax(dim=1, keepdim=True)  # [batch, 1]
 
-        # Build span representations from hidden states
-        # For each span, concatenate start and end token representations
-        span_start_idx = span_idx[:, :, 0]  # [batch, num_spans]
-        span_end_idx = span_idx[:, :, 1]    # [batch, num_spans]
+        # 3. Adjust span indices from text-relative to absolute sequence positions
+        span_idx_offset = text_start_idx.unsqueeze(-1).expand(-1, num_spans, 2)  # [batch, num_spans, 2]
+        span_idx_abs = span_idx + span_idx_offset  # [batch, num_spans, 2]
 
-        # Gather start and end representations
-        # Expand indices for gathering: [batch, num_spans, hidden_size]
-        span_start_idx_expanded = span_start_idx.unsqueeze(-1).expand(-1, -1, self.hidden_size)
-        span_end_idx_expanded = span_end_idx.unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        # 4. Project hidden states for start and end representations
+        start_rep = self.project_start(hidden_states)  # [batch, seq_len, hidden_size]
+        end_rep = self.project_end(hidden_states)      # [batch, seq_len, hidden_size]
 
-        start_reps = torch.gather(hidden_states, 1, span_start_idx_expanded)
-        end_reps = torch.gather(hidden_states, 1, span_end_idx_expanded)
+        # 5. Gather start/end representations using absolute indices
+        start_indices = span_idx_abs[:, :, 0].unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        end_indices = span_idx_abs[:, :, 1].unsqueeze(-1).expand(-1, -1, self.hidden_size)
 
-        # Combine span representations (concatenation or other method)
-        if self.span_rep_layer is not None:
-            span_reps = self.span_rep_layer(start_reps, end_reps)
-        else:
-            # Simple concatenation followed by projection
-            span_reps = torch.cat([start_reps, end_reps], dim=-1)
+        start_span_rep = torch.gather(start_rep, 1, start_indices)  # [batch, num_spans, hidden_size]
+        end_span_rep = torch.gather(end_rep, 1, end_indices)        # [batch, num_spans, hidden_size]
 
-        # Apply entity classifier
-        if self.entity_classifier is not None:
-            logits = self.entity_classifier(span_reps)
-        else:
-            # Fallback: simple linear projection
-            # This should be replaced with actual classifier from model
-            logits = span_reps  # Placeholder
+        # 6. Concatenate and project (mimics SpanMarkerV0 logic)
+        cat = torch.cat([start_span_rep, end_span_rep], dim=-1).relu()  # [batch, num_spans, hidden_size*2]
+        span_reps = self.out_project(cat)  # [batch, num_spans, hidden_size]
 
-        # Reshape logits to expected format: [batch, num_tokens, max_width, num_labels]
-        # The num_spans = num_tokens * max_width
-        num_tokens = text_lengths[0, 0].item() if text_lengths.numel() > 0 else num_spans // self.max_width
-        num_labels = logits.shape[-1] if len(logits.shape) > 2 else 1
-
-        # Reshape: [batch, num_spans, num_labels] -> [batch, num_tokens, max_width, num_labels]
-        logits = logits.view(batch_size, num_tokens, self.max_width, num_labels)
+        # 7. Apply classifier to get span scores
+        logits = self.classifier(span_reps)  # [batch, num_spans, 1]
 
         return logits
 
 
-class GLiNER2DirectWrapper(nn.Module):
+class GLiNER2EntityWrapper(nn.Module):
     """
-    Direct wrapper that uses GLiNER2's internal forward pass.
+    Wrapper that outputs per-label scores for entity extraction.
 
-    This wrapper preserves GLiNER2's exact inference logic while adapting
-    the interface for ONNX export.
+    This matches the GLiNER v1 output format where logits have shape
+    [batch, num_tokens, max_width, num_labels].
+
+    For GLiNER2, we compute span scores and replicate for each label
+    since labels are handled via schema encoding in the input.
     """
 
-    def __init__(self, model, max_width: int = 12):
+    def __init__(self, gliner2_model, max_width: int = 8, num_labels: int = 1):
         super().__init__()
-        self.gliner2_model = model
+        self.span_wrapper = GLiNER2SpanWrapper(gliner2_model, max_width)
         self.max_width = max_width
-
-        # Get the underlying PyTorch model
-        if hasattr(model, 'model'):
-            self.model = model.model
-        else:
-            self.model = model
+        self.num_labels = num_labels
 
     def forward(
         self,
@@ -188,38 +175,40 @@ class GLiNER2DirectWrapper(nn.Module):
         span_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Forward pass using GLiNER2's internal model.
+        Forward pass with GLiNER v1 compatible output shape.
+
+        Returns:
+            logits: [batch, num_tokens, max_width, num_labels]
         """
         batch_size = input_ids.shape[0]
+        num_spans = span_idx.shape[1]
 
-        # Call GLiNER2's model forward
-        # The exact signature depends on GLiNER2's implementation
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            words_mask=words_mask,
-            text_lengths=text_lengths,
-            span_idx=span_idx,
-            span_mask=span_mask,
-        )
+        # Get span scores
+        span_logits = self.span_wrapper(
+            input_ids, attention_mask, words_mask,
+            text_lengths, span_idx, span_mask
+        )  # [batch, num_spans, 1]
 
-        # Extract logits from outputs
-        if isinstance(outputs, dict):
-            logits = outputs.get('logits', outputs.get('span_logits', outputs))
-        elif isinstance(outputs, tuple):
-            logits = outputs[0]
-        else:
-            logits = outputs
+        # Compute num_tokens from span structure
+        # num_spans = num_tokens * max_width
+        num_tokens = num_spans // self.max_width
+
+        # Reshape to [batch, num_tokens, max_width, 1]
+        logits = span_logits.view(batch_size, num_tokens, self.max_width, 1)
+
+        # Expand to num_labels if needed
+        if self.num_labels > 1:
+            logits = logits.expand(-1, -1, -1, self.num_labels)
 
         return logits
 
 
-def analyze_gliner2_model(model_id: str) -> dict:
+def analyze_gliner2_model(model_id: str) -> Tuple[Dict[str, Any], Any]:
     """
     Analyze a GLiNER2 model to understand its architecture.
 
     Returns:
-        dict with model architecture information
+        Tuple of (info dict, model)
     """
     try:
         from gliner2 import GLiNER2
@@ -247,27 +236,25 @@ def analyze_gliner2_model(model_id: str) -> dict:
             else:
                 info["attributes"].append(attr)
 
-    # Check for internal model
-    if hasattr(model, 'model'):
-        inner_model = model.model
-        info["has_inner_model"] = True
-        info["inner_model_type"] = type(inner_model).__name__
+    # Get key attributes
+    info["max_width"] = getattr(model, 'max_width', 8)
+    info["hidden_size"] = getattr(model, 'hidden_size', 768)
 
-        for attr in dir(inner_model):
-            if not attr.startswith('_'):
-                obj = getattr(inner_model, attr, None)
-                if isinstance(obj, nn.Module):
-                    info["model_attributes"].append(f"{attr}: {type(obj).__name__}")
-
-    # Check for encoder
-    if hasattr(model, 'model') and hasattr(model.model, 'encoder'):
-        encoder = model.model.encoder
+    # Check encoder
+    if hasattr(model, 'encoder'):
+        encoder = model.encoder
         if hasattr(encoder, 'config'):
             info["encoder_config"] = {
                 "hidden_size": getattr(encoder.config, 'hidden_size', None),
                 "num_layers": getattr(encoder.config, 'num_hidden_layers', None),
                 "vocab_size": getattr(encoder.config, 'vocab_size', None),
+                "model_type": getattr(encoder.config, 'model_type', None),
             }
+
+    # Check components
+    info["has_span_rep"] = hasattr(model, 'span_rep')
+    info["has_classifier"] = hasattr(model, 'classifier')
+    info["has_count_embed"] = hasattr(model, 'count_embed')
 
     return info, model
 
@@ -275,10 +262,10 @@ def analyze_gliner2_model(model_id: str) -> dict:
 def export_gliner2_to_onnx(
     model_id: str,
     output_dir: Path,
-    variants: Optional[list[str]] = None,
-    max_width: int = 12,
+    variants: Optional[list] = None,
+    max_width: Optional[int] = None,
     max_seq_len: int = 512,
-    opset_version: int = 14,
+    opset_version: int = 17,
 ) -> Path:
     """
     Export a GLiNER2 model to ONNX format.
@@ -287,15 +274,14 @@ def export_gliner2_to_onnx(
         model_id: HuggingFace model ID (e.g., fastino/gliner2-base-v1)
         output_dir: Directory to save the exported model
         variants: List of variant types (f16, i8)
-        max_width: Maximum span width (default: 12)
+        max_width: Maximum span width (auto-detected from model if None)
         max_seq_len: Maximum sequence length (default: 512)
-        opset_version: ONNX opset version (default: 14)
+        opset_version: ONNX opset version (default: 17)
 
     Returns:
         Path to the output directory
     """
     import onnx
-    from onnx import numpy_helper
 
     try:
         from gliner2 import GLiNER2
@@ -310,80 +296,54 @@ def export_gliner2_to_onnx(
     logger.info(f"Exporting GLiNER2 model: {model_id}")
     logger.info(f"Output directory: {output_dir}")
 
-    # Load the model
+    # Load and analyze model
     logger.info("Loading GLiNER2 model...")
-    model = GLiNER2.from_pretrained(model_id)
+    info, model = analyze_gliner2_model(model_id)
+    model.eval()
 
-    # Analyze model structure
-    logger.info("Analyzing model architecture...")
-    info, _ = analyze_gliner2_model(model_id)
+    # Auto-detect max_width from model
+    if max_width is None:
+        max_width = info.get("max_width", 8)
+    logger.info(f"Using max_width: {max_width}")
+
     logger.info(f"Model type: {info['type']}")
+    logger.info(f"Hidden size: {info.get('hidden_size', 768)}")
     if 'encoder_config' in info:
-        logger.info(f"Encoder config: {info['encoder_config']}")
+        logger.info(f"Encoder: {info['encoder_config'].get('model_type', 'unknown')}")
 
     # Create ONNX wrapper
     logger.info("Creating ONNX wrapper...")
+    wrapper = GLiNER2SpanWrapper(model, max_width=max_width)
+    wrapper.eval()
 
-    # Try direct wrapper first, fall back to manual wrapper
-    try:
-        wrapper = GLiNER2DirectWrapper(model, max_width=max_width)
-        wrapper.eval()
+    # Test forward pass
+    logger.info("Testing forward pass...")
+    test_batch = 1
+    test_seq_len = 64
+    test_num_tokens = 10
+    test_num_spans = test_num_tokens * max_width
 
-        # Test forward pass
-        test_batch = 1
-        test_seq_len = 64
-        test_num_tokens = 10
-        test_num_spans = test_num_tokens * max_width
+    with torch.no_grad():
+        dummy_inputs = create_dummy_inputs(
+            test_batch, test_seq_len, test_num_tokens, max_width
+        )
+        test_output = wrapper(**dummy_inputs)
+        logger.info(f"Forward pass successful. Output shape: {test_output.shape}")
 
-        dummy_inputs = {
-            'input_ids': torch.randint(0, 30000, (test_batch, test_seq_len)),
-            'attention_mask': torch.ones(test_batch, test_seq_len, dtype=torch.long),
-            'words_mask': torch.zeros(test_batch, test_seq_len, dtype=torch.long),
-            'text_lengths': torch.tensor([[test_num_tokens]], dtype=torch.long),
-            'span_idx': torch.zeros(test_batch, test_num_spans, 2, dtype=torch.long),
-            'span_mask': torch.ones(test_batch, test_num_spans, dtype=torch.bool),
-        }
-
-        # Build valid span indices
-        for t in range(test_num_tokens):
-            for w in range(max_width):
-                idx = t * max_width + w
-                dummy_inputs['span_idx'][0, idx, 0] = t
-                dummy_inputs['span_idx'][0, idx, 1] = min(t + w, test_num_tokens - 1)
-
-        with torch.no_grad():
-            test_output = wrapper(**dummy_inputs)
-        logger.info(f"Direct wrapper test passed. Output shape: {test_output.shape}")
-
-    except Exception as e:
-        logger.warning(f"Direct wrapper failed: {e}")
-        logger.info("Falling back to manual wrapper...")
-        wrapper = GLiNER2ONNXWrapper(model, max_width=max_width)
-        wrapper.eval()
-
-    # Prepare dummy inputs for export
+    # Prepare export inputs
     batch_size = 1
     seq_len = max_seq_len
-    num_tokens = 50  # Example number of text tokens
+    num_tokens = 50
     num_spans = num_tokens * max_width
 
-    dummy_input_ids = torch.randint(0, 30000, (batch_size, seq_len))
-    dummy_attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
-    dummy_words_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    dummy_text_lengths = torch.tensor([[num_tokens]], dtype=torch.long)
-    dummy_span_idx = torch.zeros(batch_size, num_spans, 2, dtype=torch.long)
-    dummy_span_mask = torch.ones(batch_size, num_spans, dtype=torch.bool)
+    dummy_inputs = create_dummy_inputs(batch_size, seq_len, num_tokens, max_width)
 
-    # Build valid span indices
-    for t in range(num_tokens):
-        for w in range(max_width):
-            idx = t * max_width + w
-            dummy_span_idx[0, idx, 0] = t
-            dummy_span_idx[0, idx, 1] = min(t + w, num_tokens - 1)
-
-    # Export to ONNX
+    # Define ONNX export settings
     onnx_path = output_dir / "model.onnx"
     logger.info(f"Exporting to ONNX: {onnx_path}")
+
+    input_names = ['input_ids', 'attention_mask', 'words_mask', 'text_lengths', 'span_idx', 'span_mask']
+    output_names = ['logits']
 
     dynamic_axes = {
         'input_ids': {0: 'batch', 1: 'seq_len'},
@@ -392,17 +352,22 @@ def export_gliner2_to_onnx(
         'text_lengths': {0: 'batch'},
         'span_idx': {0: 'batch', 1: 'num_spans'},
         'span_mask': {0: 'batch', 1: 'num_spans'},
-        'logits': {0: 'batch', 1: 'num_tokens', 2: 'max_width', 3: 'num_labels'},
+        'logits': {0: 'batch', 1: 'num_spans'},
     }
 
-    input_names = ['input_ids', 'attention_mask', 'words_mask', 'text_lengths', 'span_idx', 'span_mask']
-    output_names = ['logits']
-
     try:
+        # Use traditional TorchScript-based export (dynamo=False) for reliability
+        # The dynamo exporter is still experimental and can be very slow
         torch.onnx.export(
             wrapper,
-            (dummy_input_ids, dummy_attention_mask, dummy_words_mask,
-             dummy_text_lengths, dummy_span_idx, dummy_span_mask),
+            (
+                dummy_inputs['input_ids'],
+                dummy_inputs['attention_mask'],
+                dummy_inputs['words_mask'],
+                dummy_inputs['text_lengths'],
+                dummy_inputs['span_idx'],
+                dummy_inputs['span_mask'],
+            ),
             str(onnx_path),
             input_names=input_names,
             output_names=output_names,
@@ -410,27 +375,12 @@ def export_gliner2_to_onnx(
             opset_version=opset_version,
             do_constant_folding=True,
             export_params=True,
+            dynamo=False,  # Use TorchScript export for speed and reliability
         )
         logger.info(f"  Saved: model.onnx")
     except Exception as e:
         logger.error(f"ONNX export failed: {e}")
-        logger.info("Trying with dynamo=True (PyTorch 2.1+)...")
-
-        try:
-            torch.onnx.export(
-                wrapper,
-                (dummy_input_ids, dummy_attention_mask, dummy_words_mask,
-                 dummy_text_lengths, dummy_span_idx, dummy_span_mask),
-                str(onnx_path),
-                input_names=input_names,
-                output_names=output_names,
-                dynamic_axes=dynamic_axes,
-                dynamo=True,
-            )
-            logger.info(f"  Saved: model.onnx (with dynamo)")
-        except Exception as e2:
-            logger.error(f"ONNX export with dynamo also failed: {e2}")
-            raise
+        raise
 
     # Verify the exported model
     logger.info("Verifying exported ONNX model...")
@@ -438,55 +388,130 @@ def export_gliner2_to_onnx(
         onnx_model = onnx.load(str(onnx_path))
         onnx.checker.check_model(onnx_model)
         logger.info("  ONNX model verification passed")
+
+        # Log model size
+        model_size = os.path.getsize(onnx_path) / (1024 * 1024)
+        logger.info(f"  Model size: {model_size:.1f} MB")
     except Exception as e:
         logger.warning(f"  ONNX verification warning: {e}")
 
     # Apply FP16 conversion if requested
     if "f16" in variants:
-        logger.info("Converting to FP16...")
-        try:
-            from onnxconverter_common import float16
-            fp16_path = output_dir / "model_f16.onnx"
-            onnx_model = onnx.load(str(onnx_path))
-            fp16_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
-            onnx.save(fp16_model, str(fp16_path))
-            logger.info(f"  Saved: model_f16.onnx")
-        except ImportError:
-            logger.warning("  onnxconverter-common not installed. Skipping FP16 conversion.")
-        except Exception as e:
-            logger.warning(f"  FP16 conversion failed: {e}")
+        convert_to_fp16(onnx_path, output_dir / "model_f16.onnx")
 
     # Apply INT8 quantization if requested
     if "i8" in variants:
-        logger.info("Applying INT8 quantization...")
-        try:
-            from onnxruntime.quantization import quantize_dynamic, QuantType
-            i8_path = output_dir / "model_i8.onnx"
-            quantize_dynamic(
-                str(onnx_path),
-                str(i8_path),
-                weight_type=QuantType.QInt8,
-            )
-            logger.info(f"  Saved: model_i8.onnx")
-        except ImportError:
-            logger.warning("  onnxruntime not installed. Skipping INT8 quantization.")
-        except Exception as e:
-            logger.warning(f"  INT8 quantization failed: {e}")
+        quantize_to_int8(onnx_path, output_dir / "model_i8.onnx")
 
     # Save tokenizer
+    save_tokenizer(model, output_dir)
+
+    # Create GLiNER config for Termite
+    save_gliner_config(model_id, max_width, max_seq_len, output_dir)
+
+    logger.info(f"\nExport complete! Model saved to: {output_dir}")
+    return output_dir
+
+
+def create_dummy_inputs(
+    batch_size: int, seq_len: int, num_tokens: int, max_width: int
+) -> Dict[str, torch.Tensor]:
+    """Create dummy inputs for ONNX export.
+
+    Creates a realistic input structure matching Termite's GLiNER pipeline:
+    - Sequence: [CLS] [label tokens] [SEP] [text tokens] [SEP] [PAD...]
+    - words_mask: 0 for non-text, >0 for text tokens (word index)
+    - span_idx: indices relative to text token start (0 to num_tokens-1)
+    """
+    num_spans = num_tokens * max_width
+
+    # Simulate a realistic sequence structure:
+    # [CLS] + 5 label tokens + [SEP] + num_tokens text tokens + [SEP] + padding
+    text_start_idx = 7  # After [CLS](1) + 5 labels + [SEP](1) = 7
+
+    inputs = {
+        'input_ids': torch.randint(0, 30000, (batch_size, seq_len)),
+        'attention_mask': torch.ones(batch_size, seq_len, dtype=torch.long),
+        'words_mask': torch.zeros(batch_size, seq_len, dtype=torch.long),
+        'text_lengths': torch.tensor([[num_tokens]], dtype=torch.long),
+        'span_idx': torch.zeros(batch_size, num_spans, 2, dtype=torch.long),
+        'span_mask': torch.ones(batch_size, num_spans, dtype=torch.bool),
+    }
+
+    # Set attention mask (1 for real tokens, 0 for padding)
+    text_end_idx = text_start_idx + num_tokens + 1  # +1 for final [SEP]
+    for b in range(batch_size):
+        # Attention mask covers [CLS] + labels + [SEP] + text + [SEP]
+        inputs['attention_mask'][b, text_end_idx:] = 0
+
+        # words_mask: >0 for text tokens (use word index starting at 1)
+        for t in range(num_tokens):
+            if text_start_idx + t < seq_len:
+                inputs['words_mask'][b, text_start_idx + t] = t + 1  # Word index
+
+    # Build span indices (text-relative: 0 to num_tokens-1)
+    for b in range(batch_size):
+        for t in range(num_tokens):
+            for w in range(max_width):
+                idx = t * max_width + w
+                start = t
+                end = min(t + w, num_tokens - 1)
+                inputs['span_idx'][b, idx, 0] = start
+                inputs['span_idx'][b, idx, 1] = end
+                # Mask is True if span end is within bounds
+                inputs['span_mask'][b, idx] = (t + w) < num_tokens
+
+    return inputs
+
+
+def convert_to_fp16(input_path: Path, output_path: Path):
+    """Convert ONNX model to FP16."""
+    logger.info("Converting to FP16...")
+    try:
+        from onnxconverter_common import float16
+        import onnx
+
+        onnx_model = onnx.load(str(input_path))
+        fp16_model = float16.convert_float_to_float16(onnx_model, keep_io_types=True)
+        onnx.save(fp16_model, str(output_path))
+        logger.info(f"  Saved: {output_path.name}")
+    except ImportError:
+        logger.warning("  onnxconverter-common not installed. Skipping FP16 conversion.")
+    except Exception as e:
+        logger.warning(f"  FP16 conversion failed: {e}")
+
+
+def quantize_to_int8(input_path: Path, output_path: Path):
+    """Quantize ONNX model to INT8."""
+    logger.info("Applying INT8 quantization...")
+    try:
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+
+        quantize_dynamic(
+            str(input_path),
+            str(output_path),
+            weight_type=QuantType.QInt8,
+        )
+        logger.info(f"  Saved: {output_path.name}")
+    except ImportError:
+        logger.warning("  onnxruntime not installed. Skipping INT8 quantization.")
+    except Exception as e:
+        logger.warning(f"  INT8 quantization failed: {e}")
+
+
+def save_tokenizer(model, output_dir: Path):
+    """Save tokenizer from model."""
     logger.info("Saving tokenizer...")
     try:
         from transformers import AutoTokenizer
 
-        # Try to get tokenizer from model
         tokenizer = None
-        if hasattr(model, 'tokenizer'):
+        if hasattr(model, 'processor') and hasattr(model.processor, 'tokenizer'):
+            tokenizer = model.processor.tokenizer
+        elif hasattr(model, 'tokenizer'):
             tokenizer = model.tokenizer
-        elif hasattr(model, 'data_processor') and hasattr(model.data_processor, 'tokenizer'):
-            tokenizer = model.data_processor.tokenizer
 
         if tokenizer is None:
-            # Fall back to DeBERTa tokenizer (common base for GLiNER models)
             logger.info("  Loading default DeBERTa tokenizer...")
             tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v3-base")
 
@@ -495,8 +520,11 @@ def export_gliner2_to_onnx(
     except Exception as e:
         logger.warning(f"  Could not save tokenizer: {e}")
 
-    # Create GLiNER config for Termite
+
+def save_gliner_config(model_id: str, max_width: int, max_seq_len: int, output_dir: Path):
+    """Save GLiNER config for Termite."""
     logger.info("Creating gliner_config.json...")
+
     gliner_config = {
         "max_width": max_width,
         "max_len": max_seq_len,
@@ -506,7 +534,7 @@ def export_gliner2_to_onnx(
         "multi_label": False,
         "model_type": "gliner2",
         "model_id": model_id,
-        "capabilities": ["ner", "classification", "relations"],
+        "capabilities": ["ner", "classification", "structured", "relations"],
     }
 
     config_path = output_dir / "gliner_config.json"
@@ -514,14 +542,9 @@ def export_gliner2_to_onnx(
         json.dump(gliner_config, f, indent=2)
     logger.info("  Saved: gliner_config.json")
 
-    logger.info(f"\nExport complete! Model saved to: {output_dir}")
-    return output_dir
 
-
-def test_onnx_model(output_dir: Path, max_width: int = 12):
-    """
-    Test the exported ONNX model with ONNX Runtime.
-    """
+def test_onnx_model(output_dir: Path, max_width: int = 8):
+    """Test the exported ONNX model with ONNX Runtime."""
     import numpy as np
 
     try:
@@ -542,20 +565,26 @@ def test_onnx_model(output_dir: Path, max_width: int = 12):
 
     # Print input/output info
     logger.info("Model inputs:")
+    input_names = set()
     for inp in session.get_inputs():
         logger.info(f"  {inp.name}: {inp.shape} ({inp.type})")
+        input_names.add(inp.name)
 
     logger.info("Model outputs:")
     for out in session.get_outputs():
         logger.info(f"  {out.name}: {out.shape} ({out.type})")
 
-    # Create test inputs
+    # Create test inputs with realistic structure
     batch_size = 1
     seq_len = 64
     num_tokens = 10
     num_spans = num_tokens * max_width
 
-    inputs = {
+    # Simulate: [CLS] + 5 labels + [SEP] + text tokens + [SEP] + padding
+    text_start_idx = 7
+
+    # Build all possible inputs
+    all_inputs = {
         'input_ids': np.random.randint(0, 30000, (batch_size, seq_len)).astype(np.int64),
         'attention_mask': np.ones((batch_size, seq_len), dtype=np.int64),
         'words_mask': np.zeros((batch_size, seq_len), dtype=np.int64),
@@ -564,12 +593,24 @@ def test_onnx_model(output_dir: Path, max_width: int = 12):
         'span_mask': np.ones((batch_size, num_spans), dtype=np.bool_),
     }
 
-    # Build valid span indices
+    # Set attention mask and words_mask
+    text_end_idx = text_start_idx + num_tokens + 1
+    all_inputs['attention_mask'][0, text_end_idx:] = 0
+    for t in range(num_tokens):
+        if text_start_idx + t < seq_len:
+            all_inputs['words_mask'][0, text_start_idx + t] = t + 1
+
+    # Build span indices (text-relative)
     for t in range(num_tokens):
         for w in range(max_width):
             idx = t * max_width + w
-            inputs['span_idx'][0, idx, 0] = t
-            inputs['span_idx'][0, idx, 1] = min(t + w, num_tokens - 1)
+            all_inputs['span_idx'][0, idx, 0] = t
+            all_inputs['span_idx'][0, idx, 1] = min(t + w, num_tokens - 1)
+            all_inputs['span_mask'][0, idx] = (t + w) < num_tokens
+
+    # Filter to only inputs the model actually expects
+    inputs = {k: v for k, v in all_inputs.items() if k in input_names}
+    logger.info(f"Using inputs: {list(inputs.keys())}")
 
     # Run inference
     try:
@@ -603,8 +644,8 @@ Examples:
     parser.add_argument("output_dir", nargs="?", help="Output directory for exported model")
     parser.add_argument("--variants", nargs="+", choices=["f16", "i8"],
                         help="Additional variants to create (f16=FP16, i8=INT8)")
-    parser.add_argument("--max-width", type=int, default=12,
-                        help="Maximum span width (default: 12)")
+    parser.add_argument("--max-width", type=int, default=None,
+                        help="Maximum span width (auto-detected from model if not specified)")
     parser.add_argument("--max-seq-len", type=int, default=512,
                         help="Maximum sequence length (default: 512)")
     parser.add_argument("--analyze-only", action="store_true",
@@ -636,7 +677,7 @@ Examples:
 
     # Test if requested
     if args.test:
-        test_onnx_model(output_dir, max_width=args.max_width)
+        test_onnx_model(output_dir, max_width=args.max_width or 8)
 
 
 if __name__ == "__main__":

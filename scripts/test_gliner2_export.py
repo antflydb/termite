@@ -21,7 +21,36 @@ import torch.nn as nn
 # Add the scripts directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from export_gliner2_onnx import GLiNER2ONNXWrapper
+from export_gliner2_onnx import GLiNER2SpanWrapper, create_dummy_inputs
+
+
+class MockProjection(nn.Module):
+    """Mock projection layer (like SpanMarkerV0's project layers)."""
+
+    def __init__(self, hidden_size=768):
+        super().__init__()
+        self.linear = nn.Linear(hidden_size, hidden_size)
+
+    def forward(self, x):
+        return self.linear(x)
+
+
+class MockSpanRepLayer(nn.Module):
+    """Mock SpanRepLayer.span_rep_layer that mimics SpanMarkerV0."""
+
+    def __init__(self, hidden_size=768):
+        super().__init__()
+        self.project_start = MockProjection(hidden_size)
+        self.project_end = MockProjection(hidden_size)
+        self.out_project = nn.Linear(hidden_size * 2, hidden_size)
+
+
+class MockSpanRep(nn.Module):
+    """Mock SpanRep module that contains span_rep_layer."""
+
+    def __init__(self, hidden_size=768):
+        super().__init__()
+        self.span_rep_layer = MockSpanRepLayer(hidden_size)
 
 
 class MockEncoder(nn.Module):
@@ -49,93 +78,60 @@ class MockEncoder(nn.Module):
         return Output(hidden_states)
 
 
-class MockSpanRepLayer(nn.Module):
-    """Mock span representation layer."""
+class MockClassifier(nn.Module):
+    """Mock classifier (hidden -> 1)."""
 
     def __init__(self, hidden_size=768):
         super().__init__()
-        self.proj = nn.Linear(hidden_size * 2, hidden_size)
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size * 2, 1),
+        )
 
-    def forward(self, start_reps, end_reps):
-        combined = torch.cat([start_reps, end_reps], dim=-1)
-        return self.proj(combined)
-
-
-class MockEntityClassifier(nn.Module):
-    """Mock entity classifier."""
-
-    def __init__(self, hidden_size=768, num_labels=5):
-        super().__init__()
-        self.classifier = nn.Linear(hidden_size, num_labels)
-
-    def forward(self, span_reps):
-        return self.classifier(span_reps)
+    def forward(self, x):
+        return self.classifier(x)
 
 
 class MockGLiNER2:
     """Mock GLiNER2 model for testing."""
 
-    def __init__(self, hidden_size=768, num_labels=5):
-        self.model = type(
-            "Model",
-            (),
-            {
-                "encoder": MockEncoder(hidden_size=hidden_size),
-                "span_rep_layer": MockSpanRepLayer(hidden_size=hidden_size),
-                "entity_classifier": MockEntityClassifier(
-                    hidden_size=hidden_size, num_labels=num_labels
-                ),
-            },
-        )()
+    def __init__(self, hidden_size=768, max_width=8):
+        self.hidden_size = hidden_size
+        self.max_width = max_width
+        self.encoder = MockEncoder(hidden_size=hidden_size)
+        self.span_rep = MockSpanRep(hidden_size=hidden_size)
+        self.classifier = MockClassifier(hidden_size=hidden_size)
 
 
-class TestGLiNER2ONNXWrapper(unittest.TestCase):
+class TestGLiNER2SpanWrapper(unittest.TestCase):
     """Test cases for the GLiNER2 ONNX wrapper."""
 
     def setUp(self):
         """Set up test fixtures."""
-        self.max_width = 12
-        self.num_labels = 5
+        self.max_width = 8
         self.hidden_size = 768
 
         self.mock_model = MockGLiNER2(
-            hidden_size=self.hidden_size, num_labels=self.num_labels
+            hidden_size=self.hidden_size, max_width=self.max_width
         )
-        self.wrapper = GLiNER2ONNXWrapper(self.mock_model, max_width=self.max_width)
+        self.wrapper = GLiNER2SpanWrapper(self.mock_model, max_width=self.max_width)
         self.wrapper.eval()
-
-    def _create_test_inputs(self, batch_size=1, seq_len=64, num_tokens=10):
-        """Create test inputs for the wrapper."""
-        num_spans = num_tokens * self.max_width
-
-        input_ids = torch.randint(0, 30000, (batch_size, seq_len))
-        attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
-        words_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
-        text_lengths = torch.tensor([[num_tokens]], dtype=torch.long)
-        span_idx = torch.zeros(batch_size, num_spans, 2, dtype=torch.long)
-        span_mask = torch.ones(batch_size, num_spans, dtype=torch.bool)
-
-        # Build valid span indices
-        for t in range(num_tokens):
-            for w in range(self.max_width):
-                idx = t * self.max_width + w
-                span_idx[0, idx, 0] = t
-                span_idx[0, idx, 1] = min(t + w, num_tokens - 1)
-
-        return input_ids, attention_mask, words_mask, text_lengths, span_idx, span_mask
 
     def test_forward_pass_shape(self):
         """Test that forward pass produces correct output shape."""
         batch_size = 1
         seq_len = 64
         num_tokens = 10
+        num_spans = num_tokens * self.max_width
 
-        inputs = self._create_test_inputs(batch_size, seq_len, num_tokens)
+        inputs = create_dummy_inputs(batch_size, seq_len, num_tokens, self.max_width)
 
         with torch.no_grad():
-            output = self.wrapper(*inputs)
+            output = self.wrapper(**inputs)
 
-        expected_shape = (batch_size, num_tokens, self.max_width, self.num_labels)
+        # GLiNER2SpanWrapper outputs [batch, num_spans, 1]
+        expected_shape = (batch_size, num_spans, 1)
         self.assertEqual(
             output.shape,
             expected_shape,
@@ -146,10 +142,13 @@ class TestGLiNER2ONNXWrapper(unittest.TestCase):
         """Test forward pass with different batch sizes."""
         for batch_size in [1, 2, 4]:
             with self.subTest(batch_size=batch_size):
-                inputs = self._create_test_inputs(batch_size=batch_size, num_tokens=10)
+                num_tokens = 10
+                inputs = create_dummy_inputs(
+                    batch_size, 64, num_tokens, self.max_width
+                )
 
                 with torch.no_grad():
-                    output = self.wrapper(*inputs)
+                    output = self.wrapper(**inputs)
 
                 self.assertEqual(output.shape[0], batch_size)
 
@@ -157,20 +156,47 @@ class TestGLiNER2ONNXWrapper(unittest.TestCase):
         """Test forward pass with different numbers of tokens."""
         for num_tokens in [5, 10, 20]:
             with self.subTest(num_tokens=num_tokens):
-                inputs = self._create_test_inputs(num_tokens=num_tokens)
+                inputs = create_dummy_inputs(1, 64, num_tokens, self.max_width)
+                num_spans = num_tokens * self.max_width
 
                 with torch.no_grad():
-                    output = self.wrapper(*inputs)
+                    output = self.wrapper(**inputs)
 
-                self.assertEqual(output.shape[1], num_tokens)
-                self.assertEqual(output.shape[2], self.max_width)
+                # Output shape: [batch, num_spans, 1]
+                self.assertEqual(output.shape[1], num_spans)
+                self.assertEqual(output.shape[2], 1)
+
+    def test_text_offset_calculation(self):
+        """Test that text token offset is correctly calculated from words_mask."""
+        batch_size = 1
+        seq_len = 64
+        num_tokens = 10
+        text_start = 7  # create_dummy_inputs uses this offset
+
+        inputs = create_dummy_inputs(batch_size, seq_len, num_tokens, self.max_width)
+
+        # Verify words_mask has text tokens starting at position 7
+        words_mask = inputs["words_mask"]
+        self.assertEqual(words_mask[0, text_start].item(), 1)  # First text token
+        self.assertEqual(words_mask[0, text_start - 1].item(), 0)  # Before text
 
     def test_onnx_export(self):
         """Test that model can be exported to ONNX format."""
-        inputs = self._create_test_inputs()
+        num_tokens = 10
+        num_spans = num_tokens * self.max_width
+        inputs = create_dummy_inputs(1, 64, num_tokens, self.max_width)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             onnx_path = os.path.join(tmpdir, "test_model.onnx")
+
+            input_names = [
+                "input_ids",
+                "attention_mask",
+                "words_mask",
+                "text_lengths",
+                "span_idx",
+                "span_mask",
+            ]
 
             dynamic_axes = {
                 "input_ids": {0: "batch", 1: "seq_len"},
@@ -179,24 +205,25 @@ class TestGLiNER2ONNXWrapper(unittest.TestCase):
                 "text_lengths": {0: "batch"},
                 "span_idx": {0: "batch", 1: "num_spans"},
                 "span_mask": {0: "batch", 1: "num_spans"},
-                "logits": {0: "batch", 1: "num_tokens", 2: "max_width", 3: "num_labels"},
+                "logits": {0: "batch", 1: "num_spans"},
             }
 
             torch.onnx.export(
                 self.wrapper,
-                inputs,
+                (
+                    inputs["input_ids"],
+                    inputs["attention_mask"],
+                    inputs["words_mask"],
+                    inputs["text_lengths"],
+                    inputs["span_idx"],
+                    inputs["span_mask"],
+                ),
                 onnx_path,
-                input_names=[
-                    "input_ids",
-                    "attention_mask",
-                    "words_mask",
-                    "text_lengths",
-                    "span_idx",
-                    "span_mask",
-                ],
+                input_names=input_names,
                 output_names=["logits"],
                 dynamic_axes=dynamic_axes,
-                opset_version=14,
+                opset_version=17,
+                dynamo=False,  # Use TorchScript export
             )
 
             self.assertTrue(os.path.exists(onnx_path))
@@ -209,55 +236,62 @@ class TestGLiNER2ONNXWrapper(unittest.TestCase):
         except ImportError:
             self.skipTest("onnxruntime not installed")
 
-        inputs = self._create_test_inputs()
+        num_tokens = 10
+        num_spans = num_tokens * self.max_width
+        inputs = create_dummy_inputs(1, 64, num_tokens, self.max_width)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             onnx_path = os.path.join(tmpdir, "test_model.onnx")
 
-            dynamic_axes = {
-                "input_ids": {0: "batch", 1: "seq_len"},
-                "attention_mask": {0: "batch", 1: "seq_len"},
-                "words_mask": {0: "batch", 1: "seq_len"},
-                "text_lengths": {0: "batch"},
-                "span_idx": {0: "batch", 1: "num_spans"},
-                "span_mask": {0: "batch", 1: "num_spans"},
-                "logits": {0: "batch", 1: "num_tokens", 2: "max_width", 3: "num_labels"},
-            }
+            input_names = [
+                "input_ids",
+                "attention_mask",
+                "words_mask",
+                "text_lengths",
+                "span_idx",
+                "span_mask",
+            ]
 
             torch.onnx.export(
                 self.wrapper,
-                inputs,
+                (
+                    inputs["input_ids"],
+                    inputs["attention_mask"],
+                    inputs["words_mask"],
+                    inputs["text_lengths"],
+                    inputs["span_idx"],
+                    inputs["span_mask"],
+                ),
                 onnx_path,
-                input_names=[
-                    "input_ids",
-                    "attention_mask",
-                    "words_mask",
-                    "text_lengths",
-                    "span_idx",
-                    "span_mask",
-                ],
+                input_names=input_names,
                 output_names=["logits"],
-                dynamic_axes=dynamic_axes,
-                opset_version=14,
+                opset_version=17,
+                dynamo=False,
             )
 
             # Load with ONNX Runtime
             session = ort.InferenceSession(onnx_path)
 
-            # Run inference
-            ort_inputs = {
-                "input_ids": inputs[0].numpy().astype(np.int64),
-                "attention_mask": inputs[1].numpy().astype(np.int64),
-                "words_mask": inputs[2].numpy().astype(np.int64),
-                "text_lengths": inputs[3].numpy().astype(np.int64),
-                "span_idx": inputs[4].numpy().astype(np.int64),
-                "span_mask": inputs[5].numpy().astype(np.bool_),
-            }
+            # Get actual input names from the model
+            model_input_names = {inp.name for inp in session.get_inputs()}
+
+            # Build inputs dict with only what the model expects
+            ort_inputs = {}
+            for name in model_input_names:
+                if name in inputs:
+                    val = inputs[name].numpy()
+                    if name == "span_mask":
+                        val = val.astype(np.bool_)
+                    else:
+                        val = val.astype(np.int64)
+                    ort_inputs[name] = val
 
             outputs = session.run(None, ort_inputs)
 
             self.assertEqual(len(outputs), 1)
-            self.assertEqual(outputs[0].shape, (1, 10, 12, 5))
+            # Output shape: [batch, num_spans, 1]
+            self.assertEqual(outputs[0].shape[0], 1)  # batch
+            self.assertEqual(outputs[0].shape[-1], 1)  # single score per span
 
 
 if __name__ == "__main__":

@@ -696,8 +696,11 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		return nil, fmt.Errorf("no logits output found")
 	}
 
-	// Logits shape: [batch, num_tokens, max_width, num_labels]
-	// We need to use the actual shape from the output, not numWords
+	// Logits shape varies by model:
+	// - GLiNER v1: [batch, num_tokens, max_width, num_labels] (4D)
+	// - GLiNER2:   [batch, num_spans, 1] where num_spans = num_tokens * max_width (3D)
+	// Both have identical flat data layout for single-label queries.
+	// We need to use the actual shape from the output, not numWords.
 	numLabels := len(labels)
 	numWords := len(words)
 	maxWidth := p.PipelineConfig.MaxWidth
@@ -705,12 +708,22 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	// Get dimensions from logits shape
 	var numTokens int
 	if len(logitsShape) >= 4 {
+		// GLiNER v1 format: [batch, num_tokens, max_width, num_labels]
 		numTokens = int(logitsShape[1])
 		maxWidth = int(logitsShape[2])
 		numLabels = int(logitsShape[3])
+	} else if len(logitsShape) == 3 {
+		// GLiNER2 format: [batch, num_spans, 1]
+		// num_spans = num_tokens * max_width, numLabels = 1
+		numSpans := int(logitsShape[1])
+		numLabels = int(logitsShape[2])
+		// Infer numTokens from num_spans / max_width
+		if maxWidth > 0 && numSpans > 0 {
+			numTokens = numSpans / maxWidth
+		}
 	}
 
-	// Ensure at least 1 token
+	// Ensure at least 1 token, fall back to word count if not determined
 	if numTokens < 1 {
 		numTokens = numWords
 	}
