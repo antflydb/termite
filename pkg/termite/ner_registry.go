@@ -274,6 +274,20 @@ func (r *NERRegistry) discoverModels() error {
 				}
 			}
 
+			// Also check gliner_config.json for capabilities (used by export script)
+			glinerConfigPath := filepath.Join(modelPath, "gliner_config.json")
+			if data, err := os.ReadFile(glinerConfigPath); err == nil {
+				var glinerConfig ner.GLiNERConfig
+				if err := json.Unmarshal(data, &glinerConfig); err == nil && len(glinerConfig.Capabilities) > 0 {
+					// Merge capabilities from gliner_config.json
+					for _, cap := range glinerConfig.Capabilities {
+						if !containsCapability(caps, cap) {
+							caps = append(caps, cap)
+						}
+					}
+				}
+			}
+
 			r.discovered[registryFullName] = &NERModelInfo{
 				Name:         registryFullName,
 				Path:         modelPath,
@@ -465,12 +479,25 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 			return nil, fmt.Errorf("loading GLiNER model %s: %w", info.Name, err)
 		}
 		// Update capabilities based on loaded model
+		// First, check if the model config has capabilities from gliner_config.json
 		caps := info.Capabilities
+		if modelCaps := model.Capabilities(); len(modelCaps) > 0 {
+			// Merge capabilities from model config with discovered capabilities
+			for _, cap := range modelCaps {
+				if !containsCapability(caps, cap) {
+					caps = append(caps, cap)
+				}
+			}
+		}
+		// Also check model methods for capabilities
 		if model.SupportsRelationExtraction() && !containsCapability(caps, modelregistry.CapabilityRelations) {
 			caps = append(caps, modelregistry.CapabilityRelations)
 		}
 		if model.SupportsQA() && !containsCapability(caps, modelregistry.CapabilityAnswers) {
 			caps = append(caps, modelregistry.CapabilityAnswers)
+		}
+		if model.SupportsClassification() && !containsCapability(caps, "classification") {
+			caps = append(caps, "classification")
 		}
 		r.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
@@ -607,6 +634,50 @@ func (r *NERRegistry) ListWithCapabilities() map[string][]string {
 		result[name] = capsCopy
 	}
 	return result
+}
+
+// SupportsClassification returns true if the model supports text classification.
+// Currently only GLiNER2 models support this capability.
+func (r *NERRegistry) SupportsClassification(modelName string) bool {
+	return r.HasCapability(modelName, "classification")
+}
+
+// ListClassificationCapable returns all NER models that support classification.
+func (r *NERRegistry) ListClassificationCapable() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0)
+	for name, info := range r.discovered {
+		if containsCapability(info.Capabilities, "classification") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// GetGLiNER2 returns a GLiNER2 model for classification if it exists and supports classification.
+// Returns nil and an error if the model doesn't exist or doesn't support classification.
+func (r *NERRegistry) GetGLiNER2(modelName string) (*ner.PooledGLiNER, error) {
+	loaded, err := r.getLoaded(modelName)
+	if err != nil {
+		return nil, err
+	}
+
+	if loaded.modelType != NERModelTypeGLiNER {
+		return nil, fmt.Errorf("model %s is not a GLiNER model", modelName)
+	}
+
+	gliner, ok := loaded.recognizer.(*ner.PooledGLiNER)
+	if !ok {
+		return nil, fmt.Errorf("model %s is not a PooledGLiNER", modelName)
+	}
+
+	if !gliner.SupportsClassification() {
+		return nil, fmt.Errorf("model %s does not support classification", modelName)
+	}
+
+	return gliner, nil
 }
 
 // Preload loads specified models at startup to avoid first-request latency

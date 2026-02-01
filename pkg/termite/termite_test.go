@@ -470,6 +470,18 @@ func (m *MockNERRegistry) Close() error {
 	return nil
 }
 
+func (m *MockNERRegistry) GetGLiNER2(modelName string) (*ner.PooledGLiNER, error) {
+	return nil, fmt.Errorf("GLiNER2 not found: %s", modelName)
+}
+
+func (m *MockNERRegistry) ListClassificationCapable() []string {
+	return nil
+}
+
+func (m *MockNERRegistry) SupportsClassification(modelName string) bool {
+	return false
+}
+
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 

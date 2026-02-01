@@ -47,6 +47,9 @@ const (
 	GLiNERModelTokenLevel GLiNERModelType = "token_level"
 	// GLiNERModelMultiTask supports multiple tasks: NER, classification, QA, relation extraction.
 	GLiNERModelMultiTask GLiNERModelType = "multitask"
+	// GLiNERModelGLiNER2 is the unified GLiNER2 multi-task model from Fastino.
+	// Supports NER, classification, structured extraction, and relation extraction.
+	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
 )
 
 // GLiNERModelConfig holds parsed configuration for a GLiNER model.
@@ -177,6 +180,14 @@ type rawGLiNERConfig struct {
 // detectGLiNERModelType attempts to detect the model type from the model name.
 func detectGLiNERModelType(modelPath string) GLiNERModelType {
 	modelName := strings.ToLower(filepath.Base(modelPath))
+	parentDir := strings.ToLower(filepath.Base(filepath.Dir(modelPath)))
+
+	// Check for GLiNER2 models (from Fastino)
+	// GLiNER2 models have "gliner2" in name or are from "fastino" organization
+	if strings.Contains(modelName, "gliner2") ||
+		(strings.Contains(parentDir, "fastino") && strings.Contains(modelName, "gliner")) {
+		return GLiNERModelGLiNER2
+	}
 
 	switch {
 	case strings.Contains(modelName, "multitask"):
@@ -238,6 +249,53 @@ type GLiNEROutput struct {
 	// Entities holds entities for each input text
 	Entities [][]GLiNEREntity
 	// Relations holds relations for each input text (if supported)
+	Relations [][]GLiNERRelation
+}
+
+// GLiNER2TaskType represents different task types for GLiNER2.
+type GLiNER2TaskType int
+
+const (
+	// GLiNER2TaskNER is standard named entity recognition
+	GLiNER2TaskNER GLiNER2TaskType = iota
+	// GLiNER2TaskRelations extracts relationships between entities
+	GLiNER2TaskRelations
+	// GLiNER2TaskClassification performs text classification
+	GLiNER2TaskClassification
+)
+
+// GLiNER2Classification represents a text classification result.
+type GLiNER2Classification struct {
+	// Label is the classification label
+	Label string `json:"label"`
+	// Score is the confidence score (0.0 to 1.0)
+	Score float32 `json:"score"`
+}
+
+// GLiNER2ClassificationConfig holds configuration for classification.
+type GLiNER2ClassificationConfig struct {
+	// Threshold is the score threshold for positive classification
+	Threshold float32
+	// MultiLabel if true, allow multiple labels per text
+	MultiLabel bool
+	// TopK returns top K predictions (0 = all above threshold)
+	TopK int
+}
+
+// DefaultGLiNER2ClassificationConfig returns sensible defaults.
+func DefaultGLiNER2ClassificationConfig() *GLiNER2ClassificationConfig {
+	return &GLiNER2ClassificationConfig{
+		Threshold:  0.5,
+		MultiLabel: false,
+		TopK:       1,
+	}
+}
+
+// GLiNER2RelationOutput holds the output from relation extraction.
+type GLiNER2RelationOutput struct {
+	// Entities holds all extracted entities
+	Entities [][]GLiNEREntity
+	// Relations holds extracted relations
 	Relations [][]GLiNERRelation
 }
 
@@ -470,6 +528,441 @@ func (p *GLiNERPipeline) buildPrompt(labels []string) string {
 	return sb.String()
 }
 
+// buildPromptForTask constructs the label prompt for different GLiNER2 tasks.
+// Each task type uses a different prompt format:
+// - NER: <<ENT>>label<<SEP>>
+// - Relations: <<REL>>entity::relation<<SEP>>
+// - Classification: <<CLS>>label<<SEP>>
+func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType GLiNER2TaskType) string {
+	var sb strings.Builder
+
+	var prefix string
+	switch taskType {
+	case GLiNER2TaskNER:
+		prefix = "<<ENT>>"
+	case GLiNER2TaskRelations:
+		prefix = "<<REL>>"
+	case GLiNER2TaskClassification:
+		prefix = "<<CLS>>"
+	default:
+		prefix = "<<ENT>>"
+	}
+
+	for _, label := range labels {
+		sb.WriteString(prefix)
+		sb.WriteString(label)
+		sb.WriteString("<<SEP>>")
+	}
+
+	return sb.String()
+}
+
+// buildCompositeRelationLabels creates composite labels for relation extraction.
+// For each entity type and relation type, creates "entity::relation" label.
+// This follows GLiNER2's approach where relations are expressed as composite labels.
+func (p *GLiNERPipeline) buildCompositeRelationLabels(entityLabels []string, relationLabels []string) []string {
+	compositeLabels := make([]string, 0, len(entityLabels)*len(relationLabels))
+	for _, entity := range entityLabels {
+		for _, relation := range relationLabels {
+			compositeLabels = append(compositeLabels, entity+"::"+relation)
+		}
+	}
+	return compositeLabels
+}
+
+// ExtractRelations extracts entities and relationships between them.
+// This is a GLiNER2-specific feature that uses composite labels.
+//
+// The approach:
+// 1. First extract all entities with the given entity labels
+// 2. Then use composite labels (entity::relation) to find head entities
+// 3. Match head entities with potential tail entities
+func (p *GLiNERPipeline) ExtractRelations(
+	ctx context.Context,
+	texts []string,
+	entityLabels []string,
+	relationLabels []string,
+) (*GLiNER2RelationOutput, error) {
+	if !p.IsGLiNER2() {
+		return nil, fmt.Errorf("relation extraction requires GLiNER2 model")
+	}
+
+	if len(texts) == 0 {
+		return &GLiNER2RelationOutput{
+			Entities:  [][]GLiNEREntity{},
+			Relations: [][]GLiNERRelation{},
+		}, nil
+	}
+
+	if len(entityLabels) == 0 {
+		entityLabels = p.PipelineConfig.DefaultLabels
+	}
+
+	if len(relationLabels) == 0 && p.Config != nil {
+		relationLabels = p.Config.RelationLabels
+	}
+
+	// Process each text
+	allEntities := make([][]GLiNEREntity, len(texts))
+	allRelations := make([][]GLiNERRelation, len(texts))
+
+	for i, text := range texts {
+		entities, relations, err := p.processTextForRelations(ctx, text, entityLabels, relationLabels)
+		if err != nil {
+			return nil, fmt.Errorf("processing text %d for relations: %w", i, err)
+		}
+		allEntities[i] = entities
+		allRelations[i] = relations
+	}
+
+	return &GLiNER2RelationOutput{
+		Entities:  allEntities,
+		Relations: allRelations,
+	}, nil
+}
+
+// processTextForRelations extracts both entities and relations from a single text.
+func (p *GLiNERPipeline) processTextForRelations(
+	ctx context.Context,
+	text string,
+	entityLabels []string,
+	relationLabels []string,
+) ([]GLiNEREntity, []GLiNERRelation, error) {
+	if text == "" {
+		return nil, nil, nil
+	}
+
+	// Step 1: Extract all entities first
+	entities, err := p.processText(ctx, text, entityLabels)
+	if err != nil {
+		return nil, nil, fmt.Errorf("extracting entities: %w", err)
+	}
+
+	if len(entities) < 2 || len(relationLabels) == 0 {
+		// Need at least 2 entities for a relation
+		return entities, nil, nil
+	}
+
+	// Step 2: Build composite labels for relation extraction
+	compositeLabels := p.buildCompositeRelationLabels(entityLabels, relationLabels)
+
+	// Step 3: Extract relation head entities using composite labels
+	relationHeadSpans, err := p.processText(ctx, text, compositeLabels)
+	if err != nil {
+		return entities, nil, fmt.Errorf("extracting relation heads: %w", err)
+	}
+
+	// Step 4: Match relation heads to entities and find tail entities
+	relations := p.matchRelations(entities, relationHeadSpans, entityLabels)
+
+	return entities, relations, nil
+}
+
+// matchRelations matches extracted relation head spans to entities and finds relations.
+func (p *GLiNERPipeline) matchRelations(
+	entities []GLiNEREntity,
+	relationHeadSpans []GLiNEREntity,
+	entityLabels []string,
+) []GLiNERRelation {
+	var relations []GLiNERRelation
+
+	// Build a map of entity positions for quick lookup
+	entityByPos := make(map[string]*GLiNEREntity)
+	for i := range entities {
+		key := fmt.Sprintf("%d-%d", entities[i].Start, entities[i].End)
+		entityByPos[key] = &entities[i]
+	}
+
+	// Process each relation head span
+	for _, headSpan := range relationHeadSpans {
+		// Parse the composite label: "entity_type::relation"
+		parts := strings.SplitN(headSpan.Label, "::", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		headEntityType := parts[0]
+		relationLabel := parts[1]
+
+		// Find the matching entity for this head span
+		headKey := fmt.Sprintf("%d-%d", headSpan.Start, headSpan.End)
+		headEntity := entityByPos[headKey]
+		if headEntity == nil {
+			// Create a head entity from the span
+			headEntity = &GLiNEREntity{
+				Text:  headSpan.Text,
+				Label: headEntityType,
+				Start: headSpan.Start,
+				End:   headSpan.End,
+				Score: headSpan.Score,
+			}
+		}
+
+		// Find potential tail entities (non-overlapping entities)
+		for i := range entities {
+			tail := &entities[i]
+
+			// Skip if same span or overlapping
+			if overlapsSpan(headSpan.Start, headSpan.End, tail.Start, tail.End) {
+				continue
+			}
+
+			// Create relation
+			relations = append(relations, GLiNERRelation{
+				HeadEntity: *headEntity,
+				TailEntity: *tail,
+				Label:      relationLabel,
+				Score:      (headSpan.Score + tail.Score) / 2, // Average confidence
+			})
+		}
+	}
+
+	// Apply threshold filtering if configured
+	if p.Config != nil && p.Config.RelationThreshold > 0 {
+		filtered := make([]GLiNERRelation, 0, len(relations))
+		for _, rel := range relations {
+			if rel.Score >= p.Config.RelationThreshold {
+				filtered = append(filtered, rel)
+			}
+		}
+		relations = filtered
+	}
+
+	return relations
+}
+
+// overlapsSpan checks if two spans overlap.
+func overlapsSpan(start1, end1, start2, end2 int) bool {
+	return start1 < end2 && start2 < end1
+}
+
+// ClassifyText performs text classification using GLiNER2.
+// Classification is implemented by treating the entire text as a single span
+// and scoring it against each class label.
+func (p *GLiNERPipeline) ClassifyText(
+	ctx context.Context,
+	texts []string,
+	labels []string,
+	config *GLiNER2ClassificationConfig,
+) ([][]GLiNER2Classification, error) {
+	if !p.IsGLiNER2() {
+		return nil, fmt.Errorf("classification requires GLiNER2 model")
+	}
+
+	if len(texts) == 0 {
+		return [][]GLiNER2Classification{}, nil
+	}
+
+	if len(labels) == 0 {
+		return nil, fmt.Errorf("classification labels are required")
+	}
+
+	if config == nil {
+		config = DefaultGLiNER2ClassificationConfig()
+	}
+
+	results := make([][]GLiNER2Classification, len(texts))
+
+	for i, text := range texts {
+		classifications, err := p.classifySingleText(ctx, text, labels, config)
+		if err != nil {
+			return nil, fmt.Errorf("classifying text %d: %w", i, err)
+		}
+		results[i] = classifications
+	}
+
+	return results, nil
+}
+
+// classifySingleText classifies a single text against the given labels.
+// We use the span-based approach where we score each label against the entire text.
+func (p *GLiNERPipeline) classifySingleText(
+	ctx context.Context,
+	text string,
+	labels []string,
+	config *GLiNER2ClassificationConfig,
+) ([]GLiNER2Classification, error) {
+	if text == "" {
+		return nil, nil
+	}
+
+	// For classification, we use the same approach as NER but interpret results differently.
+	// Each label is treated as a potential "entity type" for the entire text span.
+	// We use the classification prompt format.
+	prompt := p.buildPromptForTask(labels, GLiNER2TaskClassification)
+
+	// Tokenize
+	words, _, _ := p.splitIntoWords(text)
+	if len(words) == 0 {
+		return nil, nil
+	}
+
+	promptTokens := p.Tokenizer.Encode(prompt)
+	textTokens := p.tokenizeWords(words)
+
+	// Build inputs
+	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
+	if err != nil {
+		return nil, fmt.Errorf("building inputs: %w", err)
+	}
+
+	// Run inference
+	outputs, err := p.Session.Run(inputs)
+	if err != nil {
+		return nil, fmt.Errorf("running inference: %w", err)
+	}
+
+	// Parse classification outputs
+	classifications := p.parseClassificationOutputs(outputs, labels, config)
+
+	return classifications, nil
+}
+
+// parseClassificationOutputs extracts classification results from model output.
+// For classification, we look at the highest-scoring span for each label
+// and use that as the classification confidence.
+func (p *GLiNERPipeline) parseClassificationOutputs(
+	outputs []backends.NamedTensor,
+	labels []string,
+	config *GLiNER2ClassificationConfig,
+) []GLiNER2Classification {
+	// Find the logits tensor
+	var logits []float32
+	var logitsShape []int64
+
+	for _, out := range outputs {
+		if out.Name == "logits" || len(outputs) == 1 {
+			switch data := out.Data.(type) {
+			case []float32:
+				logits = data
+				logitsShape = out.Shape
+			}
+			break
+		}
+	}
+
+	if logits == nil {
+		return nil
+	}
+
+	// For GLiNER2 classification, we aggregate span scores per label
+	// The output shape is typically [batch, num_spans, num_labels] or [batch, num_spans, 1]
+	// For classification with single span (whole text), we want the max score per label
+
+	numLabels := len(labels)
+	results := make([]GLiNER2Classification, 0, numLabels)
+
+	if len(logitsShape) >= 3 {
+		// Shape: [batch, num_spans, ...]
+		numSpans := int(logitsShape[1])
+
+		// For each label, find the maximum score across all spans
+		// In classification mode, we typically have one label encoded per run,
+		// so we need to interpret the output based on how we encoded the labels
+		if numLabels == 1 || (len(logitsShape) > 2 && logitsShape[2] == 1) {
+			// Single label per call or single output channel
+			// Find max score across spans and apply sigmoid
+			maxScore := float32(-1000)
+			for i := 0; i < numSpans && i < len(logits); i++ {
+				if logits[i] > maxScore {
+					maxScore = logits[i]
+				}
+			}
+
+			// Apply sigmoid to convert logit to probability
+			score := sigmoid(maxScore)
+
+			for _, label := range labels {
+				if config.MultiLabel || score >= config.Threshold {
+					results = append(results, GLiNER2Classification{
+						Label: label,
+						Score: score,
+					})
+				}
+			}
+		} else {
+			// Multiple labels with separate output channels
+			labelsPerSpan := 1
+			if len(logitsShape) > 2 {
+				labelsPerSpan = int(logitsShape[2])
+			}
+
+			for labelIdx, label := range labels {
+				if labelIdx >= labelsPerSpan {
+					break
+				}
+
+				// Find max score for this label across all spans
+				maxScore := float32(-1000)
+				for spanIdx := 0; spanIdx < numSpans; spanIdx++ {
+					idx := spanIdx*labelsPerSpan + labelIdx
+					if idx < len(logits) && logits[idx] > maxScore {
+						maxScore = logits[idx]
+					}
+				}
+
+				score := sigmoid(maxScore)
+				results = append(results, GLiNER2Classification{
+					Label: label,
+					Score: score,
+				})
+			}
+		}
+	} else {
+		// Fallback: treat as flat array of scores
+		for i, label := range labels {
+			if i >= len(logits) {
+				break
+			}
+			score := sigmoid(logits[i])
+			results = append(results, GLiNER2Classification{
+				Label: label,
+				Score: score,
+			})
+		}
+	}
+
+	// Apply filtering based on config
+	if !config.MultiLabel {
+		// Single-label: return only the highest scoring
+		if len(results) > 0 {
+			sort.Slice(results, func(i, j int) bool {
+				return results[i].Score > results[j].Score
+			})
+			if config.TopK > 0 && len(results) > config.TopK {
+				results = results[:config.TopK]
+			} else {
+				results = results[:1]
+			}
+		}
+	} else {
+		// Multi-label: filter by threshold
+		filtered := make([]GLiNER2Classification, 0, len(results))
+		for _, r := range results {
+			if r.Score >= config.Threshold {
+				filtered = append(filtered, r)
+			}
+		}
+		results = filtered
+
+		// Sort by score descending
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].Score > results[j].Score
+		})
+
+		// Apply TopK if configured
+		if config.TopK > 0 && len(results) > config.TopK {
+			results = results[:config.TopK]
+		}
+	}
+
+	return results
+}
+
+// sigmoid converts a logit to a probability.
+func sigmoid(x float32) float32 {
+	return float32(1.0 / (1.0 + math.Exp(float64(-x))))
+}
+
 // tokenizeWords tokenizes each word and returns the tokens per word.
 func (p *GLiNERPipeline) tokenizeWords(words []string) [][]int {
 	result := make([][]int, len(words))
@@ -685,8 +1178,11 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		return nil, fmt.Errorf("no logits output found")
 	}
 
-	// Logits shape: [batch, num_tokens, max_width, num_labels]
-	// We need to use the actual shape from the output, not numWords
+	// Logits shape varies by model:
+	// - GLiNER v1: [batch, num_tokens, max_width, num_labels] (4D)
+	// - GLiNER2:   [batch, num_spans, 1] where num_spans = num_tokens * max_width (3D)
+	// Both have identical flat data layout for single-label queries.
+	// We need to use the actual shape from the output, not numWords.
 	numLabels := len(labels)
 	numWords := len(words)
 	maxWidth := p.PipelineConfig.MaxWidth
@@ -694,12 +1190,22 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	// Get dimensions from logits shape
 	var numTokens int
 	if len(logitsShape) >= 4 {
+		// GLiNER v1 format: [batch, num_tokens, max_width, num_labels]
 		numTokens = int(logitsShape[1])
 		maxWidth = int(logitsShape[2])
 		numLabels = int(logitsShape[3])
+	} else if len(logitsShape) == 3 {
+		// GLiNER2 format: [batch, num_spans, 1]
+		// num_spans = num_tokens * max_width, numLabels = 1
+		numSpans := int(logitsShape[1])
+		numLabels = int(logitsShape[2])
+		// Infer numTokens from num_spans / max_width
+		if maxWidth > 0 && numSpans > 0 {
+			numTokens = numSpans / maxWidth
+		}
 	}
 
-	// Ensure at least 1 token
+	// Ensure at least 1 token, fall back to word count if not determined
 	if numTokens < 1 {
 		numTokens = numWords
 	}
@@ -805,11 +1311,6 @@ func (p *GLiNERPipeline) removeOverlappingEntities(entities []GLiNEREntity) []GL
 	}
 
 	return result
-}
-
-// sigmoid applies the sigmoid function.
-func sigmoid(x float32) float32 {
-	return float32(1.0 / (1.0 + math.Exp(-float64(x))))
 }
 
 // Backend returns the backend type this pipeline uses.
@@ -1040,7 +1541,26 @@ func (p *GLiNERPipeline) ClearLabelEmbeddingCache() {
 
 // SupportsRelationExtraction returns true if the model supports relation extraction.
 func (p *GLiNERPipeline) SupportsRelationExtraction() bool {
-	return p.Config != nil && p.Config.ModelType == GLiNERModelMultiTask && len(p.Config.RelationLabels) > 0
+	if p.Config == nil {
+		return false
+	}
+	// GLiNER2 and MultiTask models support relation extraction
+	isRelationCapable := p.Config.ModelType == GLiNERModelMultiTask ||
+		p.Config.ModelType == GLiNERModelGLiNER2
+	return isRelationCapable
+}
+
+// SupportsClassification returns true if the model supports text classification.
+func (p *GLiNERPipeline) SupportsClassification() bool {
+	if p.Config == nil {
+		return false
+	}
+	return p.Config.ModelType == GLiNERModelGLiNER2
+}
+
+// IsGLiNER2 returns true if this is a GLiNER2 model.
+func (p *GLiNERPipeline) IsGLiNER2() bool {
+	return p.Config != nil && p.Config.ModelType == GLiNERModelGLiNER2
 }
 
 // ============================================================================

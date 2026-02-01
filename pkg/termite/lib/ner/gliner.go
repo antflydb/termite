@@ -52,6 +52,9 @@ const (
 	GLiNERModelTokenLevel GLiNERModelType = "token_level"
 	// GLiNERModelMultiTask supports multiple tasks: NER, classification, QA, relation extraction.
 	GLiNERModelMultiTask GLiNERModelType = "multitask"
+	// GLiNERModelGLiNER2 is the unified GLiNER2 multi-task model from Fastino.
+	// Supports NER, classification, structured extraction, and relation extraction.
+	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
 )
 
 // GLiNERConfig holds configuration for GLiNER models.
@@ -72,6 +75,8 @@ type GLiNERConfig struct {
 	RelationLabels []string `json:"relation_labels,omitempty"`
 	// RelationThreshold is the score threshold for relationship detection (0.0-1.0).
 	RelationThreshold float32 `json:"relation_threshold,omitempty"`
+	// Capabilities lists the model's capabilities (e.g., "ner", "zeroshot", "classification", "relations").
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // DefaultGLiNERConfig returns a GLiNERConfig with sensible defaults.
@@ -113,6 +118,14 @@ func LoadGLiNERConfig(modelPath string) GLiNERConfig {
 // detectGLiNERModelType attempts to detect the model type from the model name.
 func detectGLiNERModelType(modelPath string) GLiNERModelType {
 	modelName := strings.ToLower(filepath.Base(modelPath))
+	parentDir := strings.ToLower(filepath.Base(filepath.Dir(modelPath)))
+
+	// Check for GLiNER2 models (from Fastino)
+	// GLiNER2 models have "gliner2" in name or are from "fastino" organization
+	if strings.Contains(modelName, "gliner2") ||
+		(strings.Contains(parentDir, "fastino") && strings.Contains(modelName, "gliner")) {
+		return GLiNERModelGLiNER2
+	}
 
 	switch {
 	case strings.Contains(modelName, "multitask"):
@@ -362,7 +375,7 @@ func (p *PooledGLiNER) Labels() []string {
 }
 
 // ExtractRelations extracts both entities and relationships between them.
-// This requires a multitask GLiNER model that supports relation extraction.
+// This requires a GLiNER2 or multitask GLiNER model that supports relation extraction.
 // Returns ErrNotSupported if the model doesn't have the "relations" capability.
 // Implements ner.Recognizer interface.
 func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]Entity, [][]Relation, error) {
@@ -391,20 +404,19 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
 	pipeline := p.pipelineList[idx]
 
-	p.logger.Debug("Starting GLiNER recognition with relations",
+	p.logger.Debug("Starting GLiNER relation extraction",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
 		zap.Strings("entity_labels", entityLabels),
 		zap.Strings("relation_labels", relationLabels))
 
-	// For now, relation extraction is not implemented in the new pipeline
-	// Just extract entities and return empty relations
-	output, err := pipeline.RecognizeWithLabels(ctx, texts, entityLabels)
+	// Use the pipeline's ExtractRelations method for GLiNER2
+	output, err := pipeline.ExtractRelations(ctx, texts, entityLabels, relationLabels)
 	if err != nil {
-		p.logger.Error("GLiNER recognition with relations failed",
+		p.logger.Error("GLiNER relation extraction failed",
 			zap.Int("pipelineIndex", idx),
 			zap.Error(err))
-		return nil, nil, fmt.Errorf("running GLiNER with relations: %w", err)
+		return nil, nil, fmt.Errorf("extracting relations: %w", err)
 	}
 
 	// Convert entities
@@ -413,10 +425,13 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 		entities[i] = convertGLiNEREntities(ents)
 	}
 
-	// Return empty relations (not yet implemented)
+	// Convert relations
 	relations := make([][]Relation, len(texts))
+	for i, rels := range output.Relations {
+		relations[i] = convertGLiNERRelations(rels)
+	}
 
-	p.logger.Debug("GLiNER recognition with relations completed",
+	p.logger.Debug("GLiNER relation extraction completed",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
 		zap.Int("total_entities", countGLiNEREntities(entities)),
@@ -527,7 +542,144 @@ func (p *PooledGLiNER) SupportsRelationExtraction() bool {
 
 // SupportsQA returns true if the model supports question answering.
 func (p *PooledGLiNER) SupportsQA() bool {
-	return p.config.ModelType == GLiNERModelMultiTask
+	return p.config.ModelType == GLiNERModelMultiTask ||
+		p.config.ModelType == GLiNERModelGLiNER2
+}
+
+// SupportsClassification returns true if the model supports text classification.
+func (p *PooledGLiNER) SupportsClassification() bool {
+	// Check config capabilities first
+	for _, cap := range p.config.Capabilities {
+		if cap == "classification" {
+			return true
+		}
+	}
+	// Fall back to model type check
+	return p.config.ModelType == GLiNERModelGLiNER2
+}
+
+// IsGLiNER2 returns true if this is a GLiNER2 model.
+func (p *PooledGLiNER) IsGLiNER2() bool {
+	return p.config.ModelType == GLiNERModelGLiNER2
+}
+
+// Capabilities returns the capabilities from the GLiNER config.
+// Returns nil if no capabilities are specified.
+func (p *PooledGLiNER) Capabilities() []string {
+	return p.config.Capabilities
+}
+
+// =============================================================================
+// Classification Methods (GLiNER2 only)
+// =============================================================================
+
+// Classification represents a text classification result.
+type Classification struct {
+	// Label is the classification label
+	Label string `json:"label"`
+	// Score is the confidence score (0.0 to 1.0)
+	Score float32 `json:"score"`
+}
+
+// ClassificationConfig holds configuration for classification.
+type ClassificationConfig struct {
+	// Threshold is the score threshold for positive classification
+	Threshold float32
+	// MultiLabel if true, allow multiple labels per text
+	MultiLabel bool
+	// TopK returns top K predictions (0 = all above threshold)
+	TopK int
+}
+
+// DefaultClassificationConfig returns sensible defaults for classification.
+func DefaultClassificationConfig() ClassificationConfig {
+	return ClassificationConfig{
+		Threshold:  0.5,
+		MultiLabel: false,
+		TopK:       1,
+	}
+}
+
+// ClassifyText performs zero-shot text classification using GLiNER2.
+// This treats the entire text as a single span and scores it against each label.
+// Returns ErrNotSupported if the model doesn't support classification.
+func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels []string, config *ClassificationConfig) ([][]Classification, error) {
+	if len(texts) == 0 {
+		return [][]Classification{}, nil
+	}
+
+	if !p.SupportsClassification() {
+		return nil, ErrNotSupported
+	}
+
+	if len(labels) == 0 {
+		return nil, fmt.Errorf("classification labels are required")
+	}
+
+	if config == nil {
+		defaultConfig := DefaultClassificationConfig()
+		config = &defaultConfig
+	}
+
+	// Acquire semaphore slot
+	if err := p.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	}
+	defer p.sem.Release(1)
+
+	// Round-robin pipeline selection
+	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+	pipeline := p.pipelineList[idx]
+
+	p.logger.Debug("Starting GLiNER2 classification",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)),
+		zap.Strings("labels", labels),
+		zap.Bool("multi_label", config.MultiLabel))
+
+	// Convert config to pipeline format
+	pipelineConfig := &pipelines.GLiNER2ClassificationConfig{
+		Threshold:  config.Threshold,
+		MultiLabel: config.MultiLabel,
+		TopK:       config.TopK,
+	}
+
+	// Use the pipeline's ClassifyText method
+	output, err := pipeline.ClassifyText(ctx, texts, labels, pipelineConfig)
+	if err != nil {
+		p.logger.Error("GLiNER2 classification failed",
+			zap.Int("pipelineIndex", idx),
+			zap.Error(err))
+		return nil, fmt.Errorf("classifying text: %w", err)
+	}
+
+	// Convert pipeline output to our Classification type
+	results := make([][]Classification, len(texts))
+	for i, classifications := range output {
+		results[i] = make([]Classification, len(classifications))
+		for j, c := range classifications {
+			results[i][j] = Classification{
+				Label: c.Label,
+				Score: c.Score,
+			}
+		}
+	}
+
+	p.logger.Debug("GLiNER2 classification completed",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)),
+		zap.Int("total_classifications", countClassifications(results)))
+
+	return results, nil
+}
+
+// countClassifications counts the total number of classifications.
+func countClassifications(results [][]Classification) int {
+	count := 0
+	for _, classifications := range results {
+		count += len(classifications)
+	}
+	return count
 }
 
 // =============================================================================
