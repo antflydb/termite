@@ -9,10 +9,10 @@ git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm9
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
 github.com/ajroetker/go-highway v0.0.3 h1:8Qbsg8PuUSkP2xnFB6QV2ajDDANB8VA+Wlt3ESdpqMs=
 github.com/ajroetker/go-highway v0.0.3/go.mod h1:YQ+hWNP2rFw8S+ba/qdNJ5p+/+23oS5W00OS8pV6qoU=
-github.com/ajroetker/gomlx v0.0.0-antfly002 h1:tr7yikUQOgIVRT99xV9qDLBPd8v9oUHr7T37jSvMXn4=
-github.com/ajroetker/gomlx v0.0.0-antfly002/go.mod h1:7VWYppVaTmZxMSP9S7ihHsekDz0PXuHpI+crBmSK1Cs=
-github.com/ajroetker/onnx-gomlx v0.0.0-antfly001 h1:1PDqTGmUB7a+Pu2gss8BfAZgjLDKc46dt6uzmNA6SvU=
-github.com/ajroetker/onnx-gomlx v0.0.0-antfly001/go.mod h1:sZBo/gF6DDxZkBVDUERHLKusYB9hENVIZBw0JLjLM3g=
+github.com/ajroetker/gomlx v0.0.0-antfly003 h1:YYYpql9esy109EayCAVR2kl1IzTt9zq7M7RuQ8ixD1U=
+github.com/ajroetker/gomlx v0.0.0-antfly003/go.mod h1:7VWYppVaTmZxMSP9S7ihHsekDz0PXuHpI+crBmSK1Cs=
+github.com/ajroetker/onnx-gomlx v0.0.0-antfly002 h1:jhFhzwgChAyM6ffBYQYK0Qa9UAqWx4qLY9/z6jzSDn8=
+github.com/ajroetker/onnx-gomlx v0.0.0-antfly002/go.mod h1:sZBo/gF6DDxZkBVDUERHLKusYB9hENVIZBw0JLjLM3g=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44 h1:7nYpfY9Nsuuv9Hyw0YzQR1sO4Bei2YVea4n9gQq+lcg=

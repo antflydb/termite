@@ -5,7 +5,7 @@ go 1.26rc2
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44
 	github.com/antflydb/termite/pkg/client v0.0.0
-	github.com/antflydb/termite/pkg/termite v0.0.0
+	github.com/antflydb/termite/pkg/termite v0.0.0-00010101000000-000000000000
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
@@ -33,7 +33,7 @@ require (
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6 // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
-	github.com/gomlx/onnx-gomlx v0.3.5-0.20260130173634-2497f2c7652f // indirect
+	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
@@ -90,6 +90,6 @@ replace github.com/antflydb/termite/pkg/client => ../pkg/client
 
 replace github.com/antflydb/termite/pkg/termite => ../pkg/termite
 
-replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly002
+replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
 
-replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly001
+replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly002

@@ -13,7 +13,7 @@ require (
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
-	github.com/gomlx/onnx-gomlx v0.3.5-0.20260130173634-2497f2c7652f
+	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.0.3
 	github.com/oapi-codegen/runtime v1.1.2
@@ -107,6 +107,6 @@ require (
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 
-replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly002
+replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
 
-replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly001
+replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly002
