@@ -190,15 +190,17 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 
 // buildCLAPAudioConfig returns audio config for CLAP models.
 // CLAP uses 48kHz sample rate, 64 mel bins, and 10 second max length.
+// Uses simple normalization (not Whisper-specific).
 func buildCLAPAudioConfig() *backends.AudioConfig {
 	return &backends.AudioConfig{
-		SampleRate:   48000,
-		FeatureSize:  64,
-		NFft:         1024,
-		HopLength:    480,
-		ChunkLength:  10,
-		NMels:        64,
-		PaddingValue: 0.0,
+		SampleRate:    48000,
+		FeatureSize:   64,
+		NFft:          1024,
+		HopLength:     480,
+		ChunkLength:   10,
+		NMels:         64,
+		PaddingValue:  0.0,
+		Normalization: backends.AudioNormSimple,
 	}
 }
 

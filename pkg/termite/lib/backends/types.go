@@ -311,6 +311,19 @@ func DefaultImageConfig() *ImageConfig {
 	}
 }
 
+// AudioNormalizationType specifies how to normalize mel spectrogram features.
+type AudioNormalizationType string
+
+const (
+	// AudioNormWhisper uses Whisper-specific normalization:
+	// log10, clip to (globalMax - 8.0), then (x + 4.0) / 4.0
+	AudioNormWhisper AudioNormalizationType = "whisper"
+
+	// AudioNormSimple uses simple log normalization without Whisper-specific scaling.
+	// Suitable for CLAP and other audio models.
+	AudioNormSimple AudioNormalizationType = "simple"
+)
+
 // AudioConfig holds configuration for audio preprocessing.
 type AudioConfig struct {
 	// SampleRate is the target sample rate (typically 16000 for speech models).
@@ -327,18 +340,22 @@ type AudioConfig struct {
 	NMels int
 	// PaddingValue is the value to pad with (typically 0.0).
 	PaddingValue float32
+	// Normalization specifies the normalization type for mel spectrograms.
+	// Defaults to AudioNormWhisper if empty for backward compatibility.
+	Normalization AudioNormalizationType
 }
 
 // DefaultAudioConfig returns sensible defaults for Whisper-style models.
 func DefaultAudioConfig() *AudioConfig {
 	return &AudioConfig{
-		SampleRate:   16000,
-		FeatureSize:  80,
-		NFft:         400,
-		HopLength:    160,
-		ChunkLength:  30,
-		NMels:        80,
-		PaddingValue: 0.0,
+		SampleRate:    16000,
+		FeatureSize:   80,
+		NFft:          400,
+		HopLength:     160,
+		ChunkLength:   30,
+		NMels:         80,
+		PaddingValue:  0.0,
+		Normalization: AudioNormWhisper,
 	}
 }
 
