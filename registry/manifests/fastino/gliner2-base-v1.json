@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 2,
+  "name": "gliner2-base-v1",
+  "owner": "fastino",
+  "type": "recognizer",
+  "description": "GLiNER2 unified multi-task model for NER, classification, structured extraction, and relation extraction. Uses DeBERTa-v3-base encoder with 205M parameters.",
+  "source": "fastino/gliner2-base-v1",
+  "files": [
+    {
+      "name": "model.onnx",
+      "digest": "sha256:8d4d31075ed7798b633c7cde5bcf637b31ac462321be542f628644e81857e2aa",
+      "size": 806805834
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:1b7fbabfb4c690bed84c6793bfecae9b8dfe205751b04f9ffd1e76a1e7df9c16",
+      "size": 8650701
+    },
+    {
+      "name": "spm.model",
+      "digest": "sha256:c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd",
+      "size": 2464616
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:d53b9e4665ea984792aab93a0b49a326500105b1144e763da1550957b57a7ffa",
+      "size": 3236
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:84ea70143f533d7e99b393d87f20010887a9ac2cba955828ef313886e4e83f4f",
+      "size": 2414
+    },
+    {
+      "name": "added_tokens.json",
+      "digest": "sha256:3c274ca559be8b7b18febf616724ec05f8a8abccd428bd2744608f45f7a0b067",
+      "size": 230
+    },
+    {
+      "name": "gliner_config.json",
+      "digest": "sha256:70254eaca6b5a55dd262e1d061109810cacab6184d0aa26c9ae61d898676e146",
+      "size": 365
+    }
+  ],
+  "capabilities": [
+    "labels",
+    "zeroshot",
+    "relations",
+    "classification"
+  ],
+  "backends": [
+    "onnx"
+  ]
+}

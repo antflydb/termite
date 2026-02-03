@@ -315,12 +315,19 @@ def detect_recognizer_type(model_id: str) -> tuple[str, list[str]]:
 
     Returns:
         tuple of (architecture, capabilities):
-        - architecture: "gliner", "rebel", or "ner"
+        - architecture: "gliner2", "gliner", "rebel", or "ner"
         - capabilities: list of detected capabilities
     """
     model_id_lower = model_id.lower()
 
-    # GLiNER models
+    # GLiNER2 models (unified multi-task model from Fastino)
+    if "gliner2" in model_id_lower or (
+        "fastino" in model_id_lower and "gliner" in model_id_lower
+    ):
+        capabilities = ["labels", "zeroshot", "classification", "relations"]
+        return "gliner2", capabilities
+
+    # GLiNER v1 models
     if "gliner" in model_id_lower:
         capabilities = ["labels", "zeroshot"]
         # Multitask GLiNER models support relations and QA
@@ -336,9 +343,21 @@ def detect_recognizer_type(model_id: str) -> tuple[str, list[str]]:
     return "ner", ["labels"]
 
 
+def is_gliner2_model(model_id: str) -> bool:
+    """Check if model ID is a GLiNER2 model."""
+    model_id_lower = model_id.lower()
+    return "gliner2" in model_id_lower or (
+        "fastino" in model_id_lower and "gliner" in model_id_lower
+    )
+
+
 def is_gliner_model(model_id: str) -> bool:
-    """Check if model ID is a GLiNER model."""
-    return "gliner" in model_id.lower()
+    """Check if model ID is a GLiNER v1 model (not GLiNER2)."""
+    model_id_lower = model_id.lower()
+    # Exclude GLiNER2 models
+    if is_gliner2_model(model_id):
+        return False
+    return "gliner" in model_id_lower
 
 
 def is_rebel_model(model_id: str) -> bool:
@@ -821,6 +840,82 @@ def export_gliner_model(
     except Exception as e:
         logger.warning(f"  Could not save tokenizer: {e}")
 
+    return output_dir
+
+
+def export_gliner2_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+) -> Path:
+    """
+    Export a GLiNER2 multi-task model to ONNX format.
+
+    GLiNER2 is a unified model supporting NER, classification, structured
+    extraction, and relation extraction. Unlike GLiNER v1, it requires
+    manual ONNX export since there's no built-in export_to_onnx() method.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., fastino/gliner2-base-v1)
+        output_dir: Directory to save the model
+        variants: List of variant types to create (e.g., ["f16", "i8"])
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    variants = variants or []
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Exporting GLiNER2 model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Use the dedicated GLiNER2 export script
+    script_path = Path(__file__).parent / "export_gliner2_onnx.py"
+
+    if not script_path.exists():
+        raise FileNotFoundError(
+            f"GLiNER2 export script not found: {script_path}\n"
+            "Please ensure export_gliner2_onnx.py is in the scripts directory."
+        )
+
+    # Build command
+    cmd = [
+        sys.executable,
+        str(script_path),
+        model_id,
+        str(output_dir),
+    ]
+
+    if variants:
+        cmd.extend(["--variants"] + variants)
+
+    cmd.append("--test")  # Run inference test after export
+
+    logger.info(f"Running: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        logger.info(result.stdout)
+        if result.stderr:
+            logger.warning(result.stderr)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"GLiNER2 export failed:\n{e.stdout}\n{e.stderr}")
+        raise RuntimeError(f"GLiNER2 export failed: {e}")
+
+    # Verify required files exist
+    required_files = ["model.onnx", "gliner_config.json"]
+    for fname in required_files:
+        fpath = output_dir / fname
+        if not fpath.exists():
+            raise FileNotFoundError(f"Expected file not found: {fpath}")
+
+    logger.info(f"GLiNER2 export complete: {output_dir}")
     return output_dir
 
 
@@ -2772,6 +2867,8 @@ def cmd_export(args):
         export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
     elif args.model_type == "reader":
         export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
+    elif recognizer_arch == "gliner2":
+        export_gliner2_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "gliner":
         export_gliner_model(model_id, model_dir, args.variants)
     elif recognizer_arch == "rebel":

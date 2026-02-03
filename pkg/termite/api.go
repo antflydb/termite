@@ -1386,8 +1386,10 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
-	// Check if classification is available
-	if ln.classifierRegistry == nil || len(ln.classifierRegistry.List()) == 0 {
+	// Check if classification is available (from either classifier registry or NER registry with GLiNER2)
+	hasClassifiers := ln.classifierRegistry != nil && len(ln.classifierRegistry.List()) > 0
+	hasNERClassifiers := ln.nerRegistry != nil && len(ln.nerRegistry.ListClassificationCapable()) > 0
+	if !hasClassifiers && !hasNERClassifiers {
 		http.Error(w, "classification not available: no models configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -1433,68 +1435,125 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get model from registry
-	classifier, err := ln.classifierRegistry.Get(req.Model)
-	if err != nil {
-		ln.logger.Error("failed to get classifier model",
-			zap.String("model", req.Model),
-			zap.Error(err))
-		http.Error(w, fmt.Sprintf("failed to load model %s: %v", req.Model, err), http.StatusInternalServerError)
-		return
-	}
+	var results [][]ClassifyResult
 
-	// Perform classification
-	var classifyResults [][]classification.Classification
-	var classifyErr error
+	// First, try to get the model from the classifier registry
+	if ln.classifierRegistry != nil {
+		classifier, err := ln.classifierRegistry.Get(req.Model)
+		if err == nil {
+			// Found in classifier registry - use NLI-based classification
+			var classifyResults [][]classification.Classification
+			var classifyErr error
 
-	// Use custom hypothesis template if provided, otherwise use default
-	if req.HypothesisTemplate != "" {
-		classifyResults, classifyErr = classifier.ClassifyWithHypothesis(r.Context(), req.Texts, req.Labels, req.HypothesisTemplate)
-	} else if req.MultiLabel {
-		classifyResults, classifyErr = classifier.MultiLabelClassify(r.Context(), req.Texts, req.Labels)
-	} else {
-		classifyResults, classifyErr = classifier.Classify(r.Context(), req.Texts, req.Labels)
-	}
-
-	if classifyErr != nil {
-		ln.logger.Error("classification failed",
-			zap.String("model", req.Model),
-			zap.Int("num_texts", len(req.Texts)),
-			zap.Strings("labels", req.Labels),
-			zap.Error(classifyErr))
-		http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
-		return
-	}
-
-	// Convert to API response format
-	results := make([][]ClassifyResult, len(classifyResults))
-	for i, textResults := range classifyResults {
-		results[i] = make([]ClassifyResult, len(textResults))
-		for j, c := range textResults {
-			results[i][j] = ClassifyResult{
-				Label: c.Label,
-				Score: c.Score,
+			// Use custom hypothesis template if provided, otherwise use default
+			if req.HypothesisTemplate != "" {
+				classifyResults, classifyErr = classifier.ClassifyWithHypothesis(r.Context(), req.Texts, req.Labels, req.HypothesisTemplate)
+			} else if req.MultiLabel {
+				classifyResults, classifyErr = classifier.MultiLabelClassify(r.Context(), req.Texts, req.Labels)
+			} else {
+				classifyResults, classifyErr = classifier.Classify(r.Context(), req.Texts, req.Labels)
 			}
+
+			if classifyErr != nil {
+				ln.logger.Error("classification failed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Strings("labels", req.Labels),
+					zap.Error(classifyErr))
+				http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
+				return
+			}
+
+			// Convert to API response format
+			results = make([][]ClassifyResult, len(classifyResults))
+			for i, textResults := range classifyResults {
+				results[i] = make([]ClassifyResult, len(textResults))
+				for j, c := range textResults {
+					results[i][j] = ClassifyResult{
+						Label: c.Label,
+						Score: c.Score,
+					}
+				}
+			}
+
+			ln.logger.Info("classify request completed (NLI classifier)",
+				zap.String("model", req.Model),
+				zap.Int("num_texts", len(req.Texts)),
+				zap.Int("num_labels", len(req.Labels)))
+
+			// Send response
+			resp := ClassifyResponse{
+				Model:           req.Model,
+				Classifications: results,
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				ln.logger.Error("encoding response", zap.Error(err))
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		// Model not found in classifier registry, continue to check NER registry
+	}
+
+	// Try to get a classifier from NER registry
+	if ln.nerRegistry != nil {
+		classifier, err := ln.nerRegistry.GetClassifier(req.Model)
+		if err == nil {
+			// Found model with classification support
+			config := &ner.ClassificationConfig{
+				MultiLabel: req.MultiLabel,
+				Threshold:  0.0, // Return all scores, let caller filter
+			}
+
+			classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
+			if classifyErr != nil {
+				ln.logger.Error("classification failed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Strings("labels", req.Labels),
+					zap.Error(classifyErr))
+				http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
+				return
+			}
+
+			// Convert ner.Classification to API response format
+			results = make([][]ClassifyResult, len(classifyResults))
+			for i, textResults := range classifyResults {
+				results[i] = make([]ClassifyResult, len(textResults))
+				for j, c := range textResults {
+					results[i][j] = ClassifyResult{
+						Label: c.Label,
+						Score: c.Score,
+					}
+				}
+			}
+
+			ln.logger.Info("classify request completed",
+				zap.String("model", req.Model),
+				zap.Int("num_texts", len(req.Texts)),
+				zap.Int("num_labels", len(req.Labels)))
+
+			// Send response
+			resp := ClassifyResponse{
+				Model:           req.Model,
+				Classifications: results,
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				ln.logger.Error("encoding response", zap.Error(err))
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
 		}
 	}
 
-	ln.logger.Info("classify request completed",
-		zap.String("model", req.Model),
-		zap.Int("num_texts", len(req.Texts)),
-		zap.Int("num_labels", len(req.Labels)))
-
-	// Send response
-	resp := ClassifyResponse{
-		Model:           req.Model,
-		Classifications: results,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		ln.logger.Error("encoding response", zap.Error(err))
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	// Model not found in either registry
+	ln.logger.Error("failed to get classifier model",
+		zap.String("model", req.Model))
+	http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 }
 
 // handleApiRead handles reading/OCR requests using Vision2Seq models

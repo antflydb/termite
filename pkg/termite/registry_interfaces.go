@@ -37,14 +37,20 @@ type NERRegistryInterface interface {
 	Get(modelName string) (ner.Model, error)
 	// GetRecognizer retrieves a GLiNER/REBEL recognizer by name
 	GetRecognizer(modelName string) (ner.Recognizer, error)
+	// GetClassifier retrieves a model that supports text classification
+	GetClassifier(modelName string) (ner.Classifier, error)
 	// List returns all available model names
 	List() []string
 	// ListRecognizers returns names of models that support GLiNER/REBEL recognition
 	ListRecognizers() []string
+	// ListClassificationCapable returns names of models that support classification
+	ListClassificationCapable() []string
 	// ListWithCapabilities returns a map of model names to their capabilities
 	ListWithCapabilities() map[string][]string
 	// HasCapability checks if a model has a specific capability
 	HasCapability(modelName, capability string) bool
+	// SupportsClassification returns true if the model supports text classification
+	SupportsClassification(modelName string) bool
 	// IsRecognizer checks if a model supports GLiNER/REBEL recognition
 	IsRecognizer(modelName string) bool
 	// Close shuts down the registry and releases resources

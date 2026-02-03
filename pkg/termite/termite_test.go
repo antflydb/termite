@@ -470,6 +470,18 @@ func (m *MockNERRegistry) Close() error {
 	return nil
 }
 
+func (m *MockNERRegistry) GetClassifier(modelName string) (ner.Classifier, error) {
+	return nil, fmt.Errorf("classifier not found: %s", modelName)
+}
+
+func (m *MockNERRegistry) ListClassificationCapable() []string {
+	return nil
+}
+
+func (m *MockNERRegistry) SupportsClassification(modelName string) bool {
+	return false
+}
+
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
