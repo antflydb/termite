@@ -515,9 +515,10 @@ type onnxModel struct {
 	ctx             *mlctx.Context
 	engine          backends.Backend
 	exec            *mlctx.Exec // Cached compiled inference graph
-	hasTokenTypeIds bool
-	modelType       onnxModelType
-	inputNames      []string // ONNX model input names
+	hasAttentionMask bool
+	hasTokenTypeIds  bool
+	modelType        onnxModelType
+	inputNames       []string // ONNX model input names
 
 	mu sync.Mutex
 }
@@ -539,10 +540,13 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 
 	// Detect model type and input characteristics from ONNX input names.
 	inputNames, _ := om.Inputs()
+	hasAttentionMask := false
 	hasTokenTypeIds := false
 	modelType := onnxModelText // default
 	for _, name := range inputNames {
 		switch name {
+		case "attention_mask":
+			hasAttentionMask = true
 		case "token_type_ids":
 			hasTokenTypeIds = true
 		case "pixel_values":
@@ -571,9 +575,10 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 		onnxModel:       om,
 		ctx:             ctx,
 		engine:          engine,
-		hasTokenTypeIds: hasTokenTypeIds,
-		modelType:       modelType,
-		inputNames:      inputNames,
+		hasAttentionMask: hasAttentionMask,
+		hasTokenTypeIds:  hasTokenTypeIds,
+		modelType:        modelType,
+		inputNames:       inputNames,
 	}
 
 	// Pre-compile the inference graph for efficiency.
@@ -594,11 +599,15 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 func (m *onnxModel) compile(buckets bucketConfig) error {
 	graphFn := func(mlCtx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
 		inputMap := map[string]*graph.Node{
-			"input_ids":      inputs[0],
-			"attention_mask": inputs[1],
+			"input_ids": inputs[0],
 		}
-		if len(inputs) > 2 {
-			inputMap["token_type_ids"] = inputs[2]
+		idx := 1
+		if m.hasAttentionMask {
+			inputMap["attention_mask"] = inputs[idx]
+			idx++
+		}
+		if idx < len(inputs) {
+			inputMap["token_type_ids"] = inputs[idx]
 		}
 		return m.onnxModel.CallGraph(mlCtx.Reuse(), inputs[0].Graph(), inputMap)
 	}
@@ -623,13 +632,14 @@ func (m *onnxModel) compile(buckets bucketConfig) error {
 			for _, s := range seqBuckets {
 				b, s := b, s
 				eg.Go(func() error {
-					ids := tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s)
-					mask := tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s)
-					if m.hasTokenTypeIds {
-						tids := tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s)
-						return m.exec.PreCompile(ids, mask, tids)
+					args := []any{tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s)}
+					if m.hasAttentionMask {
+						args = append(args, tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s))
 					}
-					return m.exec.PreCompile(ids, mask)
+					if m.hasTokenTypeIds {
+						args = append(args, tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s))
+					}
+					return m.exec.PreCompile(args...)
 				})
 			}
 		}
@@ -690,7 +700,7 @@ func (m *onnxModel) forward(ctx context.Context, inputs *ModelInputs) (*ModelOut
 	return m.parseOutput(results, batchSize)
 }
 
-// execText runs the text encoder path (input_ids + attention_mask).
+// execText runs the text encoder path (input_ids + optional attention_mask).
 func (m *onnxModel) execText(inputIDs, attentionMask [][]int32) (*ModelOutput, error) {
 	batchSize := len(inputIDs)
 	if batchSize == 0 {
@@ -701,30 +711,47 @@ func (m *onnxModel) execText(inputIDs, attentionMask [][]int32) (*ModelOutput, e
 
 	// Create input tensors (ONNX typically expects int64)
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	flatAttentionMask := make([]int64, batchSize*seqLen)
 	for i := range batchSize {
 		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
-			flatAttentionMask[i*seqLen+j] = int64(attentionMask[i][j])
 		}
 	}
-
 	inputIDsTensor := tensors.FromFlatDataAndDimensions(flatInputIDs, batchSize, seqLen)
-	attentionMaskTensor := tensors.FromFlatDataAndDimensions(flatAttentionMask, batchSize, seqLen)
+
+	var flatAttentionMask []int64
+	var attentionMaskTensor *tensors.Tensor
+	if m.hasAttentionMask {
+		flatAttentionMask = make([]int64, batchSize*seqLen)
+		for i := range batchSize {
+			for j := range seqLen {
+				flatAttentionMask[i*seqLen+j] = int64(attentionMask[i][j])
+			}
+		}
+		attentionMaskTensor = tensors.FromFlatDataAndDimensions(flatAttentionMask, batchSize, seqLen)
+	}
 
 	// Execute using the cached compiled graph
 	var results []*tensors.Tensor
 	var err error
 	if m.exec != nil {
+		args := []any{inputIDsTensor}
+		if m.hasAttentionMask {
+			args = append(args, attentionMaskTensor)
+		}
 		if m.hasTokenTypeIds {
 			flatTokenTypeIds := make([]int64, batchSize*seqLen)
 			tokenTypeIdsTensor := tensors.FromFlatDataAndDimensions(flatTokenTypeIds, batchSize, seqLen)
-			results, err = m.exec.Exec(inputIDsTensor, attentionMaskTensor, tokenTypeIdsTensor)
-		} else {
-			results, err = m.exec.Exec(inputIDsTensor, attentionMaskTensor)
+			args = append(args, tokenTypeIdsTensor)
 		}
+		results, err = m.exec.Exec(args...)
 	} else {
-		results, err = m.execOnce([]string{"input_ids", "attention_mask"}, inputIDsTensor, attentionMaskTensor)
+		names := []string{"input_ids"}
+		inputTensors := []*tensors.Tensor{inputIDsTensor}
+		if m.hasAttentionMask {
+			names = append(names, "attention_mask")
+			inputTensors = append(inputTensors, attentionMaskTensor)
+		}
+		results, err = m.execOnce(names, inputTensors...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("exec failed: %w", err)

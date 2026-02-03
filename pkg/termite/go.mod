@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/termite
 go 1.26rc2
 
 require (
-	github.com/ajroetker/go-highway v0.0.1
+	github.com/ajroetker/go-highway v0.0.3
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.24.0
@@ -12,7 +12,7 @@ require (
 	github.com/goccy/go-json v0.10.5
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
-	github.com/gomlx/gomlx v0.26.1-0.20260201092540-7e0f97c4625b
+	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/gomlx/onnx-gomlx v0.3.5-0.20260130173634-2497f2c7652f
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.0.3
@@ -106,3 +106,7 @@ require (
 )
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+
+replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly002
+
+replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly001

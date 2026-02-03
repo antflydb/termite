@@ -6,13 +6,13 @@ require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0
-	github.com/gomlx/gomlx v0.26.1-0.20260201092540-7e0f97c4625b
+	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.1 // indirect
+	github.com/ajroetker/go-highway v0.0.3 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -89,3 +89,7 @@ require (
 replace github.com/antflydb/termite/pkg/client => ../pkg/client
 
 replace github.com/antflydb/termite/pkg/termite => ../pkg/termite
+
+replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly002
+
+replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly001
