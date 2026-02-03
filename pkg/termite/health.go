@@ -65,8 +65,8 @@ func (ln *TermiteNode) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if ln.embedderRegistry != nil {
 		resp.Models.Embedders = len(ln.embedderRegistry.List())
 	}
-	if ln.cachedChunker != nil {
-		resp.Models.Chunkers = len(ln.cachedChunker.ListModels())
+	if ln.chunker != nil {
+		resp.Models.Chunkers = len(ln.chunker.ListModels())
 	}
 	if ln.rerankerRegistry != nil {
 		resp.Models.Rerankers = len(ln.rerankerRegistry.List())

@@ -33,26 +33,20 @@ type TermiteNode struct {
 
 	client *http.Client
 
-	// Embedder registry (lazy loading with TTL-based unloading)
-	embedderRegistry *EmbedderRegistry
-
-	cachedChunker         *CachedChunker
+	embedderRegistry      EmbedderRegistryInterface
+	readerRegistry        ReaderRegistryInterface
+	transcriberRegistry   TranscriberRegistryInterface
+	chunker               ChunkerInterface
 	rerankerRegistry      RerankerRegistryInterface
-	generatorRegistry     *GeneratorRegistry
+	generatorRegistry     GeneratorRegistryInterface
 	nerRegistry           NERRegistryInterface
-	seq2seqRegistry       *Seq2SeqRegistry
-	classifierRegistry    *ClassifierRegistry
+	seq2seqRegistry       Seq2SeqRegistryInterface
+	classifierRegistry    ClassifierRegistryInterface
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
-
-	// Reader registry (lazy loading with TTL-based unloading)
-	readerRegistry *ReaderRegistry
-
-	// Transcriber registry (lazy loading with TTL-based unloading)
-	transcriberRegistry *TranscriberRegistry
 
 	// Caches for embeddings, reranking, NER, and reading
 	embeddingCache *EmbeddingCache
@@ -501,7 +495,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		logger: zl,
 
 		embedderRegistry:      embedderRegistry,
-		cachedChunker:         cachedChunker,
+		chunker:               cachedChunker,
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,

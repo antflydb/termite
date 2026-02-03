@@ -108,7 +108,7 @@
         "i8"
       ],
       "capabilities": [
-        "multimodal"
+        "image"
       ],
       "backends": [
         "onnx"

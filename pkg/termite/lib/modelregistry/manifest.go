@@ -43,29 +43,38 @@ const (
 	ModelTypeTranscriber ModelType = "transcriber"
 )
 
+// Capability represents a model capability
+type Capability string
+
 // Model capabilities
 const (
-	// CapabilityMultimodal indicates the model can embed both images and text
-	// (e.g., CLIP models with visual_model.onnx + text_model.onnx)
-	CapabilityMultimodal = "multimodal"
+	// CapabilityImage indicates the model can embed images (e.g., CLIP visual encoder)
+	CapabilityImage Capability = "image"
+
+	// CapabilityAudio indicates the model can embed audio (e.g., CLAP audio encoder)
+	CapabilityAudio Capability = "audio"
 
 	// Recognizer capabilities - describe what extraction tasks the model supports
 
 	// CapabilityLabels indicates the model performs entity extraction (NER)
 	// extracting labeled spans from text (e.g., PER, ORG, LOC)
-	CapabilityLabels = "labels"
+	CapabilityLabels Capability = "labels"
 
 	// CapabilityZeroshot indicates the model supports arbitrary labels at inference time
 	// (e.g., GLiNER models that can extract any entity type without retraining)
-	CapabilityZeroshot = "zeroshot"
+	CapabilityZeroshot Capability = "zeroshot"
 
 	// CapabilityRelations indicates the model supports relation extraction between entities
 	// (e.g., GLiNER multitask models, REBEL)
-	CapabilityRelations = "relations"
+	CapabilityRelations Capability = "relations"
 
 	// CapabilityAnswers indicates the model supports extractive question answering
 	// (e.g., GLiNER multitask models)
-	CapabilityAnswers = "answers"
+	CapabilityAnswers Capability = "answers"
+
+	// CapabilityClassification indicates the model supports text classification
+	// (e.g., GLiNER2 models)
+	CapabilityClassification Capability = "classification"
 )
 
 // ParseModelType parses a string into a ModelType
@@ -204,7 +213,7 @@ type ModelManifest struct {
 	// Description is a human-readable description
 	Description string `json:"description,omitempty"`
 	// Capabilities lists special capabilities of the model.
-	// Valid values: "multimodal" (for CLIP-style models that embed images and text)
+	// Valid values: "image" (CLIP), "audio" (CLAP), "labels", "zeroshot", "relations", "answers", "classification"
 	Capabilities []string `json:"capabilities,omitempty"`
 	// Files lists all required files for the model (includes model.onnx)
 	Files []ModelFile `json:"files"`
@@ -275,28 +284,8 @@ func (m *ModelManifest) SupportsBackend(backend string) bool {
 }
 
 // HasCapability returns true if the model has the specified capability.
-func (m *ModelManifest) HasCapability(capability string) bool {
-	return slices.Contains(m.Capabilities, capability)
-}
-
-// IsMultimodal returns true if the model has the multimodal capability.
-func (m *ModelManifest) IsMultimodal() bool {
-	return m.HasCapability(CapabilityMultimodal)
-}
-
-// IsZeroshot returns true if the model supports zero-shot recognition (arbitrary labels).
-func (m *ModelManifest) IsZeroshot() bool {
-	return m.HasCapability(CapabilityZeroshot)
-}
-
-// SupportsRelations returns true if the model can extract relations between entities.
-func (m *ModelManifest) SupportsRelations() bool {
-	return m.HasCapability(CapabilityRelations)
-}
-
-// SupportsAnswers returns true if the model supports extractive question answering.
-func (m *ModelManifest) SupportsAnswers() bool {
-	return m.HasCapability(CapabilityAnswers)
+func (m *ModelManifest) HasCapability(capability Capability) bool {
+	return slices.Contains(m.Capabilities, string(capability))
 }
 
 // FullName returns the full owner/name format (e.g., "BAAI/bge-small-en-v1.5")
@@ -367,14 +356,31 @@ func (m *ModelManifest) Validate() error {
 	}
 
 	// Check for required ONNX files based on model type and capability
-	if m.IsMultimodal() {
-		// Multimodal embedders (CLIP) require visual_model.onnx + text_model.onnx
-		if !hasVisualOnnx || !hasTextOnnx {
-			return fmt.Errorf("multimodal embedder must include visual_model.onnx and text_model.onnx")
+	hasAudioOnnx := false
+	for _, f := range m.Files {
+		if f.Name == "audio_model.onnx" {
+			hasAudioOnnx = true
+			break
 		}
-		// Multimodal models only support ONNX runtime
+	}
+
+	if m.HasCapability(CapabilityImage) {
+		// Image embedders (CLIP) require visual_model.onnx + text_model.onnx
+		if !hasVisualOnnx || !hasTextOnnx {
+			return fmt.Errorf("image embedder must include visual_model.onnx and text_model.onnx")
+		}
+		// Image models only support ONNX runtime
 		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
-			return fmt.Errorf("multimodal embedders only support ONNX backend")
+			return fmt.Errorf("image embedders only support ONNX backend")
+		}
+	} else if m.HasCapability(CapabilityAudio) {
+		// Audio embedders (CLAP) require audio_model.onnx + text_model.onnx
+		if !hasAudioOnnx || !hasTextOnnx {
+			return fmt.Errorf("audio embedder must include audio_model.onnx and text_model.onnx")
+		}
+		// Audio models only support ONNX runtime
+		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
+			return fmt.Errorf("audio embedders only support ONNX backend")
 		}
 	} else if m.Type == ModelTypeRewriter {
 		// Seq2seq models (rewriters) require encoder.onnx + decoder.onnx

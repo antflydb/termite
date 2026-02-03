@@ -17,8 +17,8 @@
 """
 Export HuggingFace models to ONNX format and prepare for Antfly model registry.
 
-This unified script handles embedders, rerankers, chunkers, recognizers (NER/extraction),
-rewriters (seq2seq), generators (LLMs), and multimodal models, generating
+This unified script handles embedders (text, image/CLIP, audio/CLAP), rerankers, chunkers,
+recognizers (NER/extraction), rewriters (seq2seq), and generators (LLMs), generating
 the manifest files needed for the R2-hosted registry.
 
 Usage:
@@ -37,8 +37,11 @@ Usage:
     # Export a chunker
     ./export_model_to_registry.py chunker mirth/chonky_mmbert_small_multilingual_1
 
-    # Export a CLIP multimodal model with variants
-    ./export_model_to_registry.py embedder openai/clip-vit-base-patch32 --capabilities multimodal --backends onnx --variants f16 i8
+    # Export a CLIP image embedding model with variants
+    ./export_model_to_registry.py embedder openai/clip-vit-base-patch32 --capabilities image --backends onnx --variants f16 i8
+
+    # Export a CLAP audio embedding model with variants
+    ./export_model_to_registry.py embedder Xenova/clap-htsat-unfused --capabilities audio --backends onnx --variants i8
 
     # Export sentence-transformers models (sentence similarity/embeddings)
     ./export_model_to_registry.py embedder sentence-transformers/all-MiniLM-L6-v2 --variants f16 i8
@@ -197,8 +200,8 @@ MANIFEST_FILES = [
     "vocab.txt",
 ]
 
-# Additional files for multimodal models
-MULTIMODAL_MANIFEST_FILES = [
+# Additional files for CLIP image models
+CLIP_MANIFEST_FILES = [
     "visual_model.onnx",
     "visual_model.onnx.data",  # External data for large visual encoder
     "text_model.onnx",
@@ -215,6 +218,22 @@ MULTIMODAL_MANIFEST_FILES = [
     "special_tokens_map.json",
     "vocab.json",
 ]
+
+# Additional files for CLAP audio models
+CLAP_MANIFEST_FILES = [
+    "audio_model.onnx",
+    "audio_model.onnx.data",  # External data for large audio encoder
+    "text_model.onnx",
+    "text_model.onnx.data",  # External data for large text encoder
+    "tokenizer.json",
+    "config.json",
+    "clap_config.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.json",
+]
+
 
 # Files for seq2seq/rewriter models (T5, FLAN-T5, etc.)
 SEQ2SEQ_MANIFEST_FILES = [
@@ -447,9 +466,6 @@ def compute_sha256(filepath: Path) -> str:
 
 def get_ort_model_class(model_type: ModelType):
     """Get the appropriate ORT model class for the model type."""
-    if model_type == "multimodal":
-        return None  # CLIP uses custom export
-
     from optimum.onnxruntime import (
         ORTModelForFeatureExtraction,
         ORTModelForSequenceClassification,
@@ -480,16 +496,20 @@ def export_model(
         model_id: HuggingFace model ID
         output_dir: Directory to save the model
         variants: List of variant types to create (e.g., ["f16", "i8"])
-        capabilities: List of capabilities (e.g., ["multimodal"])
+        capabilities: List of capabilities (e.g., ["image", "audio"])
 
     Returns the path to the exported model directory.
     """
     variants = variants or []
     capabilities = capabilities or []
 
-    # Multimodal models (e.g., CLIP) use a special export path
-    if "multimodal" in capabilities:
-        return export_multimodal_model(model_id, output_dir, variants)
+    # CLIP image models use a special export path
+    if "image" in capabilities:
+        return export_clip_model(model_id, output_dir, variants)
+
+    # CLAP audio models use a special export path
+    if "audio" in capabilities:
+        return export_clap_model(model_id, output_dir, variants)
 
     from transformers import AutoTokenizer
     from optimum.onnxruntime import ORTQuantizer
@@ -548,7 +568,7 @@ def export_model(
     return output_dir
 
 
-def export_multimodal_model(
+def export_clip_model(
     model_id: str,
     output_dir: Path,
     variants: list[str] | None = None,
@@ -571,7 +591,7 @@ def export_multimodal_model(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Exporting multimodal (CLIP): {model_id}")
+    logger.info(f"Exporting CLIP image model: {model_id}")
     logger.info(f"Output: {output_dir}")
 
     # Load model and processor
@@ -731,6 +751,141 @@ def export_multimodal_model(
                 weight_type=QuantType.QUInt8,
             )
             logger.info("  Visual encoder quantized")
+
+            quantize_dynamic(
+                model_input=str(text_path),
+                model_output=str(output_dir / "text_model_i8.onnx"),
+                weight_type=QuantType.QUInt8,
+            )
+            logger.info("  Text encoder quantized")
+        except Exception as e:
+            logger.warning(f"Quantization failed: {e}")
+
+    return output_dir
+
+
+def export_clap_model(
+    model_id: str,
+    output_dir: Path,
+    variants: list[str] | None = None,
+) -> Path:
+    """
+    Export a CLAP model to ONNX format.
+
+    CLAP models have separate audio and text encoders that are exported
+    as separate ONNX files.
+
+    Args:
+        model_id: HuggingFace model ID (e.g., Xenova/clap-htsat-unfused)
+        output_dir: Directory to save the model
+        variants: List of variant types to create (e.g., ["i8"])
+    """
+    variants = variants or []
+    import torch
+    import onnx
+    from transformers import ClapModel, ClapProcessor
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Exporting CLAP audio model: {model_id}")
+    logger.info(f"Output: {output_dir}")
+
+    # Load model and processor
+    logger.info("Loading CLAP model...")
+    model = ClapModel.from_pretrained(model_id)
+    processor = ClapProcessor.from_pretrained(model_id)
+
+    model.eval()
+
+    # Export audio encoder
+    logger.info("Exporting audio encoder...")
+    audio_path = output_dir / "audio_model.onnx"
+    # CLAP expects audio input of shape [batch, samples] at 48kHz
+    # Default is 10 seconds = 480000 samples
+    sample_rate = processor.feature_extractor.sampling_rate
+    max_length = processor.feature_extractor.max_length_s
+    num_samples = int(sample_rate * max_length)
+    dummy_audio = torch.randn(1, num_samples)
+
+    # Process audio to get mel spectrogram input
+    audio_inputs = processor(audios=dummy_audio.numpy(), return_tensors="pt", sampling_rate=sample_rate)
+
+    torch.onnx.export(
+        model.audio_model,
+        (audio_inputs["input_features"],),
+        str(audio_path),
+        export_params=True,
+        opset_version=14,
+        do_constant_folding=True,
+        input_names=["input_features"],
+        output_names=["last_hidden_state", "pooler_output"],
+        dynamic_axes={
+            "input_features": {0: "batch_size"},
+            "last_hidden_state": {0: "batch_size"},
+            "pooler_output": {0: "batch_size"},
+        },
+    )
+    onnx_model = onnx.load(str(audio_path))
+    onnx.checker.check_model(onnx_model)
+    logger.info(f"  Audio encoder saved: {audio_path}")
+
+    # Export text encoder
+    logger.info("Exporting text encoder...")
+    text_path = output_dir / "text_model.onnx"
+    dummy_text = ["a sound of a dog barking"]
+    text_inputs = processor(text=dummy_text, return_tensors="pt", padding=True)
+
+    torch.onnx.export(
+        model.text_model,
+        (text_inputs["input_ids"], text_inputs["attention_mask"]),
+        str(text_path),
+        export_params=True,
+        opset_version=14,
+        do_constant_folding=True,
+        input_names=["input_ids", "attention_mask"],
+        output_names=["last_hidden_state", "pooler_output"],
+        dynamic_axes={
+            "input_ids": {0: "batch_size", 1: "sequence"},
+            "attention_mask": {0: "batch_size", 1: "sequence"},
+            "last_hidden_state": {0: "batch_size", 1: "sequence"},
+            "pooler_output": {0: "batch_size"},
+        },
+    )
+    onnx_model = onnx.load(str(text_path))
+    onnx.checker.check_model(onnx_model)
+    logger.info(f"  Text encoder saved: {text_path}")
+
+    # Save processor and config files
+    processor.save_pretrained(output_dir)
+
+    # Create CLAP-specific config
+    clap_config = {
+        "model_type": "clap",
+        "audio_config": {
+            "hidden_size": model.config.audio_config.hidden_size,
+            "sample_rate": sample_rate,
+            "max_length_s": max_length,
+        },
+        "text_config": {
+            "hidden_size": model.config.text_config.hidden_size,
+        },
+        "projection_dim": model.config.projection_dim,
+    }
+    with open(output_dir / "clap_config.json", "w") as f:
+        json.dump(clap_config, f, indent=2)
+
+    # Create int8 quantized variants if requested
+    if "i8" in variants:
+        logger.info("Applying dynamic quantization (int8)...")
+        try:
+            from onnxruntime.quantization import QuantType, quantize_dynamic
+
+            quantize_dynamic(
+                model_input=str(audio_path),
+                model_output=str(output_dir / "audio_model_i8.onnx"),
+                weight_type=QuantType.QUInt8,
+            )
+            logger.info("  Audio encoder quantized")
 
             quantize_dynamic(
                 model_input=str(text_path),
@@ -1548,15 +1703,18 @@ def generate_manifest(
     variants = {}
 
     # Use appropriate file list based on model type and capabilities
-    is_multimodal = capabilities and "multimodal" in capabilities
+    is_image = capabilities and "image" in capabilities
+    is_audio = capabilities and "audio" in capabilities
     is_generator = model_type == "generator"
     is_classifier = model_type == "classifier"
     is_reader = model_type == "reader"
     is_gliner = recognizer_arch == "gliner"
     is_rebel = recognizer_arch == "rebel"
 
-    if is_multimodal:
-        file_list = MULTIMODAL_MANIFEST_FILES
+    if is_image:
+        file_list = CLIP_MANIFEST_FILES
+    elif is_audio:
+        file_list = CLAP_MANIFEST_FILES
     elif model_type == "rewriter":
         file_list = SEQ2SEQ_MANIFEST_FILES
     elif is_classifier:
@@ -1594,7 +1752,7 @@ def generate_manifest(
         "i4": "model_i4.onnx",
     }
 
-    if is_multimodal:
+    if is_image:
         # CLIP has separate visual and text encoders for each variant
         # Check for f16 variants
         visual_f16_path = model_dir / "visual_model_f16.onnx"
@@ -1617,6 +1775,22 @@ def generate_manifest(
         if visual_i8_path.exists() and text_i8_path.exists():
             variants["i8"] = []
             for qt_path in [visual_i8_path, text_i8_path]:
+                digest = compute_sha256(qt_path)
+                size = qt_path.stat().st_size
+                variants["i8"].append({
+                    "name": qt_path.name,
+                    "digest": digest,
+                    "size": size,
+                })
+                logger.info(f"  {qt_path.name}: {size:,} bytes ({digest[:20]}...)")
+    elif is_audio:
+        # CLAP has separate audio and text encoders for each variant
+        # Check for i8 variants
+        audio_i8_path = model_dir / "audio_model_i8.onnx"
+        text_i8_path = model_dir / "text_model_i8.onnx"
+        if audio_i8_path.exists() and text_i8_path.exists():
+            variants["i8"] = []
+            for qt_path in [audio_i8_path, text_i8_path]:
                 digest = compute_sha256(qt_path)
                 size = qt_path.stat().st_size
                 variants["i8"].append({
@@ -2275,8 +2449,11 @@ def test_model(
     logger.info("Testing exported model...")
     capabilities = capabilities or []
 
-    if "multimodal" in capabilities:
-        return test_multimodal_model(model_dir)
+    if "image" in capabilities:
+        return test_clip_model(model_dir)
+
+    if "audio" in capabilities:
+        return test_clap_model(model_dir)
 
     if model_type == "rewriter":
         return test_seq2seq_model(model_dir)
@@ -2604,7 +2781,7 @@ def test_seq2seq_model(model_dir: Path) -> bool:
         return False
 
 
-def test_multimodal_model(model_dir: Path) -> bool:
+def test_clip_model(model_dir: Path) -> bool:
     """Test the exported CLIP model."""
     import onnxruntime as ort
     import numpy as np
@@ -2707,6 +2884,69 @@ def test_multimodal_model(model_dir: Path) -> bool:
             return False
 
         logger.info(f"  Final embedding dimension: {projection_dim}")
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        return False
+
+
+def test_clap_model(model_dir: Path) -> bool:
+    """Test the exported CLAP model."""
+    import onnxruntime as ort
+    import numpy as np
+    from transformers import ClapProcessor
+
+    try:
+        audio_path = model_dir / "audio_model.onnx"
+        text_path = model_dir / "text_model.onnx"
+        clap_config_path = model_dir / "clap_config.json"
+
+        # Load CLAP config for expected dimensions
+        with open(clap_config_path) as f:
+            clap_config = json.load(f)
+
+        expected_audio_dim = clap_config["audio_config"]["hidden_size"]
+        expected_text_dim = clap_config["text_config"]["hidden_size"]
+        projection_dim = clap_config["projection_dim"]
+
+        # Load processor
+        processor = ClapProcessor.from_pretrained(model_dir)
+
+        # Test audio encoder
+        logger.info("Testing audio encoder...")
+        audio_session = ort.InferenceSession(str(audio_path), providers=["CPUExecutionProvider"])
+
+        sample_rate = clap_config["audio_config"]["sample_rate"]
+        max_length_s = clap_config["audio_config"]["max_length_s"]
+        num_samples = int(sample_rate * max_length_s)
+        dummy_audio = np.random.randn(num_samples).astype(np.float32)
+
+        audio_inputs = processor(audios=dummy_audio, return_tensors="np", sampling_rate=sample_rate)
+        audio_outputs = audio_session.run(None, {"input_features": audio_inputs["input_features"]})
+        audio_pooler = audio_outputs[1]
+        logger.info(f"  Audio embedding shape: {audio_pooler.shape}")
+
+        # Test text encoder
+        logger.info("Testing text encoder...")
+        text_session = ort.InferenceSession(str(text_path), providers=["CPUExecutionProvider"])
+
+        text_inputs = processor(text=["a sound of a dog barking"], return_tensors="np", padding=True)
+        text_outputs = text_session.run(
+            None,
+            {
+                "input_ids": text_inputs["input_ids"],
+                "attention_mask": text_inputs["attention_mask"],
+            },
+        )
+        text_pooler = text_outputs[1]
+        logger.info(f"  Text embedding shape: {text_pooler.shape}")
+
+        logger.info(f"  Audio hidden size: {expected_audio_dim}")
+        logger.info(f"  Text hidden size: {expected_text_dim}")
+        logger.info(f"  Projection dimension: {projection_dim}")
+
         logger.info("Test passed!")
         return True
 
@@ -2960,8 +3200,11 @@ Examples:
   # Export reranker with int8 and FP16 variants
   %(prog)s reranker mixedbread-ai/mxbai-rerank-base-v1 --variants f16 i8
 
-  # Export CLIP multimodal model
-  %(prog)s embedder openai/clip-vit-base-patch32 --capabilities multimodal --backends onnx --variants f16 i8
+  # Export CLIP image model
+  %(prog)s embedder openai/clip-vit-base-patch32 --capabilities image --backends onnx --variants f16 i8
+
+  # Export CLAP audio model
+  %(prog)s embedder Xenova/clap-htsat-unfused --capabilities audio --backends onnx --variants i8
 
   # Export and upload to R2
   %(prog)s embedder BAAI/bge-small-en-v1.5 --upload --r2-bucket my-bucket
@@ -3109,10 +3352,10 @@ Environment Variables:
             nargs="*",
             default=[],
             help=(
-                "Model capabilities. For embedders: multimodal. "
+                "Model capabilities. For embedders: image (CLIP), audio (CLAP). "
                 "For recognizers: labels, zeroshot, relations, answers. "
                 "Capabilities are auto-detected for recognizers but can be overridden. "
-                "Example: --capabilities multimodal or --capabilities labels zeroshot"
+                "Example: --capabilities image or --capabilities labels zeroshot"
             ),
         )
         export_parser.add_argument(

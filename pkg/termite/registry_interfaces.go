@@ -15,15 +15,44 @@
 package termite
 
 import (
+	"context"
+
+	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/termite/pkg/termite/lib/classification"
+	"github.com/antflydb/termite/pkg/termite/lib/generation"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/reading"
+	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
+	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 )
+
+// EmbedderRegistryInterface defines the interface for embedder model registries.
+// This enables testing with mock implementations.
+type EmbedderRegistryInterface interface {
+	// Acquire retrieves an embedder and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (embeddings.Embedder, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// HasCapability checks if a model has a specific capability (e.g., image, audio)
+	HasCapability(modelName string, capability modelregistry.Capability) bool
+	// Close shuts down the registry and releases resources
+	Close() error
+}
 
 // RerankerRegistryInterface defines the interface for reranker model registries.
 // This enables testing with mock implementations.
 type RerankerRegistryInterface interface {
-	// Get retrieves a reranker model by name, loading it if necessary
-	Get(modelName string) (reranking.Model, error)
+	// Acquire retrieves a reranker and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (reranking.Model, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
 	// List returns all available model names
 	List() []string
 	// Close shuts down the registry and releases resources
@@ -33,32 +62,110 @@ type RerankerRegistryInterface interface {
 // NERRegistryInterface defines the interface for NER model registries.
 // This enables testing with mock implementations.
 type NERRegistryInterface interface {
-	// Get retrieves a NER model by name, loading it if necessary
-	Get(modelName string) (ner.Model, error)
-	// GetRecognizer retrieves a GLiNER/REBEL recognizer by name
-	GetRecognizer(modelName string) (ner.Recognizer, error)
-	// GetClassifier retrieves a model that supports text classification
-	GetClassifier(modelName string) (ner.Classifier, error)
+	// Acquire retrieves a NER model and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (ner.Model, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns a map of model names to their capabilities
+	List() map[string][]string
+	// HasCapability checks if a model has a specific capability
+	HasCapability(modelName string, capability modelregistry.Capability) bool
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// GeneratorRegistryInterface defines the interface for generator model registries.
+// This enables testing with mock implementations.
+type GeneratorRegistryInterface interface {
+	// Acquire retrieves a generator and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (generation.Generator, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
 	// List returns all available model names
 	List() []string
-	// ListRecognizers returns names of models that support GLiNER/REBEL recognition
-	ListRecognizers() []string
-	// ListClassificationCapable returns names of models that support classification
-	ListClassificationCapable() []string
-	// ListWithCapabilities returns a map of model names to their capabilities
-	ListWithCapabilities() map[string][]string
-	// HasCapability checks if a model has a specific capability
-	HasCapability(modelName, capability string) bool
-	// SupportsClassification returns true if the model supports text classification
-	SupportsClassification(modelName string) bool
-	// IsRecognizer checks if a model supports GLiNER/REBEL recognition
-	IsRecognizer(modelName string) bool
 	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// Seq2SeqRegistryInterface defines the interface for seq2seq model registries.
+// This enables testing with mock implementations.
+type Seq2SeqRegistryInterface interface {
+	// Acquire retrieves a seq2seq model and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (seq2seq.Model, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// ClassifierRegistryInterface defines the interface for classifier model registries.
+// This enables testing with mock implementations.
+type ClassifierRegistryInterface interface {
+	// Acquire retrieves a classifier and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (classification.Classifier, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// ReaderRegistryInterface defines the interface for reader model registries.
+// This enables testing with mock implementations.
+type ReaderRegistryInterface interface {
+	// Acquire retrieves a reader and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (reading.Reader, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// TranscriberRegistryInterface defines the interface for transcriber model registries.
+// This enables testing with mock implementations.
+type TranscriberRegistryInterface interface {
+	// Acquire retrieves a transcriber and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (transcribing.Transcriber, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
+// ChunkerInterface defines the interface for chunking services.
+// This enables testing with mock implementations.
+type ChunkerInterface interface {
+	// Chunk splits text into chunks using the specified configuration
+	// Returns chunks, cache hit status, and any error
+	Chunk(ctx context.Context, text string, config chunkConfig) ([]chunking.Chunk, bool, error)
+	// ListModels returns all available chunker model names
+	ListModels() []string
+	// Close shuts down the chunker and releases resources
 	Close() error
 }
 
 // Ensure concrete types implement the interfaces
 var (
-	_ RerankerRegistryInterface = (*RerankerRegistry)(nil)
-	_ NERRegistryInterface      = (*NERRegistry)(nil)
+	_ EmbedderRegistryInterface    = (*EmbedderRegistry)(nil)
+	_ RerankerRegistryInterface    = (*RerankerRegistry)(nil)
+	_ NERRegistryInterface         = (*NERRegistry)(nil)
+	_ GeneratorRegistryInterface   = (*GeneratorRegistry)(nil)
+	_ Seq2SeqRegistryInterface     = (*Seq2SeqRegistry)(nil)
+	_ ClassifierRegistryInterface  = (*ClassifierRegistry)(nil)
+	_ ReaderRegistryInterface      = (*ReaderRegistry)(nil)
+	_ TranscriberRegistryInterface = (*TranscriberRegistry)(nil)
+	_ ChunkerInterface             = (*CachedChunker)(nil)
 )

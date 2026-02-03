@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -231,8 +232,8 @@ func (r *NERRegistry) discoverModels() error {
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath))
 
-			// REBEL models have 'relations' capability
-			caps := []string{modelregistry.CapabilityRelations}
+			// REBEL models have 'relations' and 'zeroshot' capabilities
+			caps := []string{string(modelregistry.CapabilityRelations), string(modelregistry.CapabilityZeroshot)}
 			// Check manifest for additional capabilities
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
@@ -265,7 +266,7 @@ func (r *NERRegistry) discoverModels() error {
 			}
 
 			// Load capabilities from manifest if available
-			caps := []string{modelregistry.CapabilityLabels, modelregistry.CapabilityZeroshot}
+			caps := []string{string(modelregistry.CapabilityLabels), string(modelregistry.CapabilityZeroshot)}
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
 				var manifest modelregistry.ModelManifest
@@ -281,7 +282,7 @@ func (r *NERRegistry) discoverModels() error {
 				if err := json.Unmarshal(data, &glinerConfig); err == nil && len(glinerConfig.Capabilities) > 0 {
 					// Merge capabilities from gliner_config.json
 					for _, cap := range glinerConfig.Capabilities {
-						if !containsCapability(caps, cap) {
+						if !slices.Contains(caps, cap) {
 							caps = append(caps, cap)
 						}
 					}
@@ -318,7 +319,7 @@ func (r *NERRegistry) discoverModels() error {
 				zap.Strings("variants", variantIDs))
 
 			// Load capabilities from manifest if available
-			caps := []string{modelregistry.CapabilityLabels}
+			caps := []string{string(modelregistry.CapabilityLabels)}
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
 				var manifest modelregistry.ModelManifest
@@ -364,18 +365,6 @@ func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
 	return loaded.model, nil
 }
 
-// GetRecognizer returns a zero-shot capable Recognizer by name (e.g., GLiNER)
-func (r *NERRegistry) GetRecognizer(modelName string) (ner.Recognizer, error) {
-	loaded, err := r.getLoaded(modelName)
-	if err != nil {
-		return nil, err
-	}
-	if loaded.recognizer == nil {
-		return nil, fmt.Errorf("model %s is not a Recognizer", modelName)
-	}
-	return loaded.recognizer, nil
-}
-
 // getLoaded gets or loads a model from cache
 func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
 	// Check cache first
@@ -399,8 +388,8 @@ func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
 
 // Acquire returns a NER model by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
-// This prevents the model from being closed while in use.
-func (r *NERRegistry) Acquire(modelName string) (*loadedNERModel, error) {
+// Type-assert to ner.Recognizer if HasCapability returns true for CapabilityZeroshot.
+func (r *NERRegistry) Acquire(modelName string) (ner.Model, error) {
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
 		return nil, err
@@ -415,7 +404,11 @@ func (r *NERRegistry) Acquire(modelName string) (*loadedNERModel, error) {
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
 
-	return loaded, nil
+	// Return recognizer if available (it embeds ner.Model), otherwise return model
+	if loaded.recognizer != nil {
+		return loaded.recognizer, nil
+	}
+	return loaded.model, nil
 }
 
 // Release decrements the reference count for a model.
@@ -484,20 +477,20 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		if modelCaps := model.Capabilities(); len(modelCaps) > 0 {
 			// Merge capabilities from model config with discovered capabilities
 			for _, cap := range modelCaps {
-				if !containsCapability(caps, cap) {
+				if !slices.Contains(caps, cap) {
 					caps = append(caps, cap)
 				}
 			}
 		}
 		// Also check model methods for capabilities
-		if model.SupportsRelationExtraction() && !containsCapability(caps, modelregistry.CapabilityRelations) {
-			caps = append(caps, modelregistry.CapabilityRelations)
+		if model.SupportsRelationExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityRelations)) {
+			caps = append(caps, string(modelregistry.CapabilityRelations))
 		}
-		if model.SupportsQA() && !containsCapability(caps, modelregistry.CapabilityAnswers) {
-			caps = append(caps, modelregistry.CapabilityAnswers)
+		if model.SupportsQA() && !slices.Contains(caps, string(modelregistry.CapabilityAnswers)) {
+			caps = append(caps, string(modelregistry.CapabilityAnswers))
 		}
-		if model.SupportsClassification() && !containsCapability(caps, "classification") {
-			caps = append(caps, "classification")
+		if model.SupportsClassification() && !slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
+			caps = append(caps, string(modelregistry.CapabilityClassification))
 		}
 		r.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
@@ -544,52 +537,18 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 	return loaded, nil
 }
 
-// containsCapability checks if a capability is in the list
-func containsCapability(caps []string, cap string) bool {
-	for _, c := range caps {
-		if c == cap {
-			return true
-		}
-	}
-	return false
-}
-
-// IsRecognizer returns true if the model is a zero-shot capable Recognizer
-func (r *NERRegistry) IsRecognizer(modelName string) bool {
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
-
-	if !ok {
-		return false
-	}
-	return info.ModelType == NERModelTypeGLiNER || info.ModelType == NERModelTypeREBEL
-}
-
 // List returns all available NER model names (discovered, not necessarily loaded)
-func (r *NERRegistry) List() []string {
+func (r *NERRegistry) List() map[string][]string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	names := make([]string, 0, len(r.discovered))
-	for name := range r.discovered {
-		names = append(names, name)
-	}
-	return names
-}
-
-// ListRecognizers returns all available zero-shot Recognizer model names
-func (r *NERRegistry) ListRecognizers() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0)
+	result := make(map[string][]string, len(r.discovered))
 	for name, info := range r.discovered {
-		if info.ModelType == NERModelTypeGLiNER || info.ModelType == NERModelTypeREBEL {
-			names = append(names, name)
-		}
+		capsCopy := make([]string, len(info.Capabilities))
+		copy(capsCopy, info.Capabilities)
+		result[name] = capsCopy
 	}
-	return names
+	return result
 }
 
 // ListLoaded returns only the currently loaded NER model names
@@ -616,66 +575,11 @@ func (r *NERRegistry) GetCapabilities(modelName string) []string {
 }
 
 // HasCapability checks if a model has a specific capability.
-func (r *NERRegistry) HasCapability(modelName, capability string) bool {
+func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
 	caps := r.GetCapabilities(modelName)
-	return containsCapability(caps, capability)
+	return slices.Contains(caps, string(capability))
 }
 
-// ListWithCapabilities returns a map of model name to capabilities for all models.
-func (r *NERRegistry) ListWithCapabilities() map[string][]string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make(map[string][]string, len(r.discovered))
-	for name, info := range r.discovered {
-		// Make a copy of the slice to avoid sharing internal state
-		capsCopy := make([]string, len(info.Capabilities))
-		copy(capsCopy, info.Capabilities)
-		result[name] = capsCopy
-	}
-	return result
-}
-
-// SupportsClassification returns true if the model supports text classification.
-// Currently only GLiNER2 models support this capability.
-func (r *NERRegistry) SupportsClassification(modelName string) bool {
-	return r.HasCapability(modelName, "classification")
-}
-
-// ListClassificationCapable returns all NER models that support classification.
-func (r *NERRegistry) ListClassificationCapable() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0)
-	for name, info := range r.discovered {
-		if containsCapability(info.Capabilities, "classification") {
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
-// GetClassifier returns a model that supports text classification.
-// Returns nil and an error if the model doesn't exist or doesn't support classification.
-func (r *NERRegistry) GetClassifier(modelName string) (ner.Classifier, error) {
-	loaded, err := r.getLoaded(modelName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if the model implements the Classifier interface
-	classifier, ok := loaded.recognizer.(ner.Classifier)
-	if !ok {
-		return nil, fmt.Errorf("model %s does not implement Classifier interface", modelName)
-	}
-
-	if !classifier.SupportsClassification() {
-		return nil, fmt.Errorf("model %s does not support classification", modelName)
-	}
-
-	return classifier, nil
-}
 
 // Preload loads specified models at startup to avoid first-request latency
 func (r *NERRegistry) Preload(modelNames []string) error {
@@ -712,7 +616,12 @@ func (r *NERRegistry) Preload(modelNames []string) error {
 
 // PreloadAll loads all discovered models (for eager loading mode)
 func (r *NERRegistry) PreloadAll() error {
-	return r.Preload(r.List())
+	models := r.List()
+	names := make([]string, 0, len(models))
+	for name := range models {
+		names = append(names, name)
+	}
+	return r.Preload(names)
 }
 
 // Close stops the cache and unloads all models

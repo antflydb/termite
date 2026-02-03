@@ -707,6 +707,27 @@ func (r *EmbedderRegistry) Close() error {
 	return nil
 }
 
+// HasCapability checks if a model has a specific capability (e.g., image, audio).
+func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
+	r.mu.RLock()
+	info, known := r.discovered[modelName]
+	r.mu.RUnlock()
+
+	if !known {
+		return false
+	}
+
+	// Map model types to capabilities
+	switch info.ModelType {
+	case "clip", "clip-quantized":
+		return capability == modelregistry.CapabilityImage
+	case "clap", "clap-quantized":
+		return capability == modelregistry.CapabilityAudio
+	default:
+		return false
+	}
+}
+
 // Stats returns cache statistics
 func (r *EmbedderRegistry) Stats() map[string]any {
 	metrics := r.cache.Metrics()

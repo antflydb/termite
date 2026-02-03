@@ -431,14 +431,25 @@ func displayModel(w *tabwriter.Writer, modelName, owner, modelDir string, modelT
 		capabilities = append(capabilities, "genai")
 	}
 
-	// Check for multimodal (CLIP-style) model files
+	// Check for CLIP (image) model files
 	visualPath := filepath.Join(modelDir, "visual_model.onnx")
 	textPath := filepath.Join(modelDir, "text_model.onnx")
 	if visualInfo, err := os.Stat(visualPath); err == nil {
 		if textInfo, err := os.Stat(textPath); err == nil {
 			hasMultimodal = true
-			capabilities = append(capabilities, "multimodal")
+			capabilities = append(capabilities, "image")
 			totalSize += visualInfo.Size()
+			totalSize += textInfo.Size()
+		}
+	}
+
+	// Check for CLAP (audio) model files
+	audioPath := filepath.Join(modelDir, "audio_model.onnx")
+	if audioInfo, err := os.Stat(audioPath); err == nil {
+		if textInfo, err := os.Stat(textPath); err == nil {
+			hasMultimodal = true
+			capabilities = append(capabilities, "audio")
+			totalSize += audioInfo.Size()
 			totalSize += textInfo.Size()
 		}
 	}

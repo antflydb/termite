@@ -201,14 +201,21 @@ func (c *HuggingFaceClient) generateAndSaveManifest(
 	manifest.Variants = discoverVariantsFromFiles(files)
 
 	// Detect capabilities for multimodal models (CLIP for visual, CLAP for audio)
+	hasVisual := false
+	hasAudio := false
 	for _, f := range files {
 		switch f.Name {
-		case "visual_model.onnx", "visual_model_quantized.onnx",
-			"audio_model.onnx", "audio_model_quantized.onnx",
-			"text_model.onnx", "text_model_quantized.onnx":
-			manifest.Capabilities = append(manifest.Capabilities, CapabilityMultimodal)
-			break
+		case "visual_model.onnx", "visual_model_quantized.onnx":
+			hasVisual = true
+		case "audio_model.onnx", "audio_model_quantized.onnx":
+			hasAudio = true
 		}
+	}
+	if hasVisual {
+		manifest.Capabilities = append(manifest.Capabilities, string(CapabilityImage))
+	}
+	if hasAudio {
+		manifest.Capabilities = append(manifest.Capabilities, string(CapabilityAudio))
 	}
 
 	// Save manifest

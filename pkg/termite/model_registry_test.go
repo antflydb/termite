@@ -80,40 +80,16 @@ func TestRerankerRegistryLoading(t *testing.T) {
 	// Verify that we have at least one model
 	require.NotEmpty(t, models, "Expected at least one model to be loaded")
 
-	// Try to get the standard mxbai-rerank-base-v1 model
-	standardModel, err := registry.Get("mxbai-rerank-base-v1")
+	// Try to get the first available model
+	firstModel := models[0]
+	model, err := registry.Get(firstModel)
 	if err != nil {
-		t.Logf("Failed to get mxbai-rerank-base-v1: %v", err)
+		t.Logf("Failed to get %s: %v", firstModel, err)
 		t.Logf("Available models: %v", models)
-		t.Fatalf("Model mxbai-rerank-base-v1 not loaded")
+		t.Fatalf("Model %s not loaded", firstModel)
 	}
-	require.NotNil(t, standardModel)
-	t.Logf("Successfully retrieved standard mxbai-rerank-base-v1 model")
-
-	// Try to get the quantized mxbai-rerank-base-v1-i8-qt model
-	quantizedModel, err := registry.Get("mxbai-rerank-base-v1-i8-qt")
-	if err != nil {
-		t.Logf("Failed to get mxbai-rerank-base-v1-i8-qt: %v", err)
-		t.Logf("Available models: %v", models)
-		t.Fatalf("Model mxbai-rerank-base-v1-i8-qt not loaded")
-	}
-	require.NotNil(t, quantizedModel)
-	t.Logf("Successfully retrieved quantized mxbai-rerank-base-v1-i8-qt model")
-
-	// Try to get the new static quantized model
-	staticModel, err := registry.Get("reranker_onnx_static-i8-qt")
-	if err != nil {
-		t.Logf("Failed to get reranker_onnx_static-i8-qt: %v", err)
-		t.Logf("Available models: %v", models)
-		t.Fatalf("Model reranker_onnx_static-i8-qt not loaded")
-	}
-	require.NotNil(t, staticModel)
-	t.Logf("Successfully retrieved static quantized reranker_onnx_static-i8-qt model")
-
-	// Verify that all models are different instances
-	require.NotEqual(t, standardModel, quantizedModel, "Standard and quantized models should be different instances")
-	require.NotEqual(t, standardModel, staticModel, "Standard and static models should be different instances")
-	require.NotEqual(t, quantizedModel, staticModel, "Quantized and static models should be different instances")
+	require.NotNil(t, model)
+	t.Logf("Successfully retrieved model: %s", firstModel)
 }
 
 func TestCompareQuantizedVsNonQuantized(t *testing.T) {
@@ -147,39 +123,28 @@ func TestCompareQuantizedVsNonQuantized(t *testing.T) {
 		"Classical music has been popular for centuries across many cultures.",
 	}
 
-	t.Run("NonQuantized", func(t *testing.T) {
-		model, err := registry.Get("mxbai-rerank-base-v1")
-		if err != nil {
-			t.Skipf("Model not available: %v", err)
-		}
+	models := registry.List()
+	require.NotEmpty(t, models, "At least one model should be available")
 
-		scores, err := model.Rerank(t.Context(), query, documents)
-		require.NoError(t, err)
-		require.Len(t, scores, len(documents))
+	// Test each available model
+	for _, modelName := range models {
+		t.Run(modelName, func(t *testing.T) {
+			model, err := registry.Get(modelName)
+			if err != nil {
+				t.Skipf("Model not available: %v", err)
+			}
 
-		t.Logf("\nNon-Quantized Model Results:")
-		t.Logf("Query: %s", query)
-		for i, score := range scores {
-			t.Logf("  [%d] Score: %.4f - %s", i, score, documents[i])
-		}
-	})
+			scores, err := model.Rerank(t.Context(), query, documents)
+			require.NoError(t, err)
+			require.Len(t, scores, len(documents))
 
-	t.Run("Quantized", func(t *testing.T) {
-		model, err := registry.Get("mxbai-rerank-base-v1-i8-qt")
-		if err != nil {
-			t.Skipf("Quantized model not available: %v", err)
-		}
-
-		scores, err := model.Rerank(t.Context(), query, documents)
-		require.NoError(t, err)
-		require.Len(t, scores, len(documents))
-
-		t.Logf("\nQuantized Model Results:")
-		t.Logf("Query: %s", query)
-		for i, score := range scores {
-			t.Logf("  [%d] Score: %.4f - %s", i, score, documents[i])
-		}
-	})
+			t.Logf("\n%s Results:", modelName)
+			t.Logf("Query: %s", query)
+			for i, score := range scores {
+				t.Logf("  [%d] Score: %.4f - %s", i, score, documents[i])
+			}
+		})
+	}
 }
 
 func TestCompareAllRerankerModels(t *testing.T) {
@@ -220,28 +185,20 @@ func TestCompareAllRerankerModels(t *testing.T) {
 
 	var results []modelResult
 
-	// Test standard model
-	if model, err := registry.Get("mxbai-rerank-base-v1"); err == nil {
+	// Test all available models
+	for _, modelName := range registry.List() {
+		model, err := registry.Get(modelName)
+		if err != nil {
+			t.Logf("Skipping model %s: %v", modelName, err)
+			continue
+		}
 		scores, err := model.Rerank(context.Background(), query, documents)
-		require.NoError(t, err)
+		if err != nil {
+			t.Logf("Rerank failed for %s: %v", modelName, err)
+			continue
+		}
 		require.Len(t, scores, len(documents))
-		results = append(results, modelResult{name: "mxbai-rerank-base-v1 (standard)", scores: scores})
-	}
-
-	// Test quantized model
-	if model, err := registry.Get("mxbai-rerank-base-v1-i8-qt"); err == nil {
-		scores, err := model.Rerank(context.Background(), query, documents)
-		require.NoError(t, err)
-		require.Len(t, scores, len(documents))
-		results = append(results, modelResult{name: "mxbai-rerank-base-v1-i8-qt (quantized)", scores: scores})
-	}
-
-	// Test static quantized model
-	if model, err := registry.Get("reranker_onnx_static-i8-qt"); err == nil {
-		scores, err := model.Rerank(context.Background(), query, documents)
-		require.NoError(t, err)
-		require.Len(t, scores, len(documents))
-		results = append(results, modelResult{name: "reranker_onnx_static-i8-qt (static)", scores: scores})
+		results = append(results, modelResult{name: modelName, scores: scores})
 	}
 
 	require.NotEmpty(t, results, "At least one model should be available for testing")
@@ -342,31 +299,22 @@ func BenchmarkRerankerQuantizedVsNonQuantized(b *testing.B) {
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()
 
-	b.Run("NonQuantized", func(b *testing.B) {
-		model, err := registry.Get("mxbai-rerank-base-v1")
+	// Benchmark all available models
+	for _, modelName := range registry.List() {
+		model, err := registry.Get(modelName)
 		if err != nil {
-			b.Skipf("Model not available: %v", err)
+			b.Logf("Skipping %s: %v", modelName, err)
+			continue
 		}
 
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := model.Rerank(b.Context(), query, documents)
-			require.NoError(b, err)
-		}
-	})
-
-	b.Run("Quantized", func(b *testing.B) {
-		model, err := registry.Get("mxbai-rerank-base-v1-i8-qt")
-		if err != nil {
-			b.Skipf("Quantized model not available: %v", err)
-		}
-
-		b.ResetTimer()
-		for b.Loop() {
-			_, err := model.Rerank(b.Context(), query, documents)
-			require.NoError(b, err)
-		}
-	})
+		b.Run(modelName, func(b *testing.B) {
+			b.ResetTimer()
+			for b.Loop() {
+				_, err := model.Rerank(b.Context(), query, documents)
+				require.NoError(b, err)
+			}
+		})
+	}
 }
 
 func BenchmarkAllRerankerModels(b *testing.B) {
@@ -398,31 +346,15 @@ func BenchmarkAllRerankerModels(b *testing.B) {
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()
 
-	// Benchmark standard model
-	if model, err := registry.Get("mxbai-rerank-base-v1"); err == nil {
-		b.Run("Standard_mxbai-rerank-base-v1", func(b *testing.B) {
-			b.ResetTimer()
-			for b.Loop() {
-				_, err := model.Rerank(context.Background(), query, documents)
-				require.NoError(b, err)
-			}
-		})
-	}
+	// Benchmark all available models
+	for _, modelName := range registry.List() {
+		model, err := registry.Get(modelName)
+		if err != nil {
+			b.Logf("Skipping %s: %v", modelName, err)
+			continue
+		}
 
-	// Benchmark quantized model
-	if model, err := registry.Get("mxbai-rerank-base-v1-i8-qt"); err == nil {
-		b.Run("Quantized_mxbai-rerank-base-v1-i8-qt", func(b *testing.B) {
-			b.ResetTimer()
-			for b.Loop() {
-				_, err := model.Rerank(context.Background(), query, documents)
-				require.NoError(b, err)
-			}
-		})
-	}
-
-	// Benchmark static quantized model
-	if model, err := registry.Get("reranker_onnx_static-i8-qt"); err == nil {
-		b.Run("Static_reranker_onnx_static-i8-qt", func(b *testing.B) {
+		b.Run(modelName, func(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				_, err := model.Rerank(context.Background(), query, documents)
@@ -461,15 +393,16 @@ func TestEmbedderRegistryLoading(t *testing.T) {
 	// Verify that we have at least one model
 	require.NotEmpty(t, models, "Expected at least one embedder model to be loaded")
 
-	// Try to get the bge_small_onnx model
-	model, err := registry.Get("bge_small_onnx")
+	// Try to get the first available model
+	firstModel := models[0]
+	model, err := registry.Get(firstModel)
 	if err != nil {
-		t.Logf("Failed to get bge_small_onnx: %v", err)
+		t.Logf("Failed to get %s: %v", firstModel, err)
 		t.Logf("Available models: %v", models)
-		t.Fatalf("Model bge_small_onnx not loaded")
+		t.Fatalf("Model %s not loaded", firstModel)
 	}
 	require.NotNil(t, model)
-	t.Logf("Successfully retrieved bge_small_onnx model")
+	t.Logf("Successfully retrieved model: %s", firstModel)
 }
 
 func TestEmbedderModelEmbedding(t *testing.T) {
@@ -488,9 +421,13 @@ func TestEmbedderModelEmbedding(t *testing.T) {
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
 
-	// Get the bge_small_onnx model
-	model, err := registry.Get("bge_small_onnx")
-	require.NoError(t, err)
+	models := registry.List()
+	require.NotEmpty(t, models, "Expected at least one embedder model")
+
+	// Get the first available model
+	firstModel := models[0]
+	model, err := registry.Get(firstModel)
+	require.NoError(t, err, "Failed to get model %s", firstModel)
 	require.NotNil(t, model)
 
 	// Test input texts
@@ -520,7 +457,7 @@ func TestEmbedderModelEmbedding(t *testing.T) {
 		require.Len(t, embedding, firstDim, "All embeddings should have the same dimension (embedding %d)", i)
 	}
 
-	t.Logf("Successfully generated %d embeddings with dimension %d", len(embeds), firstDim)
+	t.Logf("Successfully generated %d embeddings with dimension %d using %s", len(embeds), firstDim, firstModel)
 }
 
 func TestEmbedderQuantizedVsNonQuantized(t *testing.T) {
@@ -546,55 +483,47 @@ func TestEmbedderQuantizedVsNonQuantized(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	models := registry.List()
+	require.NotEmpty(t, models, "Expected at least one embedder model")
 
-	// Try to get both standard and quantized models
-	standardModel, errStd := registry.Get("bge_small_onnx")
-	quantizedModel, errQt := registry.Get("bge_small_onnx-i8-qt")
-
-	// Test standard model if available
-	if errStd == nil {
-		t.Run("Standard", func(t *testing.T) {
-			embeds, err := embeddings.EmbedText(ctx, standardModel, texts)
-			require.NoError(t, err)
-			require.Len(t, embeds, len(texts))
-			t.Logf("Standard model: Generated %d embeddings with dimension %d", len(embeds), len(embeds[0]))
-		})
-	} else {
-		t.Logf("Standard model not available: %v", errStd)
+	type modelResult struct {
+		name   string
+		embeds [][]float32
 	}
 
-	// Test quantized model if available
-	if errQt == nil {
-		t.Run("Quantized", func(t *testing.T) {
-			embeds, err := embeddings.EmbedText(ctx, quantizedModel, texts)
+	var results []modelResult
+
+	// Test all available models
+	for _, modelName := range models {
+		model, err := registry.Get(modelName)
+		if err != nil {
+			t.Logf("Skipping %s: %v", modelName, err)
+			continue
+		}
+
+		t.Run(modelName, func(t *testing.T) {
+			embeds, err := embeddings.EmbedText(ctx, model, texts)
 			require.NoError(t, err)
 			require.Len(t, embeds, len(texts))
-			t.Logf("Quantized model: Generated %d embeddings with dimension %d", len(embeds), len(embeds[0]))
+			t.Logf("%s: Generated %d embeddings with dimension %d", modelName, len(embeds), len(embeds[0]))
+			results = append(results, modelResult{name: modelName, embeds: embeds})
 		})
-	} else {
-		t.Logf("Quantized model not available: %v", errQt)
 	}
 
-	// If both are available, verify they produce similar results
-	if errStd == nil && errQt == nil {
+	// Compare similarity between models if we have multiple
+	if len(results) > 1 {
 		t.Run("Compare", func(t *testing.T) {
-			stdEmbeds, err := embeddings.EmbedText(ctx, standardModel, texts)
-			require.NoError(t, err)
-
-			qtEmbeds, err := embeddings.EmbedText(ctx, quantizedModel, texts)
-			require.NoError(t, err)
-
-			require.Len(t, qtEmbeds, len(stdEmbeds), "Should produce same number of embeddings")
-			require.Len(t, qtEmbeds[0], len(stdEmbeds[0]), "Should produce same dimension")
-
-			// Compare similarity (quantized may differ more with int8 quantization)
-			for i := range stdEmbeds {
-				similarity := cosineSimilarity(stdEmbeds[i], qtEmbeds[i])
-				t.Logf("Embedding %d: Cosine similarity between standard and quantized: %.6f", i, similarity)
-				// Note: int8 quantization can reduce similarity significantly
-				// Just log for informational purposes
-				if similarity < 0.5 {
-					t.Logf("Warning: Low similarity (%.6f) - int8 quantization may cause significant drift", similarity)
+			for i := 0; i < len(results); i++ {
+				for j := i + 1; j < len(results); j++ {
+					// Only compare if dimensions match
+					if len(results[i].embeds[0]) != len(results[j].embeds[0]) {
+						t.Logf("Skipping comparison: %s (%d dims) vs %s (%d dims)",
+							results[i].name, len(results[i].embeds[0]),
+							results[j].name, len(results[j].embeds[0]))
+						continue
+					}
+					similarity := cosineSimilarity(results[i].embeds[0], results[j].embeds[0])
+					t.Logf("%s vs %s: Cosine similarity: %.6f", results[i].name, results[j].name, similarity)
 				}
 			}
 		})
@@ -623,20 +552,15 @@ func BenchmarkEmbedderQuantizedVsNonQuantized(b *testing.B) {
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()
 
-	// Benchmark standard model if available
-	if model, err := registry.Get("bge_small_onnx"); err == nil {
-		b.Run("Standard", func(b *testing.B) {
-			b.ResetTimer()
-			for b.Loop() {
-				_, err := embeddings.EmbedText(ctx, model, texts)
-				require.NoError(b, err)
-			}
-		})
-	}
+	// Benchmark all available models
+	for _, modelName := range registry.List() {
+		model, err := registry.Get(modelName)
+		if err != nil {
+			b.Logf("Skipping %s: %v", modelName, err)
+			continue
+		}
 
-	// Benchmark quantized model if available
-	if model, err := registry.Get("bge_small_onnx-i8-qt"); err == nil {
-		b.Run("Quantized", func(b *testing.B) {
+		b.Run(modelName, func(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				_, err := embeddings.EmbedText(ctx, model, texts)

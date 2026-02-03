@@ -5,7 +5,7 @@
   "type": "embedder",
   "description": "",
   "source": "openai/clip-vit-base-patch32",
-  "capabilities": ["multimodal"],
+  "capabilities": ["image"],
   "backends": ["onnx"],
   "files": [
     {

@@ -270,8 +270,7 @@ func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, e
 
 // Acquire returns a classifier by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
-// This prevents the model from being closed while in use.
-func (r *ClassifierRegistry) Acquire(modelName string) (*loadedClassifier, error) {
+func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifier, error) {
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
 		return nil, err
@@ -286,7 +285,7 @@ func (r *ClassifierRegistry) Acquire(modelName string) (*loadedClassifier, error
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
 
-	return loaded, nil
+	return loaded.classifier, nil
 }
 
 // Release decrements the reference count for a model.

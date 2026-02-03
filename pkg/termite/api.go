@@ -40,6 +40,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
@@ -126,8 +127,8 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Transcribers: []string{},
 	}
 
-	if t.node.cachedChunker != nil {
-		resp.Chunkers = t.node.cachedChunker.ListModels()
+	if t.node.chunker != nil {
+		resp.Chunkers = t.node.chunker.ListModels()
 	}
 
 	if t.node.embedderRegistry != nil {
@@ -143,10 +144,19 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.node.nerRegistry != nil {
-		resp.Recognizers = t.node.nerRegistry.List()
-		resp.Extractors = t.node.nerRegistry.ListRecognizers()
-		// Populate recognizer info with capabilities
-		capsMap := t.node.nerRegistry.ListWithCapabilities()
+		capsMap := t.node.nerRegistry.List()
+		// Extract model names and capabilities
+		resp.Recognizers = make([]string, 0, len(capsMap))
+		for name, caps := range capsMap {
+			resp.Recognizers = append(resp.Recognizers, name)
+			// Extract zero-shot capable models for Extractors field
+			for _, c := range caps {
+				if c == string(modelregistry.CapabilityZeroshot) {
+					resp.Extractors = append(resp.Extractors, name)
+					break
+				}
+			}
+		}
 		if len(capsMap) > 0 {
 			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
 			for name, caps := range capsMap {
@@ -248,12 +258,13 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get embedder from provider (lazy loads if needed)
-	embedder, err := ln.embedderRegistry.Get(req.Model)
+	// Acquire embedder (increments ref count to prevent eviction during request)
+	embedder, err := ln.embedderRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.embedderRegistry.Release(req.Model)
 
 	// Parse input - supports text strings, arrays, and multimodal content parts
 	// Uses scraping package for URL downloads with security config and S3 credentials
@@ -463,8 +474,8 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		Threshold:     req.Config.Threshold,
 	}
 
-	// Use cached chunker to process the request
-	chunks, cacheHit, err := ln.cachedChunker.Chunk(r.Context(), req.Text, internalConfig)
+	// Use chunker to process the request
+	chunks, cacheHit, err := ln.chunker.Chunk(r.Context(), req.Text, internalConfig)
 	if err != nil {
 		ln.logger.Error("chunking failed", zap.Error(err))
 		http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
@@ -550,12 +561,13 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get model from registry
-	reranker, err := ln.rerankerRegistry.Get(req.Model)
+	// Acquire model from registry
+	reranker, err := ln.rerankerRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.rerankerRegistry.Release(req.Model)
 
 	// Wrap reranker with caching for deduplicated requests
 	cachedReranker := ln.rerankingCache.WrapReranker(reranker, req.Model)
@@ -659,20 +671,22 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Acquire model from registry
+	model, err := ln.nerRegistry.Acquire(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.nerRegistry.Release(req.Model)
+
 	var entities [][]ner.Entity
 	var relations [][]ner.Relation
 
 	// Check if the model supports relations and we should extract them
-	hasRelationsCap := ln.nerRegistry.HasCapability(req.Model, "relations")
+	hasRelationsCap := ln.nerRegistry.HasCapability(req.Model, modelregistry.CapabilityRelations)
 
 	// Check if this is a Recognizer (zero-shot capable)
-	if ln.nerRegistry.IsRecognizer(req.Model) {
-		recognizer, err := ln.nerRegistry.GetRecognizer(req.Model)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Recognizer not found: %s", req.Model), http.StatusNotFound)
-			return
-		}
-
+	if recognizer, ok := model.(ner.Recognizer); ok {
 		// If model supports relations, use ExtractRelations to get both entities and relations
 		if hasRelationsCap {
 			entities, relations, err = recognizer.ExtractRelations(r.Context(), req.Texts, req.Labels, req.RelationLabels)
@@ -711,14 +725,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		// Get standard NER model from registry
-		model, err := ln.nerRegistry.Get(req.Model)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
-			return
-		}
-
-		// Wrap model with caching for deduplicated requests
+		// Standard NER model - wrap with caching for deduplicated requests
 		cachedModel := ln.nerCache.WrapModel(model, req.Model)
 
 		// Recognize entities (with caching and singleflight deduplication)
@@ -1345,12 +1352,13 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Get model from registry
-	model, err := ln.seq2seqRegistry.Get(req.Model)
+	// Acquire model from registry
+	model, err := ln.seq2seqRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.seq2seqRegistry.Release(req.Model)
 
 	// Generate text
 	output, err := model.Generate(r.Context(), req.Inputs)
@@ -1388,7 +1396,20 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Check if classification is available (from either classifier registry or NER registry with GLiNER2)
 	hasClassifiers := ln.classifierRegistry != nil && len(ln.classifierRegistry.List()) > 0
-	hasNERClassifiers := ln.nerRegistry != nil && len(ln.nerRegistry.ListClassificationCapable()) > 0
+	hasNERClassifiers := false
+	if ln.nerRegistry != nil {
+		for _, caps := range ln.nerRegistry.List() {
+			for _, c := range caps {
+				if c == string(modelregistry.CapabilityClassification) {
+					hasNERClassifiers = true
+					break
+				}
+			}
+			if hasNERClassifiers {
+				break
+			}
+		}
+	}
 	if !hasClassifiers && !hasNERClassifiers {
 		http.Error(w, "classification not available: no models configured", http.StatusServiceUnavailable)
 		return
@@ -1439,8 +1460,10 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// First, try to get the model from the classifier registry
 	if ln.classifierRegistry != nil {
-		classifier, err := ln.classifierRegistry.Get(req.Model)
+		classifier, err := ln.classifierRegistry.Acquire(req.Model)
 		if err == nil {
+			defer ln.classifierRegistry.Release(req.Model)
+
 			// Found in classifier registry - use NLI-based classification
 			var classifyResults [][]classification.Classification
 			var classifyErr error
@@ -1499,54 +1522,60 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 
 	// Try to get a classifier from NER registry
 	if ln.nerRegistry != nil {
-		classifier, err := ln.nerRegistry.GetClassifier(req.Model)
+		model, err := ln.nerRegistry.Acquire(req.Model)
 		if err == nil {
-			// Found model with classification support
-			config := &ner.ClassificationConfig{
-				MultiLabel: req.MultiLabel,
-				Threshold:  0.0, // Return all scores, let caller filter
-			}
+			defer ln.nerRegistry.Release(req.Model)
 
-			classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
-			if classifyErr != nil {
-				ln.logger.Error("classification failed",
-					zap.String("model", req.Model),
-					zap.Int("num_texts", len(req.Texts)),
-					zap.Strings("labels", req.Labels),
-					zap.Error(classifyErr))
-				http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
-				return
-			}
+			// Check if model supports classification
+			classifier, ok := model.(ner.Classifier)
+			if ok {
+				// Found model with classification support
+				config := &ner.ClassificationConfig{
+					MultiLabel: req.MultiLabel,
+					Threshold:  0.0, // Return all scores, let caller filter
+				}
 
-			// Convert ner.Classification to API response format
-			results = make([][]ClassifyResult, len(classifyResults))
-			for i, textResults := range classifyResults {
-				results[i] = make([]ClassifyResult, len(textResults))
-				for j, c := range textResults {
-					results[i][j] = ClassifyResult{
-						Label: c.Label,
-						Score: c.Score,
+				classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
+				if classifyErr != nil {
+					ln.logger.Error("classification failed",
+						zap.String("model", req.Model),
+						zap.Int("num_texts", len(req.Texts)),
+						zap.Strings("labels", req.Labels),
+						zap.Error(classifyErr))
+					http.Error(w, fmt.Sprintf("classification failed: %v", classifyErr), http.StatusInternalServerError)
+					return
+				}
+
+				// Convert ner.Classification to API response format
+				results = make([][]ClassifyResult, len(classifyResults))
+				for i, textResults := range classifyResults {
+					results[i] = make([]ClassifyResult, len(textResults))
+					for j, c := range textResults {
+						results[i][j] = ClassifyResult{
+							Label: c.Label,
+							Score: c.Score,
+						}
 					}
 				}
-			}
 
-			ln.logger.Info("classify request completed",
-				zap.String("model", req.Model),
-				zap.Int("num_texts", len(req.Texts)),
-				zap.Int("num_labels", len(req.Labels)))
+				ln.logger.Info("classify request completed",
+					zap.String("model", req.Model),
+					zap.Int("num_texts", len(req.Texts)),
+					zap.Int("num_labels", len(req.Labels)))
 
-			// Send response
-			resp := ClassifyResponse{
-				Model:           req.Model,
-				Classifications: results,
-			}
+				// Send response
+				resp := ClassifyResponse{
+					Model:           req.Model,
+					Classifications: results,
+				}
 
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				ln.logger.Error("encoding response", zap.Error(err))
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
+					ln.logger.Error("encoding response", zap.Error(err))
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+				return
 			}
-			return
 		}
 	}
 
@@ -1603,12 +1632,13 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get reader model from registry
-	reader, err := ln.readerRegistry.Get(req.Model)
+	// Acquire reader model from registry
+	reader, err := ln.readerRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.readerRegistry.Release(req.Model)
 
 	// Download and decode images
 	images, err := downloadAndDecodeImages(r.Context(), req.Images, ln.contentSecurityConfig, ln.s3Credentials)
@@ -1745,12 +1775,13 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get transcriber model from registry
-	transcriber, err := ln.transcriberRegistry.Get(req.Model)
+	// Acquire transcriber model from registry
+	transcriber, err := ln.transcriberRegistry.Acquire(req.Model)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.transcriberRegistry.Release(req.Model)
 
 	// Decode base64 audio data
 	audioData, err := base64.StdEncoding.DecodeString(string(req.Audio))

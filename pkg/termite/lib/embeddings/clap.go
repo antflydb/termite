@@ -31,7 +31,7 @@ import (
 var _ embeddings.Embedder = (*CLAPEmbedder)(nil)
 
 // CLAPEmbedder wraps text and audio embedding pipelines for multimodal embedding.
-// It uses pipelines.LoadCLAPPipelines() to load the model and supports
+// It uses pipelines.LoadEmbeddingPipelines() to load the model and supports
 // both text-only and audio-only embedding requests.
 // CLAP (Contrastive Language-Audio Pretraining) embeds audio and text into
 // a shared embedding space, enabling cross-modal search between audio and text.
@@ -44,7 +44,7 @@ type CLAPEmbedder struct {
 }
 
 // NewCLAPEmbedder creates a new CLAP-style multimodal embedder from a model path.
-// Uses pipelines.LoadCLAPPipelines() to load text and audio encoders.
+// Uses pipelines.LoadEmbeddingPipelines() to load text and audio encoders.
 func NewCLAPEmbedder(
 	modelPath string,
 	quantized bool,
@@ -67,7 +67,7 @@ func NewCLAPEmbedder(
 	}
 
 	// Load both text and audio pipelines
-	textPipeline, audioPipeline, backendType, err := pipelines.LoadCLAPPipelines(
+	textPipeline, _, audioPipeline, backendType, err := pipelines.LoadEmbeddingPipelines(
 		modelPath,
 		sessionManager,
 		modelBackends,

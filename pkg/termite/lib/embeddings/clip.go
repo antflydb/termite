@@ -68,7 +68,7 @@ func NewCLIPEmbedder(
 	}
 
 	// Load both text and visual pipelines
-	textPipeline, visualPipeline, backendType, err := pipelines.LoadEmbeddingPipelines(
+	textPipeline, visualPipeline, _, backendType, err := pipelines.LoadEmbeddingPipelines(
 		modelPath,
 		sessionManager,
 		modelBackends,

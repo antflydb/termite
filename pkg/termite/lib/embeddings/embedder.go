@@ -121,8 +121,8 @@ func NewPooledEmbedder(
 	var backendUsed backends.BackendType
 
 	for i := 0; i < poolSize; i++ {
-		// LoadEmbeddingPipelines returns text and visual pipelines; we only need text
-		textPipeline, _, bt, err := pipelines.LoadEmbeddingPipelines(
+		// LoadEmbeddingPipelines returns text, visual, and audio pipelines; we only need text
+		textPipeline, _, _, bt, err := pipelines.LoadEmbeddingPipelines(
 			cfg.ModelPath,
 			sessionManager,
 			cfg.ModelBackends,
