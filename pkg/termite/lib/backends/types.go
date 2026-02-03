@@ -13,10 +13,9 @@
 // limitations under the License.
 
 // Package backends provides a unified interface for creating ML inference sessions
-// with multi-backend support. It replaces the hugot dependency with a custom stack:
+// with multi-backend support:
 //
 //   - go-huggingface: Hub download, tokenizers, safetensors parsing
-//   - huggingface-gomlx: Model architectures, GoMLX inference
 //   - onnx-gomlx: ONNX model execution via GoMLX
 //   - onnxruntime_go: Direct ONNX Runtime inference
 //
@@ -270,6 +269,12 @@ type DecoderConfig struct {
 	NumHeads int
 	// HeadDim is the dimension of each attention head.
 	HeadDim int
+
+	// ForcedDecoderIds are token IDs that must be generated at specific positions.
+	// Each entry is [position, token_id]. Used by Whisper for language/task tokens.
+	ForcedDecoderIds [][]int32
+	// SuppressTokens are token IDs that should never be generated.
+	SuppressTokens []int32
 }
 
 // ImageConfig holds configuration for image preprocessing.
@@ -306,6 +311,19 @@ func DefaultImageConfig() *ImageConfig {
 	}
 }
 
+// AudioNormalizationType specifies how to normalize mel spectrogram features.
+type AudioNormalizationType string
+
+const (
+	// AudioNormWhisper uses Whisper-specific normalization:
+	// log10, clip to (globalMax - 8.0), then (x + 4.0) / 4.0
+	AudioNormWhisper AudioNormalizationType = "whisper"
+
+	// AudioNormSimple uses simple log normalization without Whisper-specific scaling.
+	// Suitable for CLAP and other audio models.
+	AudioNormSimple AudioNormalizationType = "simple"
+)
+
 // AudioConfig holds configuration for audio preprocessing.
 type AudioConfig struct {
 	// SampleRate is the target sample rate (typically 16000 for speech models).
@@ -322,20 +340,25 @@ type AudioConfig struct {
 	NMels int
 	// PaddingValue is the value to pad with (typically 0.0).
 	PaddingValue float32
+	// Normalization specifies the normalization type for mel spectrograms.
+	// Defaults to AudioNormWhisper if empty for backward compatibility.
+	Normalization AudioNormalizationType
 }
 
 // DefaultAudioConfig returns sensible defaults for Whisper-style models.
 func DefaultAudioConfig() *AudioConfig {
 	return &AudioConfig{
-		SampleRate:   16000,
-		FeatureSize:  80,
-		NFft:         400,
-		HopLength:    160,
-		ChunkLength:  30,
-		NMels:        80,
-		PaddingValue: 0.0,
+		SampleRate:    16000,
+		FeatureSize:   80,
+		NFft:          400,
+		HopLength:     160,
+		ChunkLength:   30,
+		NMels:         80,
+		PaddingValue:  0.0,
+		Normalization: AudioNormWhisper,
 	}
 }
+
 
 // GenerationConfig holds parameters for text generation.
 type GenerationConfig struct {

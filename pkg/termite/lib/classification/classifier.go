@@ -107,7 +107,7 @@ type PooledClassifierConfig struct {
 }
 
 // PooledClassifier manages multiple ClassificationPipeline instances for concurrent zero-shot classification.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledClassifier struct {
 	pipelines    []*pipelines.ClassificationPipeline
 	sem          *semaphore.Weighted

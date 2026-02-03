@@ -131,7 +131,6 @@ func renderPDFPage(t *testing.T, pdfPath string, pageNum int, outputPath string)
 }
 
 // createReader creates a PooledReader using the new backends API.
-// This replaces the old NewPooledHugotReader calls.
 func createReader(t *testing.T, modelPath string) (*reading.PooledReader, error) {
 	t.Helper()
 

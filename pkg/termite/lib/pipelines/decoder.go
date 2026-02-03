@@ -55,6 +55,12 @@ type Generator struct {
 	// PadTokenID is the padding token ID.
 	PadTokenID int32
 
+	// ForcedDecoderIds are token IDs that must be generated at specific positions.
+	// Each entry is [position, token_id]. Used by Whisper for language/task tokens.
+	ForcedDecoderIds [][]int32
+	// SuppressTokens are token IDs that should never be generated.
+	SuppressTokens []int32
+
 	// Debug enables debug logging during generation.
 	Debug bool
 }
@@ -78,10 +84,12 @@ func NewGeneratorFromDecoderConfig(genConfig *backends.GenerationConfig, decConf
 		genConfig = backends.DefaultGenerationConfig()
 	}
 	return &Generator{
-		Config:     genConfig,
-		EOSTokenID: decConfig.EOSTokenID,
-		BOSTokenID: decConfig.BOSTokenID,
-		PadTokenID: decConfig.PadTokenID,
+		Config:           genConfig,
+		EOSTokenID:       decConfig.EOSTokenID,
+		BOSTokenID:       decConfig.BOSTokenID,
+		PadTokenID:       decConfig.PadTokenID,
+		ForcedDecoderIds: decConfig.ForcedDecoderIds,
+		SuppressTokens:   decConfig.SuppressTokens,
 	}
 }
 
@@ -173,8 +181,31 @@ func (g *Generator) Generate(
 			fmt.Printf("(EOSTokenID=%d)\n", g.EOSTokenID)
 		}
 
-		// Select next token and get its log probability
-		nextToken, logProb := g.selectNextTokenWithProb(logits, state.GeneratedTokens)
+		// Apply suppress tokens (set their logits to -inf)
+		for _, tok := range g.SuppressTokens {
+			if int(tok) < len(logits) {
+				logits[tok] = float32(math.Inf(-1))
+			}
+		}
+
+		// Check for forced decoder ID at current position
+		// Position is based on total tokens generated (including start tokens)
+		currentPosition := len(state.InputIDs) // This is the position of the next token
+		var nextToken int32
+		var logProb float64
+
+		forcedToken, hasForced := g.getForcedToken(currentPosition)
+		if hasForced {
+			nextToken = forcedToken
+			// For forced tokens, we assign a probability of 1.0 (logProb = 0)
+			logProb = 0
+			if g.Debug {
+				fmt.Printf("[DEBUG Generator] Step %d: forced token %d at position %d\n", i, nextToken, currentPosition)
+			}
+		} else {
+			// Select next token and get its log probability
+			nextToken, logProb = g.selectNextTokenWithProb(logits, state.GeneratedTokens)
+		}
 		cumulativeLogProb += logProb
 
 		if g.Debug {
@@ -357,6 +388,17 @@ func applyRepetitionPenalty(logits []float32, generatedTokens []int32, penalty f
 			}
 		}
 	}
+}
+
+// getForcedToken returns the forced token ID for the given position, if any.
+// Position is the index in the output sequence (0 = first token after start).
+func (g *Generator) getForcedToken(position int) (int32, bool) {
+	for _, pair := range g.ForcedDecoderIds {
+		if len(pair) == 2 && int(pair[0]) == position {
+			return pair[1], true
+		}
+	}
+	return 0, false
 }
 
 // Argmax returns the index of the maximum value using SIMD acceleration.

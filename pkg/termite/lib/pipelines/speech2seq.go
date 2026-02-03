@@ -308,6 +308,20 @@ func buildSpeech2SeqDecoderConfig(cfg *rawSpeech2SeqConfig) *backends.DecoderCon
 	numHeads := FirstNonZero(cfg.DecoderAttentionHeads, cfg.NumAttentionHeads, 8)
 	hiddenSize := FirstNonZero(cfg.DModel, cfg.HiddenSize, 768)
 
+	// Convert forced_decoder_ids from [][]int to [][]int32
+	var forcedDecoderIds [][]int32
+	for _, pair := range cfg.ForcedDecoderIds {
+		if len(pair) == 2 {
+			forcedDecoderIds = append(forcedDecoderIds, []int32{int32(pair[0]), int32(pair[1])})
+		}
+	}
+
+	// Convert suppress_tokens from []int to []int32
+	var suppressTokens []int32
+	for _, tok := range cfg.SuppressTokens {
+		suppressTokens = append(suppressTokens, int32(tok))
+	}
+
 	return &backends.DecoderConfig{
 		VocabSize:           cfg.VocabSize,
 		MaxLength:           maxLength,
@@ -318,6 +332,8 @@ func buildSpeech2SeqDecoderConfig(cfg *rawSpeech2SeqConfig) *backends.DecoderCon
 		NumLayers:           FirstNonZero(cfg.DecoderLayers, cfg.NumDecoderLayers, 6),
 		NumHeads:            numHeads,
 		HeadDim:             hiddenSize / numHeads,
+		ForcedDecoderIds:    forcedDecoderIds,
+		SuppressTokens:      suppressTokens,
 	}
 }
 

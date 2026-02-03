@@ -118,11 +118,12 @@ type ModelInfo struct {
 
 // CircuitBreaker implements the circuit breaker pattern
 type CircuitBreaker struct {
-	failures    int32
-	threshold   int32
-	timeout     time.Duration
-	lastFailure time.Time
-	state       int32 // 0=closed, 1=open, 2=half-open
+	failures         int32
+	threshold        int32
+	timeout          time.Duration
+	lastFailure      time.Time
+	state            int32 // 0=closed, 1=open, 2=half-open
+	halfOpenInFlight int32 // atomic counter for requests in half-open state
 
 	mu sync.RWMutex
 }
@@ -146,12 +147,17 @@ func (cb *CircuitBreaker) Allow() bool {
 		return true
 	case 1: // open
 		if time.Since(cb.lastFailure) > cb.timeout {
-			atomic.CompareAndSwapInt32(&cb.state, 1, 2) // transition to half-open
-			return true
+			// Try to become the single "tester" - only 1 allowed in half-open
+			if atomic.CompareAndSwapInt32(&cb.halfOpenInFlight, 0, 1) {
+				atomic.CompareAndSwapInt32(&cb.state, 1, 2) // transition to half-open
+				return true
+			}
+			return false
 		}
 		return false
 	case 2: // half-open
-		return true
+		// Already being tested, don't allow more
+		return false
 	}
 	return false
 }
@@ -162,7 +168,8 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	defer cb.mu.Unlock()
 
 	atomic.StoreInt32(&cb.failures, 0)
-	atomic.StoreInt32(&cb.state, 0) // close circuit
+	atomic.StoreInt32(&cb.state, 0)            // close circuit
+	atomic.StoreInt32(&cb.halfOpenInFlight, 0) // reset half-open counter
 }
 
 // RecordFailure records a failed request
@@ -176,6 +183,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 	if failures >= cb.threshold {
 		atomic.StoreInt32(&cb.state, 1) // open circuit
 	}
+	atomic.StoreInt32(&cb.halfOpenInFlight, 0) // reset half-open counter
 }
 
 // ModelRegistry tracks which models are available on which Termites

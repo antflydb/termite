@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/ajroetker/go-highway/hwy/contrib/vec"
+	"github.com/gomlx/gomlx/pkg/core/tensors/bucketing"
 )
 
 // Model represents an inference model that can process inputs.
@@ -160,8 +161,6 @@ type ModelFormat string
 const (
 	// ModelFormatAuto auto-detects the model format
 	ModelFormatAuto ModelFormat = ""
-	// ModelFormatHuggingFace indicates SafeTensors + config.json format
-	ModelFormatHuggingFace ModelFormat = "huggingface"
 	// ModelFormatONNX indicates ONNX model file format
 	ModelFormatONNX ModelFormat = "onnx"
 )
@@ -213,6 +212,32 @@ type LoadConfig struct {
 
 	// NumThreads is the number of inference threads (0 = auto)
 	NumThreads int
+
+	// BatchBucketing specifies the bucketing strategy for the batch dimension.
+	// Input batch sizes are rounded up via this strategy to reduce JIT recompilation.
+	// Only used by backends with JIT compilation (XLA, CoreML).
+	// Nil uses backend defaults (Exponential(1.4) for JIT backends, None for Go).
+	BatchBucketing bucketing.Strategy
+
+	// SeqBucketing specifies the bucketing strategy for the sequence length dimension.
+	// Input sequence lengths are rounded up via this strategy to reduce JIT recompilation.
+	// Only used by backends with JIT compilation (XLA, CoreML).
+	// Nil uses backend defaults (Exponential(1.4) for JIT backends, None for Go).
+	SeqBucketing bucketing.Strategy
+
+	// MaxCacheSize limits the number of cached compiled graphs.
+	// 0 = use GoMLX default (32), -1 = unlimited.
+	MaxCacheSize int
+
+	// PreCompileMaxBatch is the maximum batch size for eager pre-compilation of
+	// bucket shapes at model load time. 0 = use BatchSize if set, otherwise skip.
+	// Only used by JIT backends (CoreML, XLA) with bucketing enabled.
+	PreCompileMaxBatch int
+
+	// PreCompileMaxSeq is the maximum sequence length for eager pre-compilation of
+	// bucket shapes at model load time. 0 = use MaxLength.
+	// Only used by JIT backends (CoreML, XLA) with bucketing enabled.
+	PreCompileMaxSeq int
 }
 
 // DefaultLoadConfig returns a LoadConfig with sensible defaults.
@@ -307,6 +332,41 @@ func WithModelFormat(format ModelFormat) LoadOption {
 func WithGoMLXBackend(backend GoMLXBackendType) LoadOption {
 	return func(c *LoadConfig) {
 		c.GoMLXBackend = backend
+	}
+}
+
+// WithBatchBucketing sets the bucketing strategy for the batch dimension.
+// Common strategies: bucketing.Exponential(1.4), bucketing.Pow2(), bucketing.Linear(8).
+func WithBatchBucketing(strategy bucketing.Strategy) LoadOption {
+	return func(c *LoadConfig) {
+		c.BatchBucketing = strategy
+	}
+}
+
+// WithSeqBucketing sets the bucketing strategy for the sequence length dimension.
+// Common strategies: bucketing.Exponential(1.4), bucketing.Pow2(), bucketing.Linear(64).
+func WithSeqBucketing(strategy bucketing.Strategy) LoadOption {
+	return func(c *LoadConfig) {
+		c.SeqBucketing = strategy
+	}
+}
+
+// WithMaxCacheSize sets the maximum number of cached compiled graphs.
+// 0 = use GoMLX default (32), -1 = unlimited.
+func WithMaxCacheSize(size int) LoadOption {
+	return func(c *LoadConfig) {
+		c.MaxCacheSize = size
+	}
+}
+
+// WithPreCompileBuckets configures eager pre-compilation of bucket shapes at
+// model load time. maxBatch and maxSeq define the range of dimensions to
+// enumerate. All unique (batchBucket, seqBucket) combinations within these
+// bounds are pre-compiled. Use 0 to skip a dimension.
+func WithPreCompileBuckets(maxBatch, maxSeq int) LoadOption {
+	return func(c *LoadConfig) {
+		c.PreCompileMaxBatch = maxBatch
+		c.PreCompileMaxSeq = maxSeq
 	}
 }
 

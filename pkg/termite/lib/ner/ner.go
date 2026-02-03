@@ -173,7 +173,7 @@ type PooledNERConfig struct {
 }
 
 // PooledNER manages multiple NERPipeline instances for concurrent NER.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledNER struct {
 	pipelines    []*pipelines.NERPipeline
 	sem          *semaphore.Weighted

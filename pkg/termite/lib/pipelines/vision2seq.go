@@ -220,7 +220,7 @@ type rawVision2SeqConfig struct {
 
 	// Encoder config (for vision models)
 	EncoderConfig *struct {
-		ImageSize         int `json:"image_size"`
+		ImageSize         any `json:"image_size"` // Can be int or []int (e.g., [width, height])
 		HiddenSize        int `json:"hidden_size"`
 		NumAttentionHeads int `json:"num_attention_heads"`
 	} `json:"encoder"`
@@ -436,8 +436,10 @@ func buildImageConfig(cfg *rawVision2SeqConfig, preproc *rawPreprocessorConfig) 
 		imageSize = size
 	} else if size := extractImageSize(sizeField); size > 0 {
 		imageSize = size
-	} else if cfg.EncoderConfig != nil && cfg.EncoderConfig.ImageSize > 0 {
-		imageSize = cfg.EncoderConfig.ImageSize
+	} else if cfg.EncoderConfig != nil {
+		if size := extractImageSize(cfg.EncoderConfig.ImageSize); size > 0 {
+			imageSize = size
+		}
 	} else if cfg.VisionConfig != nil && cfg.VisionConfig.ImageSize > 0 {
 		imageSize = cfg.VisionConfig.ImageSize
 	}
@@ -474,6 +476,13 @@ func extractImageSize(v any) int {
 		return int(val)
 	case int:
 		return val
+	case []interface{}:
+		// Handle array like [width, height] - return the first element (width)
+		if len(val) > 0 {
+			if f, ok := val[0].(float64); ok {
+				return int(f)
+			}
+		}
 	case map[string]interface{}:
 		// Handle {height: N, width: N} or {shortest_edge: N}
 		if h, ok := val["height"].(float64); ok {

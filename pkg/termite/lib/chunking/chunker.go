@@ -70,7 +70,7 @@ type PooledChunkerConfig struct {
 }
 
 // PooledChunker manages multiple ChunkingPipeline instances for concurrent chunking.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledChunker struct {
 	pipelines    []*pipelines.ChunkingPipeline
 	sem          *semaphore.Weighted

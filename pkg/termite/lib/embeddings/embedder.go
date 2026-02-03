@@ -42,7 +42,7 @@ var _ embeddings.Embedder = (*PooledEmbedder)(nil)
 const DefaultEmbeddingBatchSize = 1
 
 // PooledEmbedder manages multiple EmbeddingPipeline instances for concurrent embedding generation.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledEmbedder struct {
 	pipelines    []*pipelines.EmbeddingPipeline
 	sem          *semaphore.Weighted

@@ -325,7 +325,7 @@ type PooledREBELConfig struct {
 }
 
 // PooledREBEL manages multiple Seq2SeqPipeline instances for concurrent relation extraction.
-// Uses the new pipelines package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new pipelines package (go-huggingface + gomlx/onnxruntime).
 type PooledREBEL struct {
 	pipelines    []*pipelines.Seq2SeqPipeline
 	sem          *semaphore.Weighted

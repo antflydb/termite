@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -36,20 +37,16 @@ var modelDownloadMutex sync.Mutex
 
 // TestMain sets up the e2e test environment (models directory only - downloads are lazy)
 func TestMain(m *testing.M) {
-	// Use TERMITE_MODELS_DIR if set, otherwise use a temp directory
+	// Use TERMITE_MODELS_DIR if set, otherwise default to repo-local models/ directory.
 	testModelsDir = os.Getenv("TERMITE_MODELS_DIR")
 	if testModelsDir == "" {
-		// Create temp directory for models
-		var err error
-		testModelsDir, err = os.MkdirTemp("", "termite-e2e-models-*")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create temp models dir: %v\n", err)
-			os.Exit(1)
-		}
-		// Clean up temp directory after tests (unless KEEP_TEST_MODELS is set)
-		if os.Getenv("KEEP_TEST_MODELS") != "true" {
-			defer os.RemoveAll(testModelsDir)
-		}
+		// Default to repo-local models/ directory for caching across runs.
+		// This is the same directory used by the model registry and auto-discovery.
+		testModelsDir = repoModelsDir()
+	}
+	if err := os.MkdirAll(testModelsDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create models dir %s: %v\n", testModelsDir, err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("E2E Test Setup: Using models directory: %s\n", testModelsDir)
@@ -58,6 +55,13 @@ func TestMain(m *testing.M) {
 	// Run tests
 	code := m.Run()
 	os.Exit(code)
+}
+
+// repoModelsDir returns the path to the repo-local models/ directory.
+// e2e tests run from termite/e2e/, so models/ is at ../models/.
+func repoModelsDir() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "..", "models")
 }
 
 // ModelType represents the type of model for determining directory placement

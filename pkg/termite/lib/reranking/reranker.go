@@ -32,7 +32,7 @@ import (
 var _ reranking.Model = (*PooledReranker)(nil)
 
 // PooledReranker manages multiple RerankingPipeline instances for concurrent reranking.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime) instead of hugot.
+// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledReranker struct {
 	pipelines    []*pipelines.RerankingPipeline
 	sem          *semaphore.Weighted

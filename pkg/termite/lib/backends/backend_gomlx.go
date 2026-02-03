@@ -21,14 +21,14 @@ import (
 	"path/filepath"
 	"sync"
 
-	hfmodels "github.com/ajroetker/huggingface-gomlx"
-	"github.com/ajroetker/huggingface-gomlx/architectures/bert"
 	"github.com/gomlx/gomlx/backends"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
+	"github.com/gomlx/gomlx/pkg/core/tensors/bucketing"
 	mlctx "github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/onnx"
+	"golang.org/x/sync/errgroup"
 
 	// Import Go backend - always available (pure Go, no CGO)
 	_ "github.com/gomlx/gomlx/backends/simplego"
@@ -40,11 +40,96 @@ func init() {
 	RegisterBackend(newGomlxBackend(BackendGo, "go"))
 }
 
+// defaultBucketStrategy is Exponential(1.4), which provides fine-grained bucketing
+// with ~40% growth between adjacent buckets (e.g., 1,2,3,4,6,8,11,15,21,29,...).
+// This balances cache efficiency against wasted padding.
+var defaultBucketStrategy = bucketing.Exponential(1.4)
+
+// bucketConfig holds resolved bucketing configuration for a model.
+type bucketConfig struct {
+	batchStrategy bucketing.Strategy
+	seqStrategy   bucketing.Strategy
+	maxCacheSize  int
+	maxBatch      int // Max batch size for pre-compilation (0 = skip pre-compilation)
+	maxSeq        int // Max sequence length for pre-compilation (0 = skip pre-compilation)
+	enabled       bool
+}
+
+// resolveBucketConfig determines bucketing behavior based on the backend type and user config.
+// The Go backend has no JIT compilation cost so bucketing is disabled by default.
+// XLA and CoreML backends benefit from bucketed shapes.
+func resolveBucketConfig(backendType BackendType, config *LoadConfig) bucketConfig {
+	switch backendType {
+	case BackendGo:
+		// Pure Go backend: no JIT cost, so bucketing is unnecessary unless explicitly requested.
+		if config.BatchBucketing != nil || config.SeqBucketing != nil {
+			bc := bucketConfig{
+				batchStrategy: config.BatchBucketing,
+				seqStrategy:   config.SeqBucketing,
+				enabled:       true,
+				maxCacheSize:  config.MaxCacheSize,
+			}
+			if bc.batchStrategy == nil {
+				bc.batchStrategy = defaultBucketStrategy
+			}
+			if bc.seqStrategy == nil {
+				bc.seqStrategy = defaultBucketStrategy
+			}
+			return bc
+		}
+		return bucketConfig{enabled: false, maxCacheSize: -1}
+
+	default:
+		// XLA, CoreML, and future JIT backends: enable bucketing.
+		bc := bucketConfig{
+			batchStrategy: config.BatchBucketing,
+			seqStrategy:   config.SeqBucketing,
+			enabled:       true,
+			maxCacheSize:  config.MaxCacheSize,
+			maxBatch:      config.PreCompileMaxBatch,
+			maxSeq:        config.PreCompileMaxSeq,
+		}
+		if bc.batchStrategy == nil {
+			bc.batchStrategy = defaultBucketStrategy
+		}
+		if bc.seqStrategy == nil {
+			bc.seqStrategy = defaultBucketStrategy
+		}
+		// Default pre-compilation bounds: batch from BatchSize, seq from MaxLength.
+		if bc.maxBatch == 0 && config.BatchSize > 0 {
+			bc.maxBatch = config.BatchSize
+		}
+		if bc.maxSeq == 0 {
+			bc.maxSeq = config.MaxLength
+		}
+		return bc
+	}
+}
+
+// enumerateBuckets returns all unique bucket values from 1 to max (inclusive)
+// produced by the given strategy. Values exceeding max are excluded.
+func enumerateBuckets(strategy bucketing.Strategy, max int) []int {
+	if max <= 0 {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var result []int
+	for dim := 1; dim <= max; dim++ {
+		b := strategy.Bucket(dim)
+		if b > max {
+			continue
+		}
+		if !seen[b] {
+			seen[b] = true
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
 // gomlxBackend implements Backend using GoMLX for inference.
 //
-// This backend supports two model formats:
-//   - HuggingFace: SafeTensors + config.json (via huggingface-gomlx)
-//   - ONNX: .onnx model files (via onnx-gomlx)
+// This backend supports ONNX model files (via onnx-gomlx).
 //
 // Two backends are registered:
 //   - BackendGo: Pure Go engine (simplego), always available, slower
@@ -202,35 +287,23 @@ func (l *gomlxModelLoader) Load(path string, opts ...LoadOption) (Model, error) 
 		format = detectGoMLXModelFormat(path)
 	}
 
-	// Get the inference backend
-	engine, err := l.backend.engineMgr.getEngine(string(config.GoMLXBackend))
+	// Get the inference backend using the backend's engine type (go, coreml, xla)
+	// Use config.GoMLXBackend only as override if explicitly set
+	engineType := l.backend.engineType
+	if config.GoMLXBackend != "" {
+		engineType = string(config.GoMLXBackend)
+	}
+	engine, err := l.backend.engineMgr.getEngine(engineType)
 	if err != nil {
-		return nil, fmt.Errorf("getting GoMLX engine: %w", err)
+		return nil, fmt.Errorf("getting GoMLX engine %q: %w", engineType, err)
 	}
 
 	switch format {
-	case ModelFormatHuggingFace:
-		return l.loadHuggingFace(path, config, engine)
 	case ModelFormatONNX:
 		return l.loadONNX(path, config, engine)
 	default:
 		return nil, fmt.Errorf("unknown model format at %s", path)
 	}
-}
-
-// loadHuggingFace loads a HuggingFace model (SafeTensors format).
-func (l *gomlxModelLoader) loadHuggingFace(path string, config *LoadConfig, engine backends.Backend) (Model, error) {
-	hfModel, err := newHFModel(path, engine, config.Pooling, config.Normalize)
-	if err != nil {
-		return nil, err
-	}
-
-	return &gomlxModelWrapper{
-		hfModel:     hfModel,
-		path:        path,
-		config:      config,
-		backendType: l.backend.backendType,
-	}, nil
 }
 
 // loadONNX loads an ONNX model via onnx-gomlx.
@@ -246,7 +319,9 @@ func (l *gomlxModelLoader) loadONNX(path string, config *LoadConfig, engine back
 		onnxPath = matches[0]
 	}
 
-	onnxModel, err := newONNXModel(onnxPath, engine, config.Pooling, config.Normalize)
+	buckets := resolveBucketConfig(l.backend.backendType, config)
+
+	onnxModel, err := newONNXModel(onnxPath, engine, config.Pooling, config.Normalize, buckets)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +331,7 @@ func (l *gomlxModelLoader) loadONNX(path string, config *LoadConfig, engine back
 		path:        path,
 		config:      config,
 		backendType: l.backend.backendType,
+		buckets:     buckets,
 	}, nil
 }
 
@@ -270,21 +346,6 @@ func (l *gomlxModelLoader) Backend() BackendType {
 
 // detectGoMLXModelFormat auto-detects the model format from files present.
 func detectGoMLXModelFormat(path string) ModelFormat {
-	// Check for HuggingFace format (config.json + safetensors)
-	configPath := filepath.Join(path, "config.json")
-	if _, err := os.Stat(configPath); err == nil {
-		// Check for SafeTensors
-		safetensors, _ := filepath.Glob(filepath.Join(path, "*.safetensors"))
-		if len(safetensors) > 0 {
-			return ModelFormatHuggingFace
-		}
-		// Check for sharded model index
-		indexPath := filepath.Join(path, "model.safetensors.index.json")
-		if _, err := os.Stat(indexPath); err == nil {
-			return ModelFormatHuggingFace
-		}
-	}
-
 	// Check for ONNX format
 	onnxFiles, _ := filepath.Glob(filepath.Join(path, "*.onnx"))
 	if len(onnxFiles) > 0 {
@@ -294,29 +355,125 @@ func detectGoMLXModelFormat(path string) ModelFormat {
 	return ModelFormatAuto // Unknown
 }
 
-// gomlxModelWrapper wraps hfModel or onnxModel to implement the backends.Model interface.
+// gomlxModelWrapper wraps an onnxModel to implement the backends.Model interface.
 type gomlxModelWrapper struct {
-	hfModel     *hfModel
 	onnxModel   *onnxModel
 	path        string
 	config      *LoadConfig
 	backendType BackendType
+	buckets     bucketConfig
 }
 
 func (m *gomlxModelWrapper) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
-	if m.hfModel != nil {
-		return m.hfModel.forward(ctx, inputs.InputIDs, inputs.AttentionMask)
+	if !m.buckets.enabled {
+		return m.forwardDirect(ctx, inputs)
 	}
+
+	// Record original dimensions for trimming after inference.
+	origBatch := len(inputs.InputIDs)
+	if origBatch == 0 {
+		return m.forwardDirect(ctx, inputs)
+	}
+	origSeq := len(inputs.InputIDs[0])
+
+	// Round up to the nearest bucket.
+	bucketedBatch := m.buckets.batchStrategy.Bucket(origBatch)
+	bucketedSeq := m.buckets.seqStrategy.Bucket(origSeq)
+
+	// Pad inputs to bucketed dimensions.
+	padded := padModelInputs(inputs, bucketedBatch, bucketedSeq)
+
+	// Run inference on the padded inputs.
+	output, err := m.forwardDirect(ctx, padded)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trim the output back to original dimensions.
+	return trimModelOutput(output, origBatch, origSeq), nil
+}
+
+// forwardDirect runs inference without bucketing.
+func (m *gomlxModelWrapper) forwardDirect(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	if m.onnxModel != nil {
-		return m.onnxModel.forward(ctx, inputs.InputIDs, inputs.AttentionMask)
+		return m.onnxModel.forward(ctx, inputs)
 	}
 	return nil, fmt.Errorf("no model loaded")
 }
 
-func (m *gomlxModelWrapper) Close() error {
-	if m.hfModel != nil {
-		return m.hfModel.close()
+// padModelInputs pads InputIDs, AttentionMask, and TokenTypeIDs to the target dimensions.
+// Padding values are zero, which means attention mask zeros will exclude padded positions from pooling.
+// Returns the original inputs unchanged if already at the target size.
+func padModelInputs(inputs *ModelInputs, targetBatch, targetSeq int) *ModelInputs {
+	origBatch := len(inputs.InputIDs)
+	origSeq := 0
+	if origBatch > 0 {
+		origSeq = len(inputs.InputIDs[0])
 	}
+
+	// No padding needed.
+	if origBatch == targetBatch && origSeq == targetSeq {
+		return inputs
+	}
+
+	padded := *inputs // shallow copy
+
+	padded.InputIDs = padInt32Slice(inputs.InputIDs, targetBatch, targetSeq)
+	padded.AttentionMask = padInt32Slice(inputs.AttentionMask, targetBatch, targetSeq)
+	if len(inputs.TokenTypeIDs) > 0 {
+		padded.TokenTypeIDs = padInt32Slice(inputs.TokenTypeIDs, targetBatch, targetSeq)
+	}
+
+	return &padded
+}
+
+// padInt32Slice pads a [batch, seq] int32 slice to the target dimensions with zeros.
+func padInt32Slice(src [][]int32, targetBatch, targetSeq int) [][]int32 {
+	result := make([][]int32, targetBatch)
+	for i := range targetBatch {
+		row := make([]int32, targetSeq)
+		if i < len(src) {
+			copy(row, src[i])
+		}
+		result[i] = row
+	}
+	return result
+}
+
+// trimModelOutput trims inference output back to the original unpadded dimensions.
+func trimModelOutput(output *ModelOutput, origBatch, origSeq int) *ModelOutput {
+	if output == nil {
+		return nil
+	}
+
+	trimmed := *output // shallow copy
+
+	// LastHiddenState [batch, seq, hidden]: trim both batch and seq.
+	if len(output.LastHiddenState) > origBatch {
+		trimmed.LastHiddenState = output.LastHiddenState[:origBatch]
+	}
+	for i := range trimmed.LastHiddenState {
+		if len(trimmed.LastHiddenState[i]) > origSeq {
+			trimmed.LastHiddenState[i] = trimmed.LastHiddenState[i][:origSeq]
+		}
+	}
+
+	// Embeddings [batch, hidden]: trim batch only.
+	if len(output.Embeddings) > origBatch {
+		trimmed.Embeddings = output.Embeddings[:origBatch]
+	}
+
+	// Logits [batch, classes]: trim batch only.
+	if len(output.Logits) > origBatch {
+		trimmed.Logits = output.Logits[:origBatch]
+	}
+
+	// EncoderOutput and PastKeyValues are passed through unchanged.
+
+	return &trimmed
+}
+
+func (m *gomlxModelWrapper) Close() error {
 	if m.onnxModel != nil {
 		return m.onnxModel.close()
 	}
@@ -332,172 +489,45 @@ func (m *gomlxModelWrapper) Backend() BackendType {
 }
 
 // =============================================================================
-// HuggingFace Model (SafeTensors format)
-// =============================================================================
-
-// hfModel implements inference for HuggingFace models (SafeTensors format)
-// using huggingface-gomlx.
-type hfModel struct {
-	path      string
-	pooling   string
-	normalize bool
-	hfModel   *hfmodels.Model
-	ctx       *mlctx.Context
-	engine    backends.Backend
-	exec      *mlctx.Exec // Compiled inference graph
-
-	mu sync.Mutex
-}
-
-// newHFModel loads a HuggingFace model from a local directory.
-func newHFModel(path string, engine backends.Backend, pooling string, normalize bool) (*hfModel, error) {
-	// Load the model using huggingface-gomlx
-	hfm, err := hfmodels.NewFromLocal(path)
-	if err != nil {
-		return nil, fmt.Errorf("loading HuggingFace model: %w", err)
-	}
-
-	// Create GoMLX context and load weights
-	ctx := mlctx.New()
-	if err := hfm.LoadWeightsIntoContext(ctx); err != nil {
-		return nil, fmt.Errorf("loading weights into context: %w", err)
-	}
-
-	model := &hfModel{
-		path:      path,
-		pooling:   pooling,
-		normalize: normalize,
-		hfModel:   hfm,
-		ctx:       ctx,
-		engine:    engine,
-	}
-
-	// Pre-compile the inference graph if possible
-	if err := model.compile(); err != nil {
-		return nil, fmt.Errorf("compiling inference graph: %w", err)
-	}
-
-	return model, nil
-}
-
-// compile pre-compiles the inference graph for efficiency.
-func (m *hfModel) compile() error {
-	// Get the architecture builder
-	builder := m.hfModel.Builder
-
-	// Check if it's a BERT-like model
-	bertBuilder, ok := builder.(*bert.Builder)
-	if !ok {
-		// For non-BERT models, we'll compile on first forward pass
-		return nil
-	}
-
-	// Pre-compile the BERT forward pass
-	exec, err := mlctx.NewExecAny(m.engine, m.ctx, func(ctx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
-		inputIDs := inputs[0]
-		attentionMask := inputs[1]
-
-		// Run BERT forward pass
-		reuseCtx := ctx.Reuse()
-		hidden, _ := bertBuilder.Forward(reuseCtx, inputIDs, attentionMask, nil, nil)
-		return []*graph.Node{hidden}
-	})
-	if err != nil {
-		return fmt.Errorf("creating exec: %w", err)
-	}
-	m.exec = exec
-
-	return nil
-}
-
-// forward runs inference on the given inputs.
-func (m *hfModel) forward(ctx context.Context, inputIDs [][]int32, attentionMask [][]int32) (*ModelOutput, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	batchSize := len(inputIDs)
-	if batchSize == 0 {
-		return &ModelOutput{}, nil
-	}
-
-	seqLen := len(inputIDs[0])
-
-	// Create input tensors
-	flatInputIDs := make([]int32, batchSize*seqLen)
-	flatAttentionMask := make([]float32, batchSize*seqLen)
-	for i := range batchSize {
-		for j := range seqLen {
-			flatInputIDs[i*seqLen+j] = inputIDs[i][j]
-			flatAttentionMask[i*seqLen+j] = float32(attentionMask[i][j])
-		}
-	}
-
-	inputIDsTensor := tensors.FromFlatDataAndDimensions(flatInputIDs, batchSize, seqLen)
-	attentionMaskTensor := tensors.FromFlatDataAndDimensions(flatAttentionMask, batchSize, seqLen)
-
-	// Run inference
-	if m.exec == nil {
-		return nil, fmt.Errorf("model not compiled - architecture not supported")
-	}
-	results, err := m.exec.Exec(inputIDsTensor, attentionMaskTensor)
-	if err != nil {
-		return nil, fmt.Errorf("exec failed: %w", err)
-	}
-
-	if len(results) == 0 {
-		return nil, fmt.Errorf("no output from model")
-	}
-
-	// Extract hidden states
-	output := results[0]
-	_ = output.Shape() // Shape is [batch, seq, hidden]
-
-	// Get the data
-	data := output.Value().([][][]float32)
-
-	// Reshape to our format
-	lastHiddenState := make([][][]float32, batchSize)
-	for i := range batchSize {
-		lastHiddenState[i] = data[i]
-	}
-
-	// Apply pooling
-	embeddings := PoolHiddenStates(lastHiddenState, attentionMask, PoolingStrategy(m.pooling))
-
-	// Apply normalization if requested
-	if m.normalize {
-		NormalizeEmbeddings(embeddings)
-	}
-
-	return &ModelOutput{
-		LastHiddenState: lastHiddenState,
-		Embeddings:      embeddings,
-	}, nil
-}
-
-func (m *hfModel) close() error {
-	return nil
-}
-
-// =============================================================================
 // ONNX Model (via onnx-gomlx)
 // =============================================================================
+
+// onnxModelType indicates the input type an ONNX model expects.
+type onnxModelType int
+
+const (
+	// onnxModelText is a text encoder model (input_ids + attention_mask).
+	onnxModelText onnxModelType = iota
+	// onnxModelVision is a vision encoder model (pixel_values).
+	onnxModelVision
+	// onnxModelEmbeddings is a projection model (pre-computed embeddings).
+	onnxModelEmbeddings
+	// onnxModelAudio is an audio encoder model (input_features / audio_values).
+	onnxModelAudio
+)
 
 // onnxModel implements inference for ONNX models using onnx-gomlx.
 // This converts ONNX graphs to GoMLX for execution.
 type onnxModel struct {
-	path      string
-	pooling   string
-	normalize bool
-	onnxModel *onnx.Model
-	ctx       *mlctx.Context
-	engine    backends.Backend
+	path            string
+	pooling         string
+	normalize       bool
+	maxCacheSize    int
+	onnxModel       *onnx.Model
+	ctx             *mlctx.Context
+	engine          backends.Backend
+	exec            *mlctx.Exec // Cached compiled inference graph
+	hasAttentionMask bool
+	hasTokenTypeIds  bool
+	modelType        onnxModelType
+	inputNames       []string // ONNX model input names
 
 	mu sync.Mutex
 }
 
 // newONNXModel loads an ONNX model from a file path.
-func newONNXModel(onnxPath string, engine backends.Backend, pooling string, normalize bool) (*onnxModel, error) {
+// buckets controls both the compiled graph cache and optional pre-compilation of bucket shapes.
+func newONNXModel(onnxPath string, engine backends.Backend, pooling string, normalize bool, buckets bucketConfig) (*onnxModel, error) {
 	// Load the ONNX model
 	om, err := onnx.ReadFile(onnxPath)
 	if err != nil {
@@ -510,21 +540,177 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 		return nil, fmt.Errorf("loading ONNX variables: %w", err)
 	}
 
-	return &onnxModel{
-		path:      onnxPath,
-		pooling:   pooling,
-		normalize: normalize,
-		onnxModel: om,
-		ctx:       ctx,
-		engine:    engine,
-	}, nil
+	// Detect model type and input characteristics from ONNX input names.
+	inputNames, _ := om.Inputs()
+	hasAttentionMask := false
+	hasTokenTypeIds := false
+	modelType := onnxModelText // default
+	for _, name := range inputNames {
+		switch name {
+		case "attention_mask":
+			hasAttentionMask = true
+		case "token_type_ids":
+			hasTokenTypeIds = true
+		case "pixel_values":
+			modelType = onnxModelVision
+		case "input_features", "audio_values":
+			modelType = onnxModelAudio
+		}
+	}
+	// If no standard text or vision inputs found, treat as embeddings/projection model.
+	if modelType == onnxModelText {
+		hasStandardInput := false
+		for _, name := range inputNames {
+			if name == "input_ids" {
+				hasStandardInput = true
+				break
+			}
+		}
+		if !hasStandardInput {
+			modelType = onnxModelEmbeddings
+		}
+	}
+
+	model := &onnxModel{
+		path:            onnxPath,
+		pooling:         pooling,
+		normalize:       normalize,
+		maxCacheSize:    buckets.maxCacheSize,
+		onnxModel:       om,
+		ctx:             ctx,
+		engine:          engine,
+		hasAttentionMask: hasAttentionMask,
+		hasTokenTypeIds:  hasTokenTypeIds,
+		modelType:        modelType,
+		inputNames:       inputNames,
+	}
+
+	// Pre-compile the inference graph for efficiency.
+	// This compiles once and caches the executable, avoiding recompilation on every forward() call.
+	// Vision and embeddings models use ExecOnceN (no pre-compilation) since their
+	// input shapes are typically fixed or have few variations.
+	if modelType == onnxModelText {
+		if err := model.compile(buckets); err != nil {
+			return nil, fmt.Errorf("compiling ONNX inference graph: %w", err)
+		}
+	}
+
+	return model, nil
 }
 
-// forward runs inference on the given inputs.
-func (m *onnxModel) forward(ctx context.Context, inputIDs [][]int32, attentionMask [][]int32) (*ModelOutput, error) {
+// compile pre-compiles the ONNX inference graph and optionally pre-compiles
+// all bucket shapes to avoid JIT compilation during inference.
+func (m *onnxModel) compile(buckets bucketConfig) error {
+	graphFn := func(mlCtx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
+		inputMap := map[string]*graph.Node{
+			"input_ids": inputs[0],
+		}
+		idx := 1
+		if m.hasAttentionMask {
+			inputMap["attention_mask"] = inputs[idx]
+			idx++
+		}
+		if idx < len(inputs) {
+			inputMap["token_type_ids"] = inputs[idx]
+		}
+		return m.onnxModel.CallGraph(mlCtx.Reuse(), inputs[0].Graph(), inputMap)
+	}
+
+	exec, err := mlctx.NewExecAny(m.engine, m.ctx, graphFn)
+	if err != nil {
+		return fmt.Errorf("creating exec: %w", err)
+	}
+	if m.maxCacheSize != 0 {
+		exec.SetMaxCache(m.maxCacheSize)
+	}
+	m.exec = exec
+
+	// Pre-compile all bucket shapes so JIT compilation happens at load time
+	// rather than on the first inference for each shape.
+	if buckets.enabled && buckets.maxBatch > 0 && buckets.maxSeq > 0 {
+		batchBuckets := enumerateBuckets(buckets.batchStrategy, buckets.maxBatch)
+		seqBuckets := enumerateBuckets(buckets.seqStrategy, buckets.maxSeq)
+
+		var eg errgroup.Group
+		for _, b := range batchBuckets {
+			for _, s := range seqBuckets {
+				b, s := b, s
+				eg.Go(func() error {
+					args := []any{tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s)}
+					if m.hasAttentionMask {
+						args = append(args, tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s))
+					}
+					if m.hasTokenTypeIds {
+						args = append(args, tensors.FromFlatDataAndDimensions(make([]int64, b*s), b, s))
+					}
+					return m.exec.PreCompile(args...)
+				})
+			}
+		}
+		if err := eg.Wait(); err != nil {
+			return fmt.Errorf("pre-compiling bucket shapes: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// forward dispatches to the appropriate execution path based on
+// which ModelInputs fields are populated.
+func (m *onnxModel) forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Audio path: CLAP audio encoder with mel spectrogram input.
+	if len(inputs.AudioFeatures) > 0 {
+		return m.execAudio(inputs)
+	}
+
+	// Text path uses cached compiled graph and has pooling/normalization.
+	if len(inputs.Embeddings) == 0 && len(inputs.ImagePixels) == 0 {
+		return m.execText(inputs.InputIDs, inputs.AttentionMask)
+	}
+
+	// Vision and projection paths build a single tensor and run once.
+	var (
+		names     []string
+		tensor    *tensors.Tensor
+		batchSize int
+	)
+	switch {
+	case len(inputs.ImagePixels) > 0:
+		batchSize = inputs.ImageBatch
+		if batchSize == 0 {
+			batchSize = 1
+		}
+		tensor = tensors.FromFlatDataAndDimensions(inputs.ImagePixels,
+			batchSize, inputs.ImageChannels, inputs.ImageHeight, inputs.ImageWidth)
+		names = []string{"pixel_values"}
+
+	case len(inputs.Embeddings) > 0:
+		batchSize = len(inputs.Embeddings)
+		hiddenSize := len(inputs.Embeddings[0])
+		flat := make([]float32, batchSize*hiddenSize)
+		for i, emb := range inputs.Embeddings {
+			copy(flat[i*hiddenSize:(i+1)*hiddenSize], emb)
+		}
+		tensor = tensors.FromFlatDataAndDimensions(flat, batchSize, hiddenSize)
+		inputName := "input"
+		if len(m.inputNames) > 0 {
+			inputName = m.inputNames[0]
+		}
+		names = []string{inputName}
+	}
+
+	results, err := m.execOnce(names, tensor)
+	if err != nil {
+		return nil, fmt.Errorf("exec failed: %w", err)
+	}
+	return m.parseOutput(results, batchSize)
+}
+
+// execText runs the text encoder path (input_ids + optional attention_mask).
+func (m *onnxModel) execText(inputIDs, attentionMask [][]int32) (*ModelOutput, error) {
 	batchSize := len(inputIDs)
 	if batchSize == 0 {
 		return &ModelOutput{}, nil
@@ -534,106 +720,159 @@ func (m *onnxModel) forward(ctx context.Context, inputIDs [][]int32, attentionMa
 
 	// Create input tensors (ONNX typically expects int64)
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	flatAttentionMask := make([]int64, batchSize*seqLen)
 	for i := range batchSize {
 		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
-			flatAttentionMask[i*seqLen+j] = int64(attentionMask[i][j])
 		}
 	}
-
 	inputIDsTensor := tensors.FromFlatDataAndDimensions(flatInputIDs, batchSize, seqLen)
-	attentionMaskTensor := tensors.FromFlatDataAndDimensions(flatAttentionMask, batchSize, seqLen)
 
-	// Check if model requires token_type_ids (used by BERT-based models)
-	var tokenTypeIdsTensor *tensors.Tensor
-	inputNames, _ := m.onnxModel.Inputs()
-	needsTokenTypeIds := false
-	for _, name := range inputNames {
-		if name == "token_type_ids" {
-			needsTokenTypeIds = true
-			break
+	var flatAttentionMask []int64
+	var attentionMaskTensor *tensors.Tensor
+	if m.hasAttentionMask {
+		flatAttentionMask = make([]int64, batchSize*seqLen)
+		for i := range batchSize {
+			for j := range seqLen {
+				flatAttentionMask[i*seqLen+j] = int64(attentionMask[i][j])
+			}
 		}
-	}
-	if needsTokenTypeIds {
-		// Create zeros tensor for token_type_ids (same shape as input_ids)
-		flatTokenTypeIds := make([]int64, batchSize*seqLen) // zeros by default
-		tokenTypeIdsTensor = tensors.FromFlatDataAndDimensions(flatTokenTypeIds, batchSize, seqLen)
+		attentionMaskTensor = tensors.FromFlatDataAndDimensions(flatAttentionMask, batchSize, seqLen)
 	}
 
-	// Build the ONNX graph function
-	graphFn := func(mlCtx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
-		inputMap := map[string]*graph.Node{
-			"input_ids":      inputs[0],
-			"attention_mask": inputs[1],
-		}
-		if len(inputs) > 2 {
-			inputMap["token_type_ids"] = inputs[2]
-		}
-		return m.onnxModel.CallGraph(mlCtx.Reuse(), inputs[0].Graph(), inputMap)
-	}
-
-	// Execute with the appropriate inputs
+	// Execute using the cached compiled graph
 	var results []*tensors.Tensor
 	var err error
-	if tokenTypeIdsTensor != nil {
-		results, err = mlctx.ExecOnceN(m.engine, m.ctx, graphFn, inputIDsTensor, attentionMaskTensor, tokenTypeIdsTensor)
+	if m.exec != nil {
+		args := []any{inputIDsTensor}
+		if m.hasAttentionMask {
+			args = append(args, attentionMaskTensor)
+		}
+		if m.hasTokenTypeIds {
+			flatTokenTypeIds := make([]int64, batchSize*seqLen)
+			tokenTypeIdsTensor := tensors.FromFlatDataAndDimensions(flatTokenTypeIds, batchSize, seqLen)
+			args = append(args, tokenTypeIdsTensor)
+		}
+		results, err = m.exec.Exec(args...)
 	} else {
-		results, err = mlctx.ExecOnceN(m.engine, m.ctx, graphFn, inputIDsTensor, attentionMaskTensor)
+		names := []string{"input_ids"}
+		inputTensors := []*tensors.Tensor{inputIDsTensor}
+		if m.hasAttentionMask {
+			names = append(names, "attention_mask")
+			inputTensors = append(inputTensors, attentionMaskTensor)
+		}
+		results, err = m.execOnce(names, inputTensors...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("exec failed: %w", err)
 	}
 
+	output, err := m.parseOutput(results, batchSize)
+	if err != nil {
+		return nil, err
+	}
+
+	// Text models with 3D output get attention-mask pooling.
+	if output.LastHiddenState != nil {
+		output.Embeddings = PoolHiddenStates(output.LastHiddenState, attentionMask, PoolingStrategy(m.pooling))
+		if m.normalize {
+			NormalizeEmbeddings(output.Embeddings)
+		}
+	}
+
+	return output, nil
+}
+
+// execAudio runs the audio encoder path (e.g., CLAP audio encoder).
+// Takes mel spectrogram features as [batch, channels, time, mels] and outputs embeddings.
+func (m *onnxModel) execAudio(inputs *ModelInputs) (*ModelOutput, error) {
+	batchSize := inputs.AudioBatch
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	timeSteps := inputs.AudioTime
+	nMels := inputs.AudioMels
+
+	// CLAP expects 4D input: [batch, channels, time, mels]
+	// The mel spectrogram is mono (1 channel).
+	channels := 1
+	tensor := tensors.FromFlatDataAndDimensions(inputs.AudioFeatures,
+		batchSize, channels, timeSteps, nMels)
+
+	inputName := m.inputNames[0]
+	results, err := m.execOnce([]string{inputName}, tensor)
+	if err != nil {
+		return nil, fmt.Errorf("audio exec failed: %w", err)
+	}
+	return m.parseOutput(results, batchSize)
+}
+
+// execOnce runs the ONNX graph via ExecOnceN with the given named inputs.
+func (m *onnxModel) execOnce(names []string, inputTensors ...*tensors.Tensor) ([]*tensors.Tensor, error) {
+	graphFn := func(mlCtx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
+		inputMap := make(map[string]*graph.Node, len(names))
+		for i, name := range names {
+			inputMap[name] = inputs[i]
+		}
+		return m.onnxModel.CallGraph(mlCtx.Reuse(), inputs[0].Graph(), inputMap)
+	}
+	args := make([]any, len(inputTensors))
+	for i, t := range inputTensors {
+		args[i] = t
+	}
+	return mlctx.ExecOnceN(m.engine, m.ctx, graphFn, args...)
+}
+
+// parseOutput converts raw tensor results into a ModelOutput.
+//
+// Output shape interpretation depends on model type:
+//   - 3D [batch, seq, hidden]: LastHiddenState + CLS-pooled Embeddings (vision)
+//     or LastHiddenState only (text — caller applies attention-mask pooling).
+//   - 2D [batch, dim]: Embeddings (vision/projection) or Logits (text/reranker).
+func (m *onnxModel) parseOutput(results []*tensors.Tensor, batchSize int) (*ModelOutput, error) {
 	if len(results) == 0 {
 		return nil, fmt.Errorf("no output from ONNX model")
 	}
 
-	// First output: either last_hidden_state [batch, seq, hidden] or logits [batch, classes]
 	output := results[0]
 	shape := output.Shape()
 
-	// Handle different output shapes:
-	// - 3D [batch, seq, hidden]: hidden states (encoder models, embeddings)
-	// - 2D [batch, classes]: logits (classification models, rerankers)
 	switch len(shape.Dimensions) {
 	case 3:
-		// Standard encoder output: [batch, seq, hidden]
 		data := output.Value().([][][]float32)
+		lastHiddenState := data[:batchSize]
 
-		// Reshape to our format
-		lastHiddenState := make([][][]float32, batchSize)
-		for i := range batchSize {
-			lastHiddenState[i] = data[i]
+		mo := &ModelOutput{LastHiddenState: lastHiddenState}
+
+		// Vision models get CLS-token pooling here; text models defer
+		// pooling to the caller which has the attention mask.
+		if m.modelType == onnxModelVision {
+			hiddenSize := int(shape.Dimensions[2])
+			embeddings := make([][]float32, batchSize)
+			for i := range batchSize {
+				embeddings[i] = make([]float32, hiddenSize)
+				copy(embeddings[i], lastHiddenState[i][0])
+			}
+			mo.Embeddings = embeddings
 		}
 
-		// Apply pooling
-		embeddings := PoolHiddenStates(lastHiddenState, attentionMask, PoolingStrategy(m.pooling))
-
-		// Apply normalization if requested
-		if m.normalize {
-			NormalizeEmbeddings(embeddings)
-		}
-
-		return &ModelOutput{
-			LastHiddenState: lastHiddenState,
-			Embeddings:      embeddings,
-		}, nil
+		return mo, nil
 
 	case 2:
-		// Classification/reranker output: [batch, classes] - logits
 		data := output.Value().([][]float32)
-		numClasses := int(shape.Dimensions[1])
-
-		logits := make([][]float32, batchSize)
+		dim := int(shape.Dimensions[1])
+		out := make([][]float32, batchSize)
 		for i := range batchSize {
-			logits[i] = make([]float32, numClasses)
-			copy(logits[i], data[i])
+			out[i] = make([]float32, dim)
+			copy(out[i], data[i])
 		}
 
-		return &ModelOutput{
-			Logits: logits,
-		}, nil
+		// Text models set both Logits and Embeddings for 2D output;
+		// the caller decides which to use (rerankers use Logits,
+		// embedding models like CLAP text encoders use Embeddings).
+		if m.modelType == onnxModelText {
+			return &ModelOutput{Logits: out, Embeddings: out}, nil
+		}
+		return &ModelOutput{Embeddings: out}, nil
 
 	default:
 		return nil, fmt.Errorf("unexpected output shape: %v (expected 2D or 3D)", shape.Dimensions)
@@ -641,6 +880,10 @@ func (m *onnxModel) forward(ctx context.Context, inputIDs [][]int32, attentionMa
 }
 
 func (m *onnxModel) close() error {
+	if m.exec != nil {
+		m.exec.Finalize()
+		m.exec = nil
+	}
 	return nil
 }
 
@@ -694,7 +937,7 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 		}
 	}
 
-	return &gomlxSession{
+	sess := &gomlxSession{
 		onnxModel:   om,
 		ctx:         ctx,
 		engine:      engine,
@@ -702,7 +945,14 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 		outputInfo:  outputInfo,
 		inputNames:  inputNames,
 		outputNames: outputNames,
-	}, nil
+	}
+
+	// Pre-compile the session graph.
+	if err := sess.compile(f.backend.backendType); err != nil {
+		return nil, fmt.Errorf("compiling session graph: %w", err)
+	}
+
+	return sess, nil
 }
 
 func (f *gomlxSessionFactory) Backend() BackendType {
@@ -714,11 +964,36 @@ type gomlxSession struct {
 	onnxModel   *onnx.Model
 	ctx         *mlctx.Context
 	engine      backends.Backend
+	exec        *mlctx.Exec // Cached compiled graph
 	inputInfo   []TensorInfo
 	outputInfo  []TensorInfo
 	inputNames  []string
 	outputNames []string
 	mu          sync.Mutex
+}
+
+// compile pre-compiles the session's ONNX graph for reuse across Run() calls.
+func (s *gomlxSession) compile(backendType BackendType) error {
+	graphFn := func(mlCtx *mlctx.Context, graphInputs []*graph.Node) []*graph.Node {
+		inputNodeMap := make(map[string]*graph.Node, len(s.inputNames))
+		for i, name := range s.inputNames {
+			inputNodeMap[name] = graphInputs[i]
+		}
+		return s.onnxModel.CallGraph(mlCtx.Reuse(), graphInputs[0].Graph(), inputNodeMap)
+	}
+
+	exec, err := mlctx.NewExecAny(s.engine, s.ctx, graphFn)
+	if err != nil {
+		return fmt.Errorf("creating exec: %w", err)
+	}
+
+	// Go backend: unlimited cache (no JIT cost). JIT backends: GoMLX default (32).
+	if backendType == BackendGo {
+		exec.SetMaxCache(-1)
+	}
+
+	s.exec = exec
+	return nil
 }
 
 func (s *gomlxSession) Run(inputs []NamedTensor) ([]NamedTensor, error) {
@@ -749,21 +1024,27 @@ func (s *gomlxSession) Run(inputs []NamedTensor) ([]NamedTensor, error) {
 		gomlxInputs[i] = tensor
 	}
 
-	// Build the ONNX graph function
-	graphFn := func(mlCtx *mlctx.Context, graphInputs []*graph.Node) []*graph.Node {
-		inputNodeMap := make(map[string]*graph.Node, len(s.inputNames))
-		for i, name := range s.inputNames {
-			inputNodeMap[name] = graphInputs[i]
-		}
-		return s.onnxModel.CallGraph(mlCtx.Reuse(), graphInputs[0].Graph(), inputNodeMap)
-	}
-
-	// Execute - convert []*tensors.Tensor to []any for variadic call
+	// Execute using the cached compiled graph or fall back to ExecOnceN.
 	args := make([]any, len(gomlxInputs))
 	for i, t := range gomlxInputs {
 		args[i] = t
 	}
-	results, err := mlctx.ExecOnceN(s.engine, s.ctx, graphFn, args...)
+
+	var results []*tensors.Tensor
+	var err error
+	if s.exec != nil {
+		results, err = s.exec.Exec(args...)
+	} else {
+		// Fallback: recompile each time (should not happen after compile()).
+		graphFn := func(mlCtx *mlctx.Context, graphInputs []*graph.Node) []*graph.Node {
+			inputNodeMap := make(map[string]*graph.Node, len(s.inputNames))
+			for i, name := range s.inputNames {
+				inputNodeMap[name] = graphInputs[i]
+			}
+			return s.onnxModel.CallGraph(mlCtx.Reuse(), graphInputs[0].Graph(), inputNodeMap)
+		}
+		results, err = mlctx.ExecOnceN(s.engine, s.ctx, graphFn, args...)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("executing ONNX graph: %w", err)
 	}
@@ -796,6 +1077,10 @@ func (s *gomlxSession) OutputInfo() []TensorInfo {
 func (s *gomlxSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.exec != nil {
+		s.exec.Finalize()
+		s.exec = nil
+	}
 	s.onnxModel = nil
 	s.ctx = nil
 	return nil

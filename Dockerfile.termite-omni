@@ -48,7 +48,7 @@ RUN mkdir -p /usr/local/onnxruntime && \
     curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-${ARCH}-${ONNXRUNTIME_VERSION}.tgz" \
     | tar -xzf - --strip-components=1 -C /usr/local/onnxruntime
 
-# Download libtokenizers for hugot (text tokenization)
+# Download libtokenizers (text tokenization)
 RUN mkdir -p /usr/local/lib && \
     ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
     curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${ARCH}.tar.gz" \

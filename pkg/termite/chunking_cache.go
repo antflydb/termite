@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,7 @@ type CachedChunker struct {
 	singleflightHit *atomic.Uint64
 	logger          *zap.Logger
 	cancel          context.CancelFunc
+	wg              sync.WaitGroup
 }
 
 // ChunkResult stores chunking results with metadata
@@ -101,6 +103,7 @@ func NewCachedChunker(
 	}
 
 	// Start cache stats logger
+	cc.wg.Add(1)
 	go cc.logCacheStats(ctx)
 
 	// Log available models
@@ -273,6 +276,7 @@ func (cc *CachedChunker) computeCacheKey(text string, config chunkConfig) uint64
 
 // logCacheStats periodically logs cache statistics
 func (cc *CachedChunker) logCacheStats(ctx context.Context) {
+	defer cc.wg.Done()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -314,6 +318,7 @@ func (cc *CachedChunker) ListModels() []string {
 // Close releases resources
 func (cc *CachedChunker) Close() error {
 	cc.cancel()
+	cc.wg.Wait() // Wait for logCacheStats goroutine to finish
 	cc.memCache.Stop()
 
 	if cc.registry != nil {

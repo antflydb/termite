@@ -43,8 +43,6 @@ CGO_ENABLED=1 go build -tags="onnx,ORT,xla,XLA" -o termite ./pkg/termite/cmd
 
 ### ONNX Runtime
 
-For ~16x faster CPU inference. See `lib/hugot/README.md` for setup.
-
 **Dependencies:**
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) - download for your platform or install with homebrew
 - [Tokenizers](https://github.com/daulet/tokenizers/releases/) - HuggingFace tokenizers bindings

@@ -2,23 +2,18 @@ module github.com/antflydb/termite/pkg/termite
 
 go 1.26rc2
 
-replace github.com/gomlx/gomlx => github.com/timkaye11/gomlx v0.0.0-20251221044952-ee84bc4bbaf7
-
-replace github.com/gomlx/onnx-gomlx => github.com/timkaye11/onnx-gomlx v0.0.0-20251217194823-a871bb8cc687
-
 require (
-	github.com/ajroetker/go-highway v0.0.0-dev12
-	github.com/ajroetker/huggingface-gomlx v0.0.0-20260125071513-bbe694562131
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260119040111-36db55706c38
+	github.com/ajroetker/go-highway v0.0.3
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.24.0
 	github.com/eliben/go-sentencepiece v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
-	github.com/goccy/go-json v0.10.2
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260126043753-e2619e25f476
+	github.com/goccy/go-json v0.10.5
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
-	github.com/gomlx/gomlx v0.26.1-0.20260121051322-dbf0e3293e25
-	github.com/gomlx/onnx-gomlx v0.3.4
+	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
+	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.0.3
 	github.com/oapi-codegen/runtime v1.1.2
@@ -32,7 +27,7 @@ require (
 	github.com/sugarme/tokenizer v0.3.0
 	github.com/yalue/onnxruntime_go v1.25.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/image v0.34.0
+	golang.org/x/image v0.35.0
 	golang.org/x/sync v0.19.0
 )
 
@@ -49,21 +44,21 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.22.4 // indirect
 	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
-	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-coreml v0.0.0-20260109045350-0b720b1b4a65 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260127212041-4eb23e6742f6 // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
-	github.com/minio/minio-go/v7 v7.0.97 // indirect
+	github.com/minio/minio-go/v7 v7.0.98 // indirect
 	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -111,3 +106,7 @@ require (
 )
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
+
+replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
+
+replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly002

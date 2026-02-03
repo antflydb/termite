@@ -7,6 +7,8 @@
 # Registry - track manifests/index, ignore large binaries
 /registry/blobs/
 /registry/models/
+# Downloaded model cache (large binaries, re-downloaded by e2e tests)
+/models/
 # Go workspace files (contain local paths)
 go.work
 go.work.sum

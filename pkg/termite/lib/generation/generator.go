@@ -60,7 +60,6 @@ type PooledPipelineGeneratorConfig struct {
 }
 
 // NewPooledPipelineGenerator creates a new pooled generator using the session-based pipeline architecture.
-// This is the session-based replacement for PooledHugotGenerator.
 func NewPooledPipelineGenerator(
 	cfg *PooledPipelineGeneratorConfig,
 	sessionManager *backends.SessionManager,

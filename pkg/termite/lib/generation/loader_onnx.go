@@ -19,6 +19,7 @@ package generation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,6 +34,10 @@ import (
 // LoadGenerator loads a text generation model using the available backends.
 // With ONNX support, this tries the pipeline-based approach first,
 // then falls back to the GenerativeSessionFactory for generative models.
+//
+// Models with genai_config.json (ortgenai-native format, like FunctionGemma)
+// always use GenerativeSessionFactory directly, as it provides features like
+// tool calling that the pipeline approach doesn't support.
 func LoadGenerator(
 	modelPath string,
 	poolSize int,
@@ -40,7 +45,36 @@ func LoadGenerator(
 	sessionManager *backends.SessionManager,
 	modelBackends []string,
 ) (Generator, backends.BackendType, error) {
-	// Try the pipeline-based approach first
+	// Check if model has genai_config.json (ortgenai-native format).
+	// These models should always use GenerativeSessionFactory for full feature support
+	// (e.g., tool calling, proper chat templates, etc.).
+	hasGenaiConfig := false
+	if _, statErr := os.Stat(filepath.Join(modelPath, "genai_config.json")); statErr == nil {
+		hasGenaiConfig = true
+	}
+
+	if hasGenaiConfig {
+		logger.Debug("Model has genai_config.json, using GenerativeSessionFactory directly",
+			zap.String("modelPath", modelPath))
+
+		genFactory, bt, factoryErr := sessionManager.GetGenerativeSessionFactoryForModel(modelBackends)
+		if factoryErr != nil {
+			return nil, "", fmt.Errorf("getting generative session factory: %w", factoryErr)
+		}
+
+		genGenerator, genErr := NewPooledGenerativeSessionGenerator(modelPath, poolSize, genFactory, logger)
+		if genErr != nil {
+			return nil, "", fmt.Errorf("creating generative session generator: %w", genErr)
+		}
+
+		logger.Info("Loaded generator using GenerativeSessionFactory",
+			zap.String("modelPath", modelPath),
+			zap.String("backend", string(bt)))
+
+		return genGenerator, bt, nil
+	}
+
+	// Try the pipeline-based approach for models without genai_config.json
 	cfg := &PooledPipelineGeneratorConfig{
 		ModelPath: modelPath,
 		PoolSize:  poolSize,
@@ -52,15 +86,8 @@ func LoadGenerator(
 	}
 
 	// Check if we should fall back to GenerativeSessionFactory for generative models.
-	// Fall back when:
-	// 1. Session factory not supported (encoder model factory can't handle generative models)
-	// 2. Model has genai_config.json (ortgenai-native format, like FunctionGemma from registry)
-	hasGenaiConfig := false
-	if _, statErr := os.Stat(filepath.Join(modelPath, "genai_config.json")); statErr == nil {
-		hasGenaiConfig = true
-	}
-	shouldFallback := strings.Contains(err.Error(), "session factory") || hasGenaiConfig
-	if shouldFallback {
+	// Fall back when session factory not supported (encoder model factory can't handle generative models)
+	if strings.Contains(err.Error(), "session factory") {
 		logger.Debug("Pipeline approach failed, falling back to GenerativeSessionFactory",
 			zap.String("modelPath", modelPath),
 			zap.Error(err))

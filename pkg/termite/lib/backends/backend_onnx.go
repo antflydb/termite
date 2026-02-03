@@ -338,6 +338,7 @@ func (m *ortModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutp
 
 	// Determine input type and dispatch to appropriate forward method
 	isVisionModel := inputs.ImagePixels != nil && len(inputs.ImagePixels) > 0
+	isAudioModel := inputs.AudioFeatures != nil && len(inputs.AudioFeatures) > 0
 	isEmbeddingsModel := inputs.Embeddings != nil && len(inputs.Embeddings) > 0
 
 	if isEmbeddingsModel {
@@ -345,6 +346,9 @@ func (m *ortModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutp
 	}
 	if isVisionModel {
 		return m.forwardVision(ctx, inputs)
+	}
+	if isAudioModel {
+		return m.forwardAudio(ctx, inputs)
 	}
 	return m.forwardText(ctx, inputs)
 }
@@ -539,6 +543,117 @@ func (m *ortModel) forwardVision(ctx context.Context, inputs *ModelInputs) (*Mod
 	}
 }
 
+// forwardAudio handles inference for audio models (e.g., CLAP audio encoder).
+// Takes mel spectrogram features and outputs embeddings.
+func (m *ortModel) forwardAudio(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
+	batchSize := inputs.AudioBatch
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	timeSteps := inputs.AudioTime
+	nMels := inputs.AudioMels
+
+	// CLAP expects 4D input: [batch, channels, time, mels]
+	// The mel spectrogram is mono (1 channel)
+	channels := 1
+
+	// Create input tensor for audio features [batch, channels, time, mels]
+	inputTensor, err := ort.NewTensor(ort.NewShape(int64(batchSize), int64(channels), int64(timeSteps), int64(nMels)), inputs.AudioFeatures)
+	if err != nil {
+		return nil, fmt.Errorf("creating audio features tensor: %w", err)
+	}
+	defer inputTensor.Destroy()
+
+	inputTensors := []ort.Value{inputTensor}
+
+	// Run inference
+	outputTensors := make([]ort.Value, len(m.outputNames))
+	if err := m.session.Run(inputTensors, outputTensors); err != nil {
+		return nil, fmt.Errorf("running audio inference: %w", err)
+	}
+
+	// Clean up output tensors when done
+	defer func() {
+		for _, t := range outputTensors {
+			if t != nil {
+				t.Destroy()
+			}
+		}
+	}()
+
+	if len(outputTensors) == 0 || outputTensors[0] == nil {
+		return nil, fmt.Errorf("no output tensors returned")
+	}
+
+	// Get output data from first output tensor
+	outputTensor := outputTensors[0]
+	outputShape := outputTensor.GetShape()
+
+	// Type assert to get the data
+	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
+	if !ok {
+		return nil, fmt.Errorf("audio output tensor is not float32")
+	}
+	outputData := floatTensor.GetData()
+
+	// Handle different output shapes:
+	// - 3D [batch, seq, hidden]: hidden states (need pooling)
+	// - 2D [batch, hidden]: pooled embeddings (CLAP style)
+	switch len(outputShape) {
+	case 3:
+		// Audio encoder output: [batch, seq, hidden]
+		seqLen := int(outputShape[1])
+		hiddenSize := int(outputShape[2])
+
+		lastHiddenState := make([][][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			lastHiddenState[i] = make([][]float32, seqLen)
+			for j := 0; j < seqLen; j++ {
+				lastHiddenState[i][j] = make([]float32, hiddenSize)
+				baseIdx := (i*seqLen + j) * hiddenSize
+				copy(lastHiddenState[i][j], outputData[baseIdx:baseIdx+hiddenSize])
+			}
+		}
+
+		// For audio models, use mean pooling over time
+		embeddings := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			embeddings[i] = make([]float32, hiddenSize)
+			for j := 0; j < seqLen; j++ {
+				for h := 0; h < hiddenSize; h++ {
+					embeddings[i][h] += lastHiddenState[i][j][h]
+				}
+			}
+			for h := 0; h < hiddenSize; h++ {
+				embeddings[i][h] /= float32(seqLen)
+			}
+		}
+
+		return &ModelOutput{
+			LastHiddenState: lastHiddenState,
+			Embeddings:      embeddings,
+		}, nil
+
+	case 2:
+		// Pooled output: [batch, hidden]
+		hiddenSize := int(outputShape[1])
+
+		embeddings := make([][]float32, batchSize)
+		for i := 0; i < batchSize; i++ {
+			embeddings[i] = make([]float32, hiddenSize)
+			baseIdx := i * hiddenSize
+			copy(embeddings[i], outputData[baseIdx:baseIdx+hiddenSize])
+		}
+
+		return &ModelOutput{
+			Embeddings: embeddings,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unexpected audio output shape: %v (expected 2D or 3D)", outputShape)
+	}
+}
+
 // forwardText handles inference for text models (e.g., BERT, CLIP text encoder).
 func (m *ortModel) forwardText(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	batchSize := len(inputs.InputIDs)
@@ -653,18 +768,20 @@ func (m *ortModel) forwardText(ctx context.Context, inputs *ModelInputs) (*Model
 		}, nil
 
 	case 2:
-		// Classification output: [batch, classes] - logits
-		numClasses := int(outputShape[1])
+		// 2D output: [batch, dim] - could be logits (classification) or embeddings (CLIP/CLAP)
+		// We set both so consumers can use whichever is appropriate
+		dim := int(outputShape[1])
 
-		logits := make([][]float32, batchSize)
+		output := make([][]float32, batchSize)
 		for i := 0; i < batchSize; i++ {
-			logits[i] = make([]float32, numClasses)
-			baseIdx := i * numClasses
-			copy(logits[i], outputData[baseIdx:baseIdx+numClasses])
+			output[i] = make([]float32, dim)
+			baseIdx := i * dim
+			copy(output[i], outputData[baseIdx:baseIdx+dim])
 		}
 
 		return &ModelOutput{
-			Logits: logits,
+			Logits:     output, // For classification models
+			Embeddings: output, // For embedding models (CLIP/CLAP text encoders)
 		}, nil
 
 	default:

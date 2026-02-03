@@ -141,7 +141,7 @@ build-omni: download-omni-deps ## Build termite with ONNX + XLA backends (omni).
 	export LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LIBRARY_PATH && \
 	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
 	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
-	$(GO) build -tags="onnx,ORT,xla,XLA" -o termite ./pkg/termite/cmd
+	$(GO) build -tags="onnx,ORT,xla,XLA,coreml" -o termite ./pkg/termite/cmd
 
 .PHONY: run-operator
 run-operator: generate fmt vet ## Run the operator locally.
@@ -421,5 +421,5 @@ endif
 	export LD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$LD_LIBRARY_PATH && \
 	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
 	cd e2e && $(GO) mod tidy && \
-	$(GO) test -v -tags="onnx,ORT,xla,XLA" -timeout $(E2E_TIMEOUT) $(if $(E2E_TEST),-run $(E2E_TEST)) ./...
+	$(GO) test -v -tags="onnx,ORT,xla,XLA,coreml" -timeout $(E2E_TIMEOUT) $(if $(E2E_TEST),-run $(E2E_TEST)) ./...
 

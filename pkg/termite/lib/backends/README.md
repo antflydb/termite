@@ -8,8 +8,6 @@ The `backends` package provides a unified interface for ML inference with multip
 
 ## Architecture
 
-This package replaces the `hugot` dependency with a custom stack:
-
 - **go-huggingface**: Hub download, tokenizers (SentencePiece, WordPiece, BPE), SafeTensors parsing
 - **huggingface-gomlx**: Model architectures (BERT, LLaMA, DeBERTa), GoMLX inference
 - **onnx-gomlx**: ONNX model execution via GoMLX
@@ -165,41 +163,3 @@ lib/backends/
 ├── types.go                # Common types
 └── README.md               # This file
 ```
-
-## Migration from hugot
-
-The package maintains similar patterns to the old `hugot` package:
-
-| Old (hugot) | New (backends) |
-|-------------|----------------|
-| `hugot.NewSession()` | `backends.GetDefaultBackend().Loader().Load()` |
-| `hugot.SessionManager` | `backends.SessionManager` |
-| `hugot.BackendType` | `backends.BackendType` |
-| `khugot.FeatureExtractionPipeline` | `backends.FeatureExtractionPipeline` |
-| `options.WithOption` | `backends.LoadOption` |
-
-Key differences:
-1. Tokenizers are now separate (from go-huggingface)
-2. Pipelines pair tokenizer + model explicitly
-3. Models are loaded via `ModelLoader` interface
-4. Functional options pattern for configuration
-
-### Migration Status
-
-All task packages have been migrated to use the new `pipelines.Pipeline` type:
-
-| Package | Old File | New File | Status |
-|---------|----------|----------|--------|
-| `lib/embeddings` | `hugot.go` | `embedder.go` | ✅ Complete |
-| `lib/reranking` | `hugot.go` | `reranker.go` | ✅ Complete |
-| `lib/chunking` | `hugot.go` | `chunker.go` | ✅ Complete |
-| `lib/ner` | `hugot.go` | `ner_model.go` | ✅ Complete |
-| `lib/classification` | `hugot.go` | `zsc_model.go` | ✅ Complete |
-| `lib/seq2seq` | `hugot.go` | `seq2seq_model.go` | ✅ Complete |
-
-Each migrated package provides:
-- `PooledXxx` type for concurrent access with semaphore-based pooling
-- `PooledXxxConfig` for configuration
-- Factory function `NewPooledXxx(cfg, sessionManager)` returning the model and backend type used
-
-The old `hugot.go` files are retained for compatibility until full deprecation.

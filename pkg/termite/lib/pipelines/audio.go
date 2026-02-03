@@ -341,14 +341,59 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	}
 
 	// Convert to log scale (log mel spectrogram)
-	for frame := 0; frame < numFrames; frame++ {
-		for mel := 0; mel < nMels; mel++ {
-			// Add small epsilon to avoid log(0)
-			val := melSpec[frame][mel]
-			if val < 1e-10 {
-				val = 1e-10
+	const logFloor = 1e-10 // Minimum value before log to avoid log(0)
+
+	// Check which normalization type to use
+	useWhisperNorm := ap.Config.Normalization == backends.AudioNormWhisper ||
+		ap.Config.Normalization == "" // Default to Whisper for backward compatibility
+
+	if useWhisperNorm {
+		// Whisper-specific normalization from HuggingFace WhisperFeatureExtractor:
+		// 1. log10(max(1e-10, mel_spec))
+		// 2. Clip minimum to (global_max - 8.0)
+		// 3. Normalize: (x + 4.0) / 4.0
+
+		// First pass: compute log10 and find global maximum
+		var globalMax float32 = -1000.0
+		for frame := 0; frame < numFrames; frame++ {
+			for mel := 0; mel < nMels; mel++ {
+				val := melSpec[frame][mel]
+				if val < logFloor {
+					val = logFloor
+				}
+				logVal := float32(math.Log10(float64(val)))
+				melSpec[frame][mel] = logVal
+				if logVal > globalMax {
+					globalMax = logVal
+				}
 			}
-			melSpec[frame][mel] = float32(math.Log(float64(val)))
+		}
+
+		// Second pass: clip to (globalMax - 8.0) and normalize
+		minClip := globalMax - 8.0
+		for frame := 0; frame < numFrames; frame++ {
+			for mel := 0; mel < nMels; mel++ {
+				logVal := melSpec[frame][mel]
+				// Clip minimum
+				if logVal < minClip {
+					logVal = minClip
+				}
+				// Whisper normalization: (x + 4.0) / 4.0
+				// Maps typical range [-4, 4] to [0, 2]
+				melSpec[frame][mel] = (logVal + 4.0) / 4.0
+			}
+		}
+	} else {
+		// Simple log mel spectrogram for CLAP and other audio models
+		// Use natural log without Whisper-specific normalization
+		for frame := 0; frame < numFrames; frame++ {
+			for mel := 0; mel < nMels; mel++ {
+				val := melSpec[frame][mel]
+				if val < logFloor {
+					val = logFloor
+				}
+				melSpec[frame][mel] = float32(math.Log(float64(val)))
+			}
 		}
 	}
 
