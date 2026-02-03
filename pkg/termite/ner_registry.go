@@ -656,28 +656,25 @@ func (r *NERRegistry) ListClassificationCapable() []string {
 	return names
 }
 
-// GetGLiNER2 returns a GLiNER2 model for classification if it exists and supports classification.
+// GetClassifier returns a model that supports text classification.
 // Returns nil and an error if the model doesn't exist or doesn't support classification.
-func (r *NERRegistry) GetGLiNER2(modelName string) (*ner.PooledGLiNER, error) {
+func (r *NERRegistry) GetClassifier(modelName string) (ner.Classifier, error) {
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
 		return nil, err
 	}
 
-	if loaded.modelType != NERModelTypeGLiNER {
-		return nil, fmt.Errorf("model %s is not a GLiNER model", modelName)
-	}
-
-	gliner, ok := loaded.recognizer.(*ner.PooledGLiNER)
+	// Check if the model implements the Classifier interface
+	classifier, ok := loaded.recognizer.(ner.Classifier)
 	if !ok {
-		return nil, fmt.Errorf("model %s is not a PooledGLiNER", modelName)
+		return nil, fmt.Errorf("model %s does not implement Classifier interface", modelName)
 	}
 
-	if !gliner.SupportsClassification() {
+	if !classifier.SupportsClassification() {
 		return nil, fmt.Errorf("model %s does not support classification", modelName)
 	}
 
-	return gliner, nil
+	return classifier, nil
 }
 
 // Preload loads specified models at startup to avoid first-request latency

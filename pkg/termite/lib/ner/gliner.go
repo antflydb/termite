@@ -30,10 +30,11 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Ensure PooledGLiNER implements both Model and Recognizer interfaces.
+// Ensure PooledGLiNER implements Model, Recognizer, and Classifier interfaces.
 var (
 	_ Model      = (*PooledGLiNER)(nil)
 	_ Recognizer = (*PooledGLiNER)(nil)
+	_ Classifier = (*PooledGLiNER)(nil)
 )
 
 // =============================================================================
@@ -572,33 +573,6 @@ func (p *PooledGLiNER) Capabilities() []string {
 // =============================================================================
 // Classification Methods (GLiNER2 only)
 // =============================================================================
-
-// Classification represents a text classification result.
-type Classification struct {
-	// Label is the classification label
-	Label string `json:"label"`
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32 `json:"score"`
-}
-
-// ClassificationConfig holds configuration for classification.
-type ClassificationConfig struct {
-	// Threshold is the score threshold for positive classification
-	Threshold float32
-	// MultiLabel if true, allow multiple labels per text
-	MultiLabel bool
-	// TopK returns top K predictions (0 = all above threshold)
-	TopK int
-}
-
-// DefaultClassificationConfig returns sensible defaults for classification.
-func DefaultClassificationConfig() ClassificationConfig {
-	return ClassificationConfig{
-		Threshold:  0.5,
-		MultiLabel: false,
-		TopK:       1,
-	}
-}
 
 // ClassifyText performs zero-shot text classification using GLiNER2.
 // This treats the entire text as a single span and scores it against each label.

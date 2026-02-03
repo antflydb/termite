@@ -115,6 +115,45 @@ type Recognizer interface {
 	RelationLabels() []string
 }
 
+// Classifier defines the interface for text classification models.
+// Models implementing this interface can perform zero-shot text classification
+// where labels are specified at inference time (e.g., GLiNER2).
+type Classifier interface {
+	// ClassifyText performs zero-shot text classification.
+	// Returns classification results for each input text.
+	ClassifyText(ctx context.Context, texts []string, labels []string, config *ClassificationConfig) ([][]Classification, error)
+
+	// SupportsClassification returns true if the model supports classification.
+	SupportsClassification() bool
+}
+
+// Classification represents a text classification result.
+type Classification struct {
+	// Label is the classification label
+	Label string `json:"label"`
+	// Score is the confidence score (0.0 to 1.0)
+	Score float32 `json:"score"`
+}
+
+// ClassificationConfig holds configuration for classification.
+type ClassificationConfig struct {
+	// Threshold is the score threshold for positive classification
+	Threshold float32
+	// MultiLabel if true, allow multiple labels per text
+	MultiLabel bool
+	// TopK returns top K predictions (0 = all above threshold)
+	TopK int
+}
+
+// DefaultClassificationConfig returns sensible defaults for classification.
+func DefaultClassificationConfig() ClassificationConfig {
+	return ClassificationConfig{
+		Threshold:  0.5,
+		MultiLabel: false,
+		TopK:       1,
+	}
+}
+
 // Ensure PooledNER implements the Model interface
 var _ Model = (*PooledNER)(nil)
 

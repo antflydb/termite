@@ -470,8 +470,8 @@ func (m *MockNERRegistry) Close() error {
 	return nil
 }
 
-func (m *MockNERRegistry) GetGLiNER2(modelName string) (*ner.PooledGLiNER, error) {
-	return nil, fmt.Errorf("GLiNER2 not found: %s", modelName)
+func (m *MockNERRegistry) GetClassifier(modelName string) (ner.Classifier, error) {
+	return nil, fmt.Errorf("classifier not found: %s", modelName)
 }
 
 func (m *MockNERRegistry) ListClassificationCapable() []string {

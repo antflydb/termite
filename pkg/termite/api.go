@@ -1497,19 +1497,19 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 		// Model not found in classifier registry, continue to check NER registry
 	}
 
-	// Try to get the model from NER registry (GLiNER2 with classification support)
+	// Try to get a classifier from NER registry
 	if ln.nerRegistry != nil {
-		gliner2, err := ln.nerRegistry.GetGLiNER2(req.Model)
+		classifier, err := ln.nerRegistry.GetClassifier(req.Model)
 		if err == nil {
-			// Found GLiNER2 model with classification support
+			// Found model with classification support
 			config := &ner.ClassificationConfig{
 				MultiLabel: req.MultiLabel,
 				Threshold:  0.0, // Return all scores, let caller filter
 			}
 
-			classifyResults, classifyErr := gliner2.ClassifyText(r.Context(), req.Texts, req.Labels, config)
+			classifyResults, classifyErr := classifier.ClassifyText(r.Context(), req.Texts, req.Labels, config)
 			if classifyErr != nil {
-				ln.logger.Error("GLiNER2 classification failed",
+				ln.logger.Error("classification failed",
 					zap.String("model", req.Model),
 					zap.Int("num_texts", len(req.Texts)),
 					zap.Strings("labels", req.Labels),
@@ -1530,7 +1530,7 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 				}
 			}
 
-			ln.logger.Info("classify request completed (GLiNER2)",
+			ln.logger.Info("classify request completed",
 				zap.String("model", req.Model),
 				zap.Int("num_texts", len(req.Texts)),
 				zap.Int("num_labels", len(req.Labels)))

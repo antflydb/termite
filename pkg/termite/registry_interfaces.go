@@ -37,8 +37,8 @@ type NERRegistryInterface interface {
 	Get(modelName string) (ner.Model, error)
 	// GetRecognizer retrieves a GLiNER/REBEL recognizer by name
 	GetRecognizer(modelName string) (ner.Recognizer, error)
-	// GetGLiNER2 retrieves a GLiNER2 model for classification if it exists and supports classification
-	GetGLiNER2(modelName string) (*ner.PooledGLiNER, error)
+	// GetClassifier retrieves a model that supports text classification
+	GetClassifier(modelName string) (ner.Classifier, error)
 	// List returns all available model names
 	List() []string
 	// ListRecognizers returns names of models that support GLiNER/REBEL recognition
