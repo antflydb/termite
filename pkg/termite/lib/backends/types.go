@@ -269,6 +269,12 @@ type DecoderConfig struct {
 	NumHeads int
 	// HeadDim is the dimension of each attention head.
 	HeadDim int
+
+	// ForcedDecoderIds are token IDs that must be generated at specific positions.
+	// Each entry is [position, token_id]. Used by Whisper for language/task tokens.
+	ForcedDecoderIds [][]int32
+	// SuppressTokens are token IDs that should never be generated.
+	SuppressTokens []int32
 }
 
 // ImageConfig holds configuration for image preprocessing.
