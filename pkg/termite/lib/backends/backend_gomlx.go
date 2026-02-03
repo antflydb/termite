@@ -502,6 +502,8 @@ const (
 	onnxModelVision
 	// onnxModelEmbeddings is a projection model (pre-computed embeddings).
 	onnxModelEmbeddings
+	// onnxModelAudio is an audio encoder model (input_features / audio_values).
+	onnxModelAudio
 )
 
 // onnxModel implements inference for ONNX models using onnx-gomlx.
@@ -551,6 +553,8 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 			hasTokenTypeIds = true
 		case "pixel_values":
 			modelType = onnxModelVision
+		case "input_features", "audio_values":
+			modelType = onnxModelAudio
 		}
 	}
 	// If no standard text or vision inputs found, treat as embeddings/projection model.
@@ -656,6 +660,11 @@ func (m *onnxModel) compile(buckets bucketConfig) error {
 func (m *onnxModel) forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Audio path: CLAP audio encoder with mel spectrogram input.
+	if len(inputs.AudioFeatures) > 0 {
+		return m.execAudio(inputs)
+	}
 
 	// Text path uses cached compiled graph and has pooling/normalization.
 	if len(inputs.Embeddings) == 0 && len(inputs.ImagePixels) == 0 {
@@ -773,6 +782,30 @@ func (m *onnxModel) execText(inputIDs, attentionMask [][]int32) (*ModelOutput, e
 	return output, nil
 }
 
+// execAudio runs the audio encoder path (e.g., CLAP audio encoder).
+// Takes mel spectrogram features as [batch, channels, time, mels] and outputs embeddings.
+func (m *onnxModel) execAudio(inputs *ModelInputs) (*ModelOutput, error) {
+	batchSize := inputs.AudioBatch
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	timeSteps := inputs.AudioTime
+	nMels := inputs.AudioMels
+
+	// CLAP expects 4D input: [batch, channels, time, mels]
+	// The mel spectrogram is mono (1 channel).
+	channels := 1
+	tensor := tensors.FromFlatDataAndDimensions(inputs.AudioFeatures,
+		batchSize, channels, timeSteps, nMels)
+
+	inputName := m.inputNames[0]
+	results, err := m.execOnce([]string{inputName}, tensor)
+	if err != nil {
+		return nil, fmt.Errorf("audio exec failed: %w", err)
+	}
+	return m.parseOutput(results, batchSize)
+}
+
 // execOnce runs the ONNX graph via ExecOnceN with the given named inputs.
 func (m *onnxModel) execOnce(names []string, inputTensors ...*tensors.Tensor) ([]*tensors.Tensor, error) {
 	graphFn := func(mlCtx *mlctx.Context, inputs []*graph.Node) []*graph.Node {
@@ -833,10 +866,11 @@ func (m *onnxModel) parseOutput(results []*tensors.Tensor, batchSize int) (*Mode
 			copy(out[i], data[i])
 		}
 
-		// Text models treat 2D output as logits (reranker/classifier);
-		// vision and projection models treat it as embeddings.
+		// Text models set both Logits and Embeddings for 2D output;
+		// the caller decides which to use (rerankers use Logits,
+		// embedding models like CLAP text encoders use Embeddings).
 		if m.modelType == onnxModelText {
-			return &ModelOutput{Logits: out}, nil
+			return &ModelOutput{Logits: out, Embeddings: out}, nil
 		}
 		return &ModelOutput{Embeddings: out}, nil
 

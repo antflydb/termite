@@ -57,6 +57,9 @@ type EmbeddingModelConfig struct {
 	// Audio preprocessing config (for audio encoder)
 	AudioConfig *backends.AudioConfig
 
+	// Maximum text sequence length (from max_position_embeddings)
+	MaxTextLength int
+
 	// Model architecture type (clip, siglip, clap, bert, vit, etc.)
 	ModelType string
 }
@@ -169,6 +172,9 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 		512, // Default for CLIP
 	)
 
+	// Extract max text sequence length from config (e.g., CLIP uses 77)
+	config.MaxTextLength = rawConfig.TextConfig.MaxPositionEmbeddings
+
 	// Build image config if we have a visual encoder
 	if config.VisualEncoderFile != "" {
 		config.ImageConfig = buildEmbeddingImageConfig(rawConfig)
@@ -222,8 +228,9 @@ type rawEmbeddingConfig struct {
 
 	// Text config (CLIP, SigLIP, etc.)
 	TextConfig struct {
-		HiddenSize    int `json:"hidden_size"`
-		ProjectionDim int `json:"projection_dim"`
+		HiddenSize            int `json:"hidden_size"`
+		ProjectionDim         int `json:"projection_dim"`
+		MaxPositionEmbeddings int `json:"max_position_embeddings"`
 	} `json:"text_config"`
 
 	// Image preprocessing (some models)
@@ -924,7 +931,7 @@ func loadTextEmbeddingPipeline(
 
 	// Build pipeline config
 	pipelineConfig := &EmbeddingPipelineConfig{
-		MaxLength:        FirstNonZero(loaderCfg.maxLength, 512),
+		MaxLength:        FirstNonZero(loaderCfg.maxLength, config.MaxTextLength, 512),
 		Normalize:        loaderCfg.normalize,
 		Pooling:          loaderCfg.pooling,
 		AddSpecialTokens: true,
