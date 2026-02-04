@@ -42,16 +42,14 @@
       "type": "recognizer",
       "description": "",
       "source": "fastino/gliner2-base-v1",
-      "size": 815462838,
-      "variants": [
-        "f16"
-      ],
+      "size": 817928871,
+      "variants": [],
       "owner": "fastino",
       "capabilities": [
         "labels",
         "zeroshot",
-        "classification",
-        "relations"
+        "relations",
+        "classification"
       ]
     },
     {

@@ -40,12 +40,12 @@ const (
 	clapEmbeddingDim = 512
 )
 
-// TestCLAPMultimodalE2E tests the full CLAP multimodal embedding pipeline:
+// TestCLAPE2E tests the full CLAP multimodal embedding pipeline:
 // 1. Downloads CLAP model if not present (lazy download)
 // 2. Starts termite server with CLAP model
 // 3. Tests text and audio embedding
 // 4. Verifies cross-modal embedding dimensions match
-func TestCLAPMultimodalE2E(t *testing.T) {
+func TestCLAPE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
@@ -100,19 +100,19 @@ func TestCLAPMultimodalE2E(t *testing.T) {
 
 	// Run test cases
 	t.Run("ListModels", func(t *testing.T) {
-		testCLAPListModels(t, ctx, termiteClient)
+		testListModelsCLAP(t, ctx, termiteClient)
 	})
 
 	t.Run("TextEmbedding", func(t *testing.T) {
-		testCLAPTextEmbedding(t, ctx, termiteClient)
+		testTextEmbeddingCLAP(t, ctx, termiteClient)
 	})
 
 	t.Run("AudioEmbedding", func(t *testing.T) {
-		testCLAPAudioEmbedding(t, ctx, serverURL)
+		testAudioEmbeddingCLAP(t, ctx, serverURL)
 	})
 
 	t.Run("CrossModalSimilarity", func(t *testing.T) {
-		testCLAPCrossModalSimilarity(t, ctx, termiteClient, serverURL)
+		testCrossModalSimilarityCLAP(t, ctx, termiteClient, serverURL)
 	})
 
 	t.Run("DifferentAudiosProduceDifferentEmbeddings", func(t *testing.T) {
@@ -131,8 +131,8 @@ func TestCLAPMultimodalE2E(t *testing.T) {
 	}
 }
 
-// testCLAPListModels verifies the CLAP model appears in the models list
-func testCLAPListModels(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testListModelsCLAP verifies the CLAP model appears in the models list
+func testListModelsCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	models, err := c.ListModels(ctx)
@@ -156,8 +156,8 @@ func testCLAPListModels(t *testing.T, ctx context.Context, c *client.TermiteClie
 	}
 }
 
-// testCLAPTextEmbedding tests embedding text strings with CLAP
-func testCLAPTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testTextEmbeddingCLAP tests embedding text strings with CLAP
+func testTextEmbeddingCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -184,8 +184,8 @@ func testCLAPTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteC
 	}
 }
 
-// testCLAPAudioEmbedding tests embedding audio via multimodal ContentPart
-func testCLAPAudioEmbedding(t *testing.T, ctx context.Context, serverURL string) {
+// testAudioEmbeddingCLAP tests embedding audio via multimodal ContentPart
+func testAudioEmbeddingCLAP(t *testing.T, ctx context.Context, serverURL string) {
 	t.Helper()
 
 	// Create a test audio file (1 second of 440Hz sine wave)
@@ -202,8 +202,8 @@ func testCLAPAudioEmbedding(t *testing.T, ctx context.Context, serverURL string)
 		len(embedding), embedding[0], embedding[1], embedding[2])
 }
 
-// testCLAPCrossModalSimilarity verifies text and audio embeddings have the same dimension
-func testCLAPCrossModalSimilarity(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+// testCrossModalSimilarityCLAP verifies text and audio embeddings have the same dimension
+func testCrossModalSimilarityCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
 	t.Helper()
 
 	// Get text embedding for a description

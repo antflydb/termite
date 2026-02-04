@@ -19,9 +19,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -33,88 +30,12 @@ import (
 )
 
 const (
-	// GLiNER2 model from Fastino (needs manual ONNX export)
-	// The model is exported using scripts/export_gliner2_onnx.py
-	gliner2HFRepo    = "fastino/gliner2-base-v1"
-	gliner2LocalName = "fastino/gliner2-base-v1"
+	// GLiNER2 model from Fastino (downloaded from Antfly model registry)
+	gliner2ModelName = "fastino/gliner2-base-v1"
 )
 
-// ensureGLiNER2Model ensures the GLiNER2 model is exported to ONNX format.
-// Unlike HuggingFace ONNX models, GLiNER2 requires manual export using our script.
-func ensureGLiNER2Model(t *testing.T) string {
-	t.Helper()
-
-	modelsDir := getTestModelsDir()
-	modelPath := filepath.Join(modelsDir, "recognizers", gliner2LocalName)
-
-	// Check if model is already exported
-	onnxPath := filepath.Join(modelPath, "model.onnx")
-	configPath := filepath.Join(modelPath, "gliner_config.json")
-
-	if _, err := os.Stat(onnxPath); err == nil {
-		if _, err := os.Stat(configPath); err == nil {
-			t.Logf("GLiNER2 model already exported at: %s", modelPath)
-			return modelPath
-		}
-	}
-
-	// Export the model using our script
-	t.Logf("Exporting GLiNER2 model to ONNX format...")
-
-	scriptPath := filepath.Join(getProjectRoot(), "scripts", "export_gliner2_onnx.py")
-	if _, err := os.Stat(scriptPath); err != nil {
-		t.Skipf("GLiNER2 export script not found at %s - skipping test", scriptPath)
-		return ""
-	}
-
-	// Create output directory
-	if err := os.MkdirAll(modelPath, 0755); err != nil {
-		t.Fatalf("Failed to create model directory: %v", err)
-	}
-
-	// Run export script
-	cmd := exec.Command("python3", scriptPath, gliner2HFRepo, modelPath, "--test")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	t.Logf("Running: %s", cmd.String())
-	if err := cmd.Run(); err != nil {
-		t.Skipf("GLiNER2 export failed (may be missing dependencies): %v", err)
-		return ""
-	}
-
-	// Verify export succeeded
-	if _, err := os.Stat(onnxPath); err != nil {
-		t.Fatalf("ONNX model not found after export: %s", onnxPath)
-	}
-
-	t.Logf("GLiNER2 model exported successfully to: %s", modelPath)
-	return modelPath
-}
-
-// getProjectRoot returns the project root directory.
-func getProjectRoot() string {
-	// Start from current working directory and walk up to find project root
-	// We look for Makefile which is only in the true project root (not in submodules)
-	dir, _ := os.Getwd()
-	for {
-		// Check for Makefile which is unique to the project root
-		if _, err := os.Stat(filepath.Join(dir, "Makefile")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	// Fallback to current directory
-	cwd, _ := os.Getwd()
-	return cwd
-}
-
 // TestGLiNER2E2E tests the GLiNER2 (unified multi-task NER) pipeline:
-// 1. Exports GLiNER2 model to ONNX if not present (using our export script)
+// 1. Downloads GLiNER2 model from registry if not present
 // 2. Starts termite server with GLiNER2 model
 // 3. Tests entity recognition with default labels
 // 4. Tests entity recognition with custom labels (zero-shot NER)
@@ -123,11 +44,8 @@ func TestGLiNER2E2E(t *testing.T) {
 		t.Skip("Skipping E2E test in short mode")
 	}
 
-	// Ensure GLiNER2 model is exported
-	modelPath := ensureGLiNER2Model(t)
-	if modelPath == "" {
-		return // Test was skipped
-	}
+	// Ensure GLiNER2 model is downloaded from registry
+	ensureRegistryModel(t, gliner2ModelName, ModelTypeRecognizer)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -180,23 +98,23 @@ func TestGLiNER2E2E(t *testing.T) {
 	})
 
 	t.Run("RecognizeEntities", func(t *testing.T) {
-		testGLiNER2RecognizeEntities(t, ctx, termiteClient)
+		testRecognizeEntitiesGLiNER2(t, ctx, termiteClient)
 	})
 
 	t.Run("RecognizeWithCustomLabels", func(t *testing.T) {
-		testGLiNER2RecognizeWithCustomLabels(t, ctx, termiteClient)
+		testRecognizeWithCustomLabelsGLiNER2(t, ctx, termiteClient)
 	})
 
 	t.Run("ExtractRelations", func(t *testing.T) {
-		testGLiNER2ExtractRelations(t, ctx, termiteClient)
+		testExtractRelationsGLiNER2(t, ctx, termiteClient)
 	})
 
 	t.Run("ClassifyText", func(t *testing.T) {
-		testGLiNER2ClassifyText(t, ctx, termiteClient)
+		testClassifyTextGLiNER2(t, ctx, termiteClient)
 	})
 
 	t.Run("ClassifyTextMultiLabel", func(t *testing.T) {
-		testGLiNER2ClassifyTextMultiLabel(t, ctx, termiteClient)
+		testClassifyTextMultiLabelGLiNER2(t, ctx, termiteClient)
 	})
 
 	// Graceful shutdown
@@ -221,13 +139,13 @@ func testListModelsGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteC
 	// Check that GLiNER2 model is in the recognizers or extractors list
 	foundRecognizer := false
 	for _, name := range models.Recognizers {
-		if name == gliner2LocalName {
+		if name == gliner2ModelName {
 			foundRecognizer = true
 			break
 		}
 	}
 	for _, name := range models.Extractors {
-		if name == gliner2LocalName {
+		if name == gliner2ModelName {
 			foundRecognizer = true
 			break
 		}
@@ -235,14 +153,14 @@ func testListModelsGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteC
 
 	if !foundRecognizer {
 		t.Errorf("GLiNER2 model %s not found in recognizers: %v or extractors: %v",
-			gliner2LocalName, models.Recognizers, models.Extractors)
+			gliner2ModelName, models.Recognizers, models.Extractors)
 	} else {
 		t.Logf("Found GLiNER2 model in recognizers/extractors")
 	}
 }
 
-// testGLiNER2RecognizeEntities tests entity recognition without custom labels
-func testGLiNER2RecognizeEntities(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testRecognizeEntitiesGLiNER2 tests entity recognition without custom labels
+func testRecognizeEntitiesGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -250,10 +168,10 @@ func testGLiNER2RecognizeEntities(t *testing.T, ctx context.Context, c *client.T
 		"Apple Inc. was founded by Steve Jobs in 1976.",
 	}
 
-	resp, err := c.Recognize(ctx, gliner2LocalName, texts, nil)
+	resp, err := c.Recognize(ctx, gliner2ModelName, texts, nil)
 	require.NoError(t, err, "Recognize failed")
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
 
 	// Log the entities found
@@ -269,8 +187,8 @@ func testGLiNER2RecognizeEntities(t *testing.T, ctx context.Context, c *client.T
 	assert.NotEmpty(t, resp.Entities[0], "First text should have entities")
 }
 
-// testGLiNER2RecognizeWithCustomLabels tests GLiNER2's zero-shot capability with custom labels
-func testGLiNER2RecognizeWithCustomLabels(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testRecognizeWithCustomLabelsGLiNER2 tests GLiNER2's zero-shot capability with custom labels
+func testRecognizeWithCustomLabelsGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -281,10 +199,10 @@ func testGLiNER2RecognizeWithCustomLabels(t *testing.T, ctx context.Context, c *
 	// Use custom labels for zero-shot NER
 	labels := []string{"product", "company", "date", "vehicle"}
 
-	resp, err := c.Recognize(ctx, gliner2LocalName, texts, labels)
+	resp, err := c.Recognize(ctx, gliner2ModelName, texts, labels)
 	require.NoError(t, err, "Recognize with custom labels failed")
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
 
 	// Log the entities found
@@ -315,8 +233,8 @@ func testGLiNER2RecognizeWithCustomLabels(t *testing.T, ctx context.Context, c *
 	}
 }
 
-// testGLiNER2ExtractRelations tests GLiNER2's relation extraction capability
-func testGLiNER2ExtractRelations(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testExtractRelationsGLiNER2 tests GLiNER2's relation extraction capability
+func testExtractRelationsGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -327,14 +245,14 @@ func testGLiNER2ExtractRelations(t *testing.T, ctx context.Context, c *client.Te
 	entityLabels := []string{"person", "organization", "location"}
 	relationLabels := []string{"works_for", "founded", "located_in"}
 
-	resp, err := c.ExtractRelations(ctx, gliner2LocalName, texts, entityLabels, relationLabels)
+	resp, err := c.ExtractRelations(ctx, gliner2ModelName, texts, entityLabels, relationLabels)
 	if err != nil {
 		// Relation extraction may not be fully implemented yet
 		t.Logf("RelationExtraction returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Entities, len(texts), "Should have entities for each input text")
 
 	// Log entities found
@@ -366,8 +284,8 @@ func testGLiNER2ExtractRelations(t *testing.T, ctx context.Context, c *client.Te
 	t.Logf("Relation extraction completed successfully")
 }
 
-// testGLiNER2ClassifyText tests GLiNER2's text classification capability
-func testGLiNER2ClassifyText(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testClassifyTextGLiNER2 tests GLiNER2's text classification capability
+func testClassifyTextGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -377,14 +295,14 @@ func testGLiNER2ClassifyText(t *testing.T, ctx context.Context, c *client.Termit
 
 	labels := []string{"positive", "negative", "neutral"}
 
-	resp, err := c.Classify(ctx, gliner2LocalName, texts, labels)
+	resp, err := c.Classify(ctx, gliner2ModelName, texts, labels)
 	if err != nil {
 		// Classification may not be fully implemented yet
 		t.Logf("ClassifyText returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Classifications, len(texts), "Should have classifications for each input text")
 
 	// Log classifications found
@@ -417,8 +335,8 @@ func testGLiNER2ClassifyText(t *testing.T, ctx context.Context, c *client.Termit
 	t.Logf("Single-label classification completed successfully")
 }
 
-// testGLiNER2ClassifyTextMultiLabel tests GLiNER2's multi-label classification
-func testGLiNER2ClassifyTextMultiLabel(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testClassifyTextMultiLabelGLiNER2 tests GLiNER2's multi-label classification
+func testClassifyTextMultiLabelGLiNER2(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -428,14 +346,14 @@ func testGLiNER2ClassifyTextMultiLabel(t *testing.T, ctx context.Context, c *cli
 
 	labels := []string{"technology", "business", "sports", "health", "politics"}
 
-	resp, err := c.ClassifyMultiLabel(ctx, gliner2LocalName, texts, labels)
+	resp, err := c.ClassifyMultiLabel(ctx, gliner2ModelName, texts, labels)
 	if err != nil {
 		// Classification may not be fully implemented yet
 		t.Logf("ClassifyText (multi-label) returned error (may be expected): %v", err)
 		return
 	}
 
-	assert.Equal(t, gliner2LocalName, resp.Model)
+	assert.Equal(t, gliner2ModelName, resp.Model)
 	assert.Len(t, resp.Classifications, len(texts), "Should have classifications for each input text")
 
 	// Log classifications found

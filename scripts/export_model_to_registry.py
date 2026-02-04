@@ -11,6 +11,7 @@
 #     "onnxscript",
 #     "onnxconverter-common",
 #     "gliner",
+#     "gliner2",
 #     "onnxruntime-genai",
 # ]
 # ///
@@ -123,6 +124,12 @@ logging.basicConfig(
     format="%(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Import exporter registry (lazy import to avoid circular dependencies)
+def get_exporter_for_model(model_type, model_id, output_dir, variants, capabilities, **kwargs):
+    """Get the appropriate exporter using the registry."""
+    from exporters import get_exporter
+    return get_exporter(model_type, model_id, output_dir, variants, capabilities, **kwargs)
 
 ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]
 
@@ -3049,7 +3056,7 @@ def cmd_export(args):
     logger.info(f"From ONNX:   {args.from_onnx}")
     logger.info("=" * 60)
 
-    # Export model using appropriate function
+    # Export model using the exporter registry
     hf_token = getattr(args, "hf_token", None)
 
     if args.from_onnx:
@@ -3057,27 +3064,69 @@ def cmd_export(args):
     else:
         logger.info("\n[1/4] Exporting model to ONNX...")
 
+    # Map model types and recognizer architectures to exporter registry keys
+    export_model_type = args.model_type
+    export_capabilities = list(capabilities) if capabilities else []
+
+    # Handle special model type mappings
     if args.model_type == "rewriter":
-        export_seq2seq_model(model_id, model_dir, args.variants)
-    elif args.model_type == "generator":
-        export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
-    elif args.model_type == "classifier":
-        export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
-    elif args.model_type == "reader":
-        export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
-    elif recognizer_arch == "gliner2":
-        export_gliner2_model(model_id, model_dir, args.variants)
-    elif recognizer_arch == "gliner":
-        export_gliner_model(model_id, model_dir, args.variants)
-    elif recognizer_arch == "rebel":
-        export_rebel_model(model_id, model_dir, args.variants)
-    else:
-        export_model(args.model_type, model_id, model_dir, args.variants, capabilities, from_onnx=args.from_onnx)
+        export_model_type = "seq2seq"
+    elif args.model_type == "recognizer":
+        # Map recognizer architectures to capabilities for the registry
+        if recognizer_arch == "gliner2":
+            export_capabilities = ["labels-v2"]
+        elif recognizer_arch == "gliner":
+            export_capabilities = ["labels"]
+        elif recognizer_arch == "rebel":
+            export_capabilities = ["relations"]
+
+    # Build kwargs for exporter constructor
+    exporter_kwargs = {}
+    if args.model_type == "generator" and hf_token:
+        exporter_kwargs["hf_token"] = hf_token
+    if args.model_type == "reader":
+        exporter_kwargs["trust_remote_code"] = args.trust_remote_code
+
+    try:
+        exporter = get_exporter_for_model(
+            export_model_type,
+            model_id,
+            model_dir,
+            args.variants,
+            export_capabilities,
+            **exporter_kwargs,
+        )
+        exporter.run(from_onnx=args.from_onnx)
+    except ValueError as e:
+        # Fall back to legacy export functions if no exporter registered
+        logger.warning(f"No exporter in registry, falling back to legacy: {e}")
+        if args.model_type == "rewriter":
+            export_seq2seq_model(model_id, model_dir, args.variants)
+        elif args.model_type == "generator":
+            export_generator_model(model_id, model_dir, args.variants, hf_token=hf_token)
+        elif args.model_type == "classifier":
+            export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
+        elif args.model_type == "reader":
+            export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
+        elif recognizer_arch == "gliner2":
+            export_gliner2_model(model_id, model_dir, args.variants)
+        elif recognizer_arch == "gliner":
+            export_gliner_model(model_id, model_dir, args.variants)
+        elif recognizer_arch == "rebel":
+            export_rebel_model(model_id, model_dir, args.variants)
+        else:
+            export_model(args.model_type, model_id, model_dir, args.variants, capabilities, from_onnx=args.from_onnx)
+        exporter = None
 
     # Test model
     if not args.no_test:
         logger.info("\n[2/4] Testing exported model...")
-        if not test_model(args.model_type, model_dir, capabilities, recognizer_arch=recognizer_arch):
+        # Use exporter's test method if available, otherwise fall back to legacy
+        if exporter is not None:
+            if not exporter.test():
+                logger.error("Model test failed, aborting")
+                sys.exit(1)
+        elif not test_model(args.model_type, model_dir, capabilities, recognizer_arch=recognizer_arch):
             logger.error("Model test failed, aborting")
             sys.exit(1)
     else:

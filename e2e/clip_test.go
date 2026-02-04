@@ -42,12 +42,12 @@ const (
 	clipEmbeddingDim = 512
 )
 
-// TestCLIPMultimodalE2E tests the full CLIP multimodal embedding pipeline:
+// TestCLIPE2E tests the full CLIP multimodal embedding pipeline:
 // 1. Downloads CLIP model if not present (lazy download)
 // 2. Starts termite server with CLIP model
 // 3. Tests text and image embedding
 // 4. Verifies cross-modal embedding dimensions match
-func TestCLIPMultimodalE2E(t *testing.T) {
+func TestCLIPE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
 	}
@@ -102,23 +102,23 @@ func TestCLIPMultimodalE2E(t *testing.T) {
 
 	// Run test cases
 	t.Run("ListModels", func(t *testing.T) {
-		testListModels(t, ctx, termiteClient)
+		testListModelsCLIP(t, ctx, termiteClient)
 	})
 
 	t.Run("TextEmbedding", func(t *testing.T) {
-		testTextEmbedding(t, ctx, termiteClient)
+		testTextEmbeddingCLIP(t, ctx, termiteClient)
 	})
 
 	t.Run("ImageEmbedding", func(t *testing.T) {
-		testImageEmbedding(t, ctx, termiteClient, serverURL)
+		testImageEmbeddingCLIP(t, ctx, termiteClient, serverURL)
 	})
 
 	t.Run("CrossModalSimilarity", func(t *testing.T) {
-		testCrossModalSimilarity(t, ctx, termiteClient, serverURL)
+		testCrossModalSimilarityCLIP(t, ctx, termiteClient, serverURL)
 	})
 
 	t.Run("DifferentImagesProduceDifferentEmbeddings", func(t *testing.T) {
-		testDifferentImagesProduceDifferentEmbeddings(t, ctx, serverURL)
+		testDifferentImagesCLIP(t, ctx, serverURL)
 	})
 
 	// 6. Graceful shutdown
@@ -133,8 +133,8 @@ func TestCLIPMultimodalE2E(t *testing.T) {
 	}
 }
 
-// testListModels verifies the CLIP model appears in the models list
-func testListModels(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testListModelsCLIP verifies the CLIP model appears in the models list
+func testListModelsCLIP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	models, err := c.ListModels(ctx)
@@ -158,8 +158,8 @@ func testListModels(t *testing.T, ctx context.Context, c *client.TermiteClient) 
 	}
 }
 
-// testTextEmbedding tests embedding text strings
-func testTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+// testTextEmbeddingCLIP tests embedding text strings
+func testTextEmbeddingCLIP(t *testing.T, ctx context.Context, c *client.TermiteClient) {
 	t.Helper()
 
 	texts := []string{
@@ -186,8 +186,8 @@ func testTextEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClien
 	}
 }
 
-// testImageEmbedding tests embedding an image via multimodal ContentPart
-func testImageEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+// testImageEmbeddingCLIP tests embedding an image via multimodal ContentPart
+func testImageEmbeddingCLIP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
 	t.Helper()
 
 	// Create a test image (100x100 red square)
@@ -204,8 +204,8 @@ func testImageEmbedding(t *testing.T, ctx context.Context, c *client.TermiteClie
 		len(embedding), embedding[0], embedding[1], embedding[2])
 }
 
-// testCrossModalSimilarity verifies text and image embeddings have the same dimension
-func testCrossModalSimilarity(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+// testCrossModalSimilarityCLIP verifies text and image embeddings have the same dimension
+func testCrossModalSimilarityCLIP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
 	t.Helper()
 
 	// Get text embedding
@@ -231,8 +231,8 @@ func testCrossModalSimilarity(t *testing.T, ctx context.Context, c *client.Termi
 	t.Logf("Cosine similarity between 'a red square' and red square image: %.4f", similarity)
 }
 
-// testDifferentImagesProduceDifferentEmbeddings verifies that different images produce different embeddings
-func testDifferentImagesProduceDifferentEmbeddings(t *testing.T, ctx context.Context, serverURL string) {
+// testDifferentImagesCLIP verifies that different images produce different embeddings
+func testDifferentImagesCLIP(t *testing.T, ctx context.Context, serverURL string) {
 	t.Helper()
 
 	// Create a synthetic red square image

@@ -4,6 +4,7 @@
 /onnxruntime
 /pjrt
 /scripts/__pycache__/
+/scripts/exporters/__pycache__/
 # Registry - track manifests/index, ignore large binaries
 /registry/blobs/
 /registry/models/
