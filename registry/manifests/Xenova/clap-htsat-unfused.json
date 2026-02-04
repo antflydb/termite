@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 2,
+  "name": "clap-htsat-unfused",
+  "type": "embedder",
+  "description": "",
+  "source": "Xenova/clap-htsat-unfused",
+  "files": [
+    {
+      "name": "audio_model.onnx",
+      "digest": "sha256:a1c2b43c44f71e0fa841a4b86700886c199bf87699ea45632c4d831bc6c88957",
+      "size": 117528416
+    },
+    {
+      "name": "audio_model_fp16.onnx",
+      "digest": "sha256:65963cfa5e903e0a8df475137252d618663df88ecf0b55a3fb327e6c1ca63a97",
+      "size": 60414065
+    },
+    {
+      "name": "audio_model_quantized.onnx",
+      "digest": "sha256:3fcff2c8824e7bcb83a983f2a49edab3b60cbcf4872ac70efee517355173bd1f",
+      "size": 34301667
+    },
+    {
+      "name": "config.json",
+      "digest": "sha256:39c6d90fe29cf2cce650dd5c92c38a1e35b130d9ce0bb98585222ad687ad979b",
+      "size": 699
+    },
+    {
+      "name": "merges.txt",
+      "digest": "sha256:1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
+      "size": 456318
+    },
+    {
+      "name": "model.onnx",
+      "digest": "sha256:a8cbfb96dda10259964e678c1557466f925001f66b8cd1b24c84bd88b0f84345",
+      "size": 619128635
+    },
+    {
+      "name": "model_fp16.onnx",
+      "digest": "sha256:9ec27913c473d8ce6367cc40376c27b79899248009d8f6f2ad62110abdcf6124",
+      "size": 311602756
+    },
+    {
+      "name": "model_quantized.onnx",
+      "digest": "sha256:3f559313ec268518193101007fc0569ee4b2cfac03e369091c50adb4795f5c5d",
+      "size": 161024085
+    },
+    {
+      "name": "preprocessor_config.json",
+      "digest": "sha256:9739f58296aa6f9ac18008fd0150fb2649bc554985fbde86d0a4041c882ac753",
+      "size": 541
+    },
+    {
+      "name": "quantize_config.json",
+      "digest": "sha256:eebd395475982b1153edbdee6ef3a19531159d9c04f424423a76026a053027aa",
+      "size": 3044
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f",
+      "size": 280
+    },
+    {
+      "name": "text_model.onnx",
+      "digest": "sha256:6df7c51f2d78e236a03f2b816e613d538c815639d13644fe7c2124f439da9648",
+      "size": 501513769
+    },
+    {
+      "name": "text_model_fp16.onnx",
+      "digest": "sha256:c1fd1e4cdd02acbcacaafe7a8e608dcfc8f84a00bfea3e2ca7df710957b4c3a5",
+      "size": 251029088
+    },
+    {
+      "name": "text_model_quantized.onnx",
+      "digest": "sha256:1a3df8b197e249816e08415fd040434c44762b2eea7eb7bf8a48a0f0bf3c14e5",
+      "size": 126603263
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:dc239041d98de27ffc3975473a1a23e3db4c937b23c138c38bbc66588bd247e5",
+      "size": 2108774
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:2c964a338683aec3695ea37687271e75b40905233f5d2a5bbb9be8cb40c4d0a0",
+      "size": 1392
+    },
+    {
+      "name": "vocab.json",
+      "digest": "sha256:ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e",
+      "size": 798293
+    }
+  ],
+  "owner": "Xenova",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/Xenova/clap-htsat-unfused",
+    "downloadedAt": "2026-02-04T01:01:03.417012+00:00"
+  },
+  "capabilities": [
+    "audio"
+  ]
+}
