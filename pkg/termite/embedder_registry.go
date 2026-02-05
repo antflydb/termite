@@ -38,9 +38,11 @@ const DefaultKeepAlive = 5 * time.Minute
 type ModelInfo struct {
 	Name             string
 	Path             string
-	OnnxFilename     string // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
+	OnnxFilename     string   // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
 	PoolSize         int
-	ModelType        string   // "embedder", "chunker", "reranker"
+	ModelType        string   // "embedder" or "multimodal"
+	Quantized        bool     // Whether to load quantized variant (*_quantized.onnx)
+	Capabilities     []string // e.g., ["image"], ["audio"], ["image", "audio"]
 	Variants         []string // Available variant IDs (e.g., ["f16", "i8"])
 	RequiredBackends []string // If set, only use these backends (e.g., ["onnx"] for models with XLA-incompatible ops)
 }
@@ -237,122 +239,69 @@ func (r *EmbedderRegistry) discoverModels() error {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 		variants := dm.Variants
+		requiredBackends := getRequiredBackends(registryFullName, dm.Manifest)
 
-		// Check if this is a unified CLIPCLAP model (has visual + audio + text encoders)
-		// Must check BEFORE CLIP and CLAP since CLIPCLAP matches both patterns
-		hasCLIPCLAPStd, hasCLIPCLAPQt := isMultimodalCLIPCLAPModel(modelPath)
-		if hasCLIPCLAPStd || hasCLIPCLAPQt {
-			r.logger.Info("Discovered unified CLIPCLAP embedder model (not loaded)",
+		// Detect multimodal capabilities from manifest or file presence
+		mc := detectMultimodalCapabilities(modelPath)
+		var caps []string
+		if dm.Manifest != nil && len(dm.Manifest.Capabilities) > 0 {
+			for _, c := range dm.Manifest.Capabilities {
+				if c == string(modelregistry.CapabilityImage) || c == string(modelregistry.CapabilityAudio) {
+					caps = append(caps, c)
+				}
+			}
+		}
+		// Fall back to file-presence detection if manifest lacks capabilities
+		if len(caps) == 0 {
+			if mc.hasImage || mc.hasImageQuantized {
+				caps = append(caps, string(modelregistry.CapabilityImage))
+			}
+			if mc.hasAudio || mc.hasAudioQuantized {
+				caps = append(caps, string(modelregistry.CapabilityAudio))
+			}
+		}
+
+		// Multimodal models: register standard + quantized variants
+		if len(caps) > 0 {
+			hasStandard := (mc.hasImage || mc.hasAudio)
+			hasQuantized := (mc.hasImageQuantized || mc.hasAudioQuantized)
+
+			r.logger.Info("Discovered multimodal embedder model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath),
-				zap.Bool("has_standard", hasCLIPCLAPStd),
-				zap.Bool("has_quantized", hasCLIPCLAPQt))
+				zap.Strings("capabilities", caps),
+				zap.Bool("has_standard", hasStandard),
+				zap.Bool("has_quantized", hasQuantized))
 
-			// Register standard precision CLIPCLAP model
-			if hasCLIPCLAPStd {
+			if hasStandard {
 				r.discovered[registryFullName] = &ModelInfo{
 					Name:             registryFullName,
 					Path:             modelPath,
-					OnnxFilename:     "", // CLIPCLAP uses multiple files
-					PoolSize:         poolSize,
-					ModelType:        "clipclap",
+					PoolSize:         1, // Multimodal models use single instance
+					ModelType:        "multimodal",
+					Capabilities:     caps,
 					Variants:         []string{"default"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
+					RequiredBackends: requiredBackends,
 				}
 			}
 
-			// Register quantized CLIPCLAP model with suffix
-			if hasCLIPCLAPQt {
+			if hasQuantized {
 				quantizedName := registryFullName + "-i8-qt"
 				r.discovered[quantizedName] = &ModelInfo{
 					Name:             quantizedName,
 					Path:             modelPath,
-					OnnxFilename:     "", // CLIPCLAP uses multiple files
-					PoolSize:         poolSize,
-					ModelType:        "clipclap-quantized",
+					PoolSize:         1, // Multimodal models use single instance
+					ModelType:        "multimodal",
+					Quantized:        true,
+					Capabilities:     caps,
 					Variants:         []string{"quantized"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
+					RequiredBackends: requiredBackends,
 				}
 			}
-			continue // Skip CLIP/CLAP/standard embedder handling
+			continue
 		}
 
-		// Check if this is a multimodal visual (CLIP-style) model
-		hasMultimodalStd, hasMultimodalQt := isMultimodalModel(modelPath)
-		if hasMultimodalStd || hasMultimodalQt {
-			r.logger.Info("Discovered multimodal visual embedder model (not loaded)",
-				zap.String("name", registryFullName),
-				zap.String("path", modelPath),
-				zap.Bool("has_standard", hasMultimodalStd),
-				zap.Bool("has_quantized", hasMultimodalQt))
-
-			// Register standard precision multimodal model
-			if hasMultimodalStd {
-				r.discovered[registryFullName] = &ModelInfo{
-					Name:             registryFullName,
-					Path:             modelPath,
-					OnnxFilename:     "", // CLIP uses multiple files, not a single ONNX
-					PoolSize:         poolSize,
-					ModelType:        "clip",
-					Variants:         []string{"default"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
-				}
-			}
-
-			// Register quantized multimodal model with suffix
-			if hasMultimodalQt {
-				quantizedName := registryFullName + "-i8-qt"
-				r.discovered[quantizedName] = &ModelInfo{
-					Name:             quantizedName,
-					Path:             modelPath,
-					OnnxFilename:     "", // CLIP uses multiple files, not a single ONNX
-					PoolSize:         poolSize,
-					ModelType:        "clip-quantized",
-					Variants:         []string{"quantized"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
-				}
-			}
-			continue // Skip standard embedder handling
-		}
-
-		// Check if this is a multimodal audio (CLAP-style) model
-		hasAudioStd, hasAudioQt := isMultimodalAudioModel(modelPath)
-		if hasAudioStd || hasAudioQt {
-			r.logger.Info("Discovered multimodal audio embedder model (not loaded)",
-				zap.String("name", registryFullName),
-				zap.String("path", modelPath),
-				zap.Bool("has_standard", hasAudioStd),
-				zap.Bool("has_quantized", hasAudioQt))
-
-			// Register standard precision CLAP model
-			if hasAudioStd {
-				r.discovered[registryFullName] = &ModelInfo{
-					Name:             registryFullName,
-					Path:             modelPath,
-					OnnxFilename:     "", // CLAP uses multiple files, not a single ONNX
-					PoolSize:         poolSize,
-					ModelType:        "clap",
-					Variants:         []string{"default"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
-				}
-			}
-
-			// Register quantized CLAP model with suffix
-			if hasAudioQt {
-				quantizedName := registryFullName + "-i8-qt"
-				r.discovered[quantizedName] = &ModelInfo{
-					Name:             quantizedName,
-					Path:             modelPath,
-					OnnxFilename:     "", // CLAP uses multiple files, not a single ONNX
-					PoolSize:         poolSize,
-					ModelType:        "clap-quantized",
-					Variants:         []string{"quantized"},
-					RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
-				}
-			}
-			continue // Skip standard embedder handling
-		}
-
+		// Standard text-only embedder
 		if len(variants) == 0 {
 			continue
 		}
@@ -386,7 +335,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 				PoolSize:         poolSize,
 				ModelType:        "embedder",
 				Variants:         variantIDs,
-				RequiredBackends: getRequiredBackends(registryFullName, dm.Manifest),
+				RequiredBackends: requiredBackends,
 			}
 		}
 	}
@@ -487,77 +436,15 @@ func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, erro
 		zap.String("onnx_filename", info.OnnxFilename),
 		zap.Int("pool_size", info.PoolSize))
 
-	var embedder embeddings.Embedder
-	var backendUsed backends.BackendType
-	var err error
-
-	// Handle different model types
-	switch info.ModelType {
-	case "clipclap":
-		// Load standard precision CLIPCLAP unified model (text+image+audio)
-		embedder, backendUsed, err = termembeddings.NewCLIPCLAPEmbedder(
-			info.Path,
-			false, // not quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	case "clipclap-quantized":
-		// Load quantized CLIPCLAP unified model
-		embedder, backendUsed, err = termembeddings.NewCLIPCLAPEmbedder(
-			info.Path,
-			true, // quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	case "clip":
-		// Load standard precision CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
-			info.Path,
-			false, // not quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	case "clip-quantized":
-		// Load quantized CLIP multimodal model
-		embedder, backendUsed, err = termembeddings.NewCLIPEmbedder(
-			info.Path,
-			true, // quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	case "clap":
-		// Load standard precision CLAP multimodal audio model
-		embedder, backendUsed, err = termembeddings.NewCLAPEmbedder(
-			info.Path,
-			false, // not quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	case "clap-quantized":
-		// Load quantized CLAP multimodal audio model
-		embedder, backendUsed, err = termembeddings.NewCLAPEmbedder(
-			info.Path,
-			true, // quantized
-			r.sessionManager,
-			nil, // modelBackends - use default priority
-			r.logger.Named(info.Name),
-		)
-	default:
-		// Standard pooled embedder using pipeline
-		cfg := termembeddings.PooledEmbedderConfig{
-			ModelPath:     info.Path,
-			PoolSize:      info.PoolSize,
-			Normalize:     true,                  // Enable L2 normalization for unit-length embeddings
-			ModelBackends: info.RequiredBackends, // nil = all backends, or specific backends for compatibility
-			Logger:        r.logger.Named(info.Name),
-		}
-		embedder, backendUsed, err = termembeddings.NewPooledEmbedder(cfg, r.sessionManager)
+	cfg := termembeddings.PooledEmbedderConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		Normalize:     true,
+		Quantized:     info.Quantized,
+		ModelBackends: info.RequiredBackends,
+		Logger:        r.logger.Named(info.Name),
 	}
+	embedder, backendUsed, err := termembeddings.NewPooledEmbedder(cfg, r.sessionManager)
 
 	if err != nil {
 		r.logger.Error("Failed to load embedder model",
@@ -774,17 +661,12 @@ func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregis
 		return false
 	}
 
-	// Map model types to capabilities
-	switch info.ModelType {
-	case "clipclap", "clipclap-quantized":
-		return capability == modelregistry.CapabilityImage || capability == modelregistry.CapabilityAudio
-	case "clip", "clip-quantized":
-		return capability == modelregistry.CapabilityImage
-	case "clap", "clap-quantized":
-		return capability == modelregistry.CapabilityAudio
-	default:
-		return false
+	for _, c := range info.Capabilities {
+		if c == string(capability) {
+			return true
+		}
 	}
+	return false
 }
 
 // Stats returns cache statistics
