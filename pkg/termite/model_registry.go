@@ -50,6 +50,24 @@ func discoverModelVariants(modelPath string) map[string]string {
 	return variants
 }
 
+// isMultimodalCLIPCLAPModel checks if a model directory contains a unified CLIP+CLAP model.
+// These models have visual_model.onnx + audio_model.onnx + text_model.onnx, combining
+// CLIP (text+image) and CLAP (audio) in a single embedding space.
+// Must be checked BEFORE isMultimodalModel and isMultimodalAudioModel since CLIPCLAP
+// matches both patterns.
+func isMultimodalCLIPCLAPModel(modelPath string) (hasStandard, hasQuantized bool) {
+	visualPath := filepath.Join(modelPath, "visual_model.onnx")
+	audioPath := filepath.Join(modelPath, "audio_model.onnx")
+	textPath := filepath.Join(modelPath, "text_model.onnx")
+	visualQuantizedPath := filepath.Join(modelPath, "visual_model_quantized.onnx")
+	audioQuantizedPath := filepath.Join(modelPath, "audio_model_quantized.onnx")
+	textQuantizedPath := filepath.Join(modelPath, "text_model_quantized.onnx")
+
+	hasStandard = fileExistsRegistry(visualPath) && fileExistsRegistry(audioPath) && fileExistsRegistry(textPath)
+	hasQuantized = fileExistsRegistry(visualQuantizedPath) && fileExistsRegistry(audioQuantizedPath) && fileExistsRegistry(textQuantizedPath)
+	return
+}
+
 // isMultimodalModel checks if a model directory contains CLIP-style multimodal model files.
 // These models have visual_model.onnx + text_model.onnx instead of a single model.onnx.
 func isMultimodalModel(modelPath string) (hasStandard, hasQuantized bool) {
@@ -205,10 +223,11 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 		// Manifest not found or invalid - discover from files
 		variants := discoverModelVariants(modelPath)
 		if len(variants) == 0 {
-			// Check for multimodal, audio multimodal, or seq2seq models
+			// Check for multimodal, audio multimodal, clipclap, or seq2seq models
+			hasCCStd, hasCCQt := isMultimodalCLIPCLAPModel(modelPath)
 			hasStd, hasQt := isMultimodalModel(modelPath)
 			hasAudioStd, hasAudioQt := isMultimodalAudioModel(modelPath)
-			if !hasStd && !hasQt && !hasAudioStd && !hasAudioQt && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
+			if !hasCCStd && !hasCCQt && !hasStd && !hasQt && !hasAudioStd && !hasAudioQt && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
 				return nil // No model files found
 			}
 		}

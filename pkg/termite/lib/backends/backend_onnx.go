@@ -585,9 +585,17 @@ func (m *ortModel) forwardAudio(ctx context.Context, inputs *ModelInputs) (*Mode
 		return nil, fmt.Errorf("no output tensors returned")
 	}
 
-	// Get output data from first output tensor
+	// Select best output tensor: prefer pooler_output (2D) over last_hidden_state (4D).
+	// Models like CLAP export both last_hidden_state and pooler_output; we want the pooled one.
 	outputTensor := outputTensors[0]
 	outputShape := outputTensor.GetShape()
+	if len(outputShape) > 3 && len(outputTensors) > 1 && outputTensors[1] != nil {
+		secondShape := outputTensors[1].GetShape()
+		if len(secondShape) == 2 || len(secondShape) == 3 {
+			outputTensor = outputTensors[1]
+			outputShape = secondShape
+		}
+	}
 
 	// Type assert to get the data
 	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
