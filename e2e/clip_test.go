@@ -121,6 +121,14 @@ func TestCLIPE2E(t *testing.T) {
 		testDifferentImagesCLIP(t, ctx, serverURL)
 	})
 
+	t.Run("CrossModalRetrieval", func(t *testing.T) {
+		testCrossModalRetrievalCLIP(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("MixedModalityBatch", func(t *testing.T) {
+		testMixedModalityBatchCLIP(t, ctx, serverURL)
+	})
+
 	// 6. Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -437,4 +445,169 @@ func sqrt(x float64) float64 {
 		z = z - (z*z-x)/(2*z)
 	}
 	return z
+}
+
+// embedMultimodal sends a multimodal embed request with multiple content parts
+// and returns all resulting embeddings. Useful for testing mixed-modality batches.
+func embedMultimodal(t *testing.T, ctx context.Context, serverURL, model string, parts []oapi.ContentPart) [][]float32 {
+	t.Helper()
+
+	var inputUnion oapi.EmbedRequest_Input
+	if err := inputUnion.FromEmbedRequestInput2(parts); err != nil {
+		t.Fatalf("Failed to build input union: %v", err)
+	}
+
+	req := oapi.EmbedRequest{
+		Model: model,
+		Input: inputUnion,
+	}
+
+	apiURL := serverURL + "/api"
+	oapiClient, err := oapi.NewClientWithResponses(apiURL)
+	if err != nil {
+		t.Fatalf("Failed to create oapi client: %v", err)
+	}
+
+	resp, err := oapiClient.GenerateEmbeddingsWithResponse(ctx, req, func(ctx context.Context, req *http.Request) error {
+		req.Header.Set("Accept", "application/json")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Multimodal embedding request failed: %v", err)
+	}
+
+	if resp.JSON400 != nil {
+		t.Fatalf("Bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		t.Fatalf("Model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		t.Fatalf("Server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON200 == nil {
+		t.Fatalf("Unexpected response: status=%d, body=%s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200.Embeddings
+}
+
+// makeTextContentPart creates a text ContentPart for multimodal embed requests.
+func makeTextContentPart(t *testing.T, text string) oapi.ContentPart {
+	t.Helper()
+	var cp oapi.ContentPart
+	if err := cp.FromTextContentPart(oapi.TextContentPart{
+		Type: oapi.TextContentPartTypeText,
+		Text: text,
+	}); err != nil {
+		t.Fatalf("Failed to create text ContentPart: %v", err)
+	}
+	return cp
+}
+
+// makeImageContentPart creates an image ContentPart from raw PNG data.
+func makeImageContentPart(t *testing.T, imageData []byte) oapi.ContentPart {
+	t.Helper()
+	base64Data := base64.StdEncoding.EncodeToString(imageData)
+	dataURI := fmt.Sprintf("data:image/png;base64,%s", base64Data)
+	var cp oapi.ContentPart
+	if err := cp.FromImageURLContentPart(oapi.ImageURLContentPart{
+		Type:     oapi.ImageURLContentPartTypeImageUrl,
+		ImageUrl: oapi.ImageURL{Url: dataURI},
+	}); err != nil {
+		t.Fatalf("Failed to create image ContentPart: %v", err)
+	}
+	return cp
+}
+
+// testCrossModalRetrievalCLIP verifies that text queries retrieve the semantically
+// correct image from a set of candidates based on cosine similarity ranking.
+// Uses real photographs (cat, car, flower) from testdata/ for reliable cross-modal
+// alignment — CLIP was trained on natural images and struggles with synthetic data.
+func testCrossModalRetrievalCLIP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+	t.Helper()
+
+	// Load two semantically distinct real test images (cat vs car).
+	// Pairwise comparisons are more robust than multi-way ranking because
+	// CLIP's cross-modal similarities for small images are near zero with
+	// tight margins — a third candidate can act as a confounder.
+	catData, err := os.ReadFile(filepath.Join("testdata", "cat.jpg"))
+	if err != nil {
+		t.Skipf("Skipping cross-modal retrieval: cat.jpg not found: %v", err)
+	}
+	carData, err := os.ReadFile(filepath.Join("testdata", "car.jpg"))
+	if err != nil {
+		t.Skipf("Skipping cross-modal retrieval: car.jpg not found: %v", err)
+	}
+
+	catEmb := embedImageWithMimeType(t, ctx, serverURL, clipModelName, catData, "image/jpeg")
+	carEmb := embedImageWithMimeType(t, ctx, serverURL, clipModelName, carData, "image/jpeg")
+
+	textEmbs, err := c.Embed(ctx, clipModelName, []string{
+		"a photo of a cat",
+		"a photo of a car",
+	})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+	catTextEmb := textEmbs[0]
+	carTextEmb := textEmbs[1]
+
+	// "a photo of a cat" should be closer to the cat image than to the car image
+	simCatTextCat := cosineSimilarity(catTextEmb, catEmb)
+	simCatTextCar := cosineSimilarity(catTextEmb, carEmb)
+	t.Logf("  sim(\"a photo of a cat\", cat) = %.4f", simCatTextCat)
+	t.Logf("  sim(\"a photo of a cat\", car) = %.4f", simCatTextCar)
+
+	if simCatTextCat <= simCatTextCar {
+		t.Errorf("Retrieval failed: \"a photo of a cat\" closer to car (%.4f) than cat (%.4f)",
+			simCatTextCar, simCatTextCat)
+	} else {
+		t.Logf("Retrieval OK: \"a photo of a cat\" -> cat (margin=%.4f)", simCatTextCat-simCatTextCar)
+	}
+
+	// "a photo of a car" should be closer to the car image than to the cat image
+	simCarTextCar := cosineSimilarity(carTextEmb, carEmb)
+	simCarTextCat := cosineSimilarity(carTextEmb, catEmb)
+	t.Logf("  sim(\"a photo of a car\", car) = %.4f", simCarTextCar)
+	t.Logf("  sim(\"a photo of a car\", cat) = %.4f", simCarTextCat)
+
+	if simCarTextCar <= simCarTextCat {
+		t.Errorf("Retrieval failed: \"a photo of a car\" closer to cat (%.4f) than car (%.4f)",
+			simCarTextCat, simCarTextCar)
+	} else {
+		t.Logf("Retrieval OK: \"a photo of a car\" -> car (margin=%.4f)", simCarTextCar-simCarTextCat)
+	}
+}
+
+// testMixedModalityBatchCLIP verifies that a single embed request containing
+// both text and image content parts returns correct, distinct embeddings.
+func testMixedModalityBatchCLIP(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	imageData := createTestImage(t, 100, 100, color.RGBA{255, 0, 0, 255})
+
+	parts := []oapi.ContentPart{
+		makeTextContentPart(t, "a photo of a cat"),
+		makeImageContentPart(t, imageData),
+	}
+
+	embeddings := embedMultimodal(t, ctx, serverURL, clipModelName, parts)
+
+	if len(embeddings) != 2 {
+		t.Fatalf("Expected 2 embeddings from mixed batch, got %d", len(embeddings))
+	}
+
+	for i, emb := range embeddings {
+		if len(emb) != clipEmbeddingDim {
+			t.Errorf("Embedding %d: expected dim %d, got %d", i, clipEmbeddingDim, len(emb))
+		}
+	}
+
+	// Text and image embeddings should not be identical
+	sim := cosineSimilarity(embeddings[0], embeddings[1])
+	t.Logf("Mixed batch: text-image similarity = %.4f", sim)
+	if sim > 0.99 {
+		t.Error("Mixed batch text and image embeddings are suspiciously identical")
+	}
 }

@@ -481,9 +481,18 @@ func (m *ortModel) forwardVision(ctx context.Context, inputs *ModelInputs) (*Mod
 		return nil, fmt.Errorf("no output tensors returned")
 	}
 
-	// Get the output tensor and extract data
+	// Select best output tensor: prefer pooler_output by name over last_hidden_state.
+	// CLIP visual encoder exports both ["last_hidden_state", "pooler_output"];
+	// pooler_output is LayerNorm(CLS token) which is what visual_projection.onnx expects.
 	outputTensor := outputTensors[0]
 	outputShape := outputTensor.GetShape()
+	for i, name := range m.outputNames {
+		if name == "pooler_output" && i < len(outputTensors) && outputTensors[i] != nil {
+			outputTensor = outputTensors[i]
+			outputShape = outputTensor.GetShape()
+			break
+		}
+	}
 
 	// Type assert to get the data
 	floatTensor, ok := outputTensor.(*ort.Tensor[float32])
@@ -494,7 +503,7 @@ func (m *ortModel) forwardVision(ctx context.Context, inputs *ModelInputs) (*Mod
 
 	// Handle different output shapes:
 	// - 3D [batch, seq, hidden]: hidden states (ViT outputs [batch, num_patches, hidden])
-	// - 2D [batch, hidden]: pooled embeddings (some vision models pool internally)
+	// - 2D [batch, hidden]: pooled embeddings (pooler_output or models that pool internally)
 	switch len(outputShape) {
 	case 3:
 		// Vision encoder output: [batch, num_patches, hidden]
@@ -585,15 +594,15 @@ func (m *ortModel) forwardAudio(ctx context.Context, inputs *ModelInputs) (*Mode
 		return nil, fmt.Errorf("no output tensors returned")
 	}
 
-	// Select best output tensor: prefer pooler_output (2D) over last_hidden_state (4D).
+	// Select best output tensor: prefer pooler_output by name over last_hidden_state.
 	// Models like CLAP export both last_hidden_state and pooler_output; we want the pooled one.
 	outputTensor := outputTensors[0]
 	outputShape := outputTensor.GetShape()
-	if len(outputShape) > 3 && len(outputTensors) > 1 && outputTensors[1] != nil {
-		secondShape := outputTensors[1].GetShape()
-		if len(secondShape) == 2 || len(secondShape) == 3 {
-			outputTensor = outputTensors[1]
-			outputShape = secondShape
+	for i, name := range m.outputNames {
+		if name == "pooler_output" && i < len(outputTensors) && outputTensors[i] != nil {
+			outputTensor = outputTensors[i]
+			outputShape = outputTensor.GetShape()
+			break
 		}
 	}
 
@@ -738,7 +747,12 @@ func (m *ortModel) forwardText(ctx context.Context, inputs *ModelInputs) (*Model
 		return nil, fmt.Errorf("no output tensors returned")
 	}
 
-	// Get the output tensor and extract data
+	// Get the output tensor and extract data.
+	// For models with multiple outputs (e.g., CLIP text encoder exports
+	// ["last_hidden_state", "pooler_output"]), we prefer the first output
+	// for text models since we apply our own pooling strategy. Text models
+	// that use a projection layer (CLIP/CLAP) need pooler_output, but
+	// the projection is applied separately via EmbeddingPipeline.Projector.
 	outputTensor := outputTensors[0]
 	outputShape := outputTensor.GetShape()
 

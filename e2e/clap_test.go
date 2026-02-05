@@ -119,6 +119,14 @@ func TestCLAPE2E(t *testing.T) {
 		testDifferentAudiosProduceDifferentEmbeddings(t, ctx, serverURL)
 	})
 
+	t.Run("CrossModalRetrieval", func(t *testing.T) {
+		testCrossModalRetrievalCLAP(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("MixedModalityBatch", func(t *testing.T) {
+		testMixedModalityBatchCLAP(t, ctx, serverURL)
+	})
+
 	// Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -403,4 +411,104 @@ func createTestAudio(t *testing.T, sampleRate int, duration float64, frequency f
 	}
 
 	return buf.Bytes()
+}
+
+// makeAudioContentPart creates an audio ContentPart from raw WAV data.
+func makeAudioContentPart(t *testing.T, audioData []byte) oapi.ContentPart {
+	t.Helper()
+	base64Data := base64.StdEncoding.EncodeToString(audioData)
+	dataURI := fmt.Sprintf("data:audio/wav;base64,%s", base64Data)
+	var cp oapi.ContentPart
+	if err := cp.FromImageURLContentPart(oapi.ImageURLContentPart{
+		Type:     oapi.ImageURLContentPartTypeImageUrl,
+		ImageUrl: oapi.ImageURL{Url: dataURI},
+	}); err != nil {
+		t.Fatalf("Failed to create audio ContentPart: %v", err)
+	}
+	return cp
+}
+
+// testCrossModalRetrievalCLAP verifies that text queries retrieve the semantically
+// correct audio from a set of candidates based on cosine similarity ranking.
+func testCrossModalRetrievalCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+	t.Helper()
+
+	// Create candidate audio files
+	toneAudio := createTestAudio(t, 48000, 1.0, 440.0)
+	silenceAudio := createTestAudio(t, 48000, 1.0, 0.0)
+
+	toneEmb := embedAudio(t, ctx, serverURL, clapModelName, toneAudio)
+	silenceEmb := embedAudio(t, ctx, serverURL, clapModelName, silenceAudio)
+
+	// Text descriptions that should match each audio
+	textEmbs, err := c.Embed(ctx, clapModelName, []string{
+		"a musical tone",
+		"silence",
+	})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+
+	toneTextEmb := textEmbs[0]
+	silenceTextEmb := textEmbs[1]
+
+	// "a musical tone" should be closer to the tone audio than to silence
+	toneToneSim := cosineSimilarity(toneTextEmb, toneEmb)
+	toneSilenceSim := cosineSimilarity(toneTextEmb, silenceEmb)
+	t.Logf("  sim(\"a musical tone\", tone audio) = %.4f", toneToneSim)
+	t.Logf("  sim(\"a musical tone\", silence audio) = %.4f", toneSilenceSim)
+
+	if toneToneSim <= toneSilenceSim {
+		t.Errorf("Retrieval failed: \"a musical tone\" closer to silence (%.4f) than to tone (%.4f)",
+			toneSilenceSim, toneToneSim)
+	} else {
+		t.Logf("Retrieval OK: \"a musical tone\" correctly closer to tone audio (margin=%.4f)",
+			toneToneSim-toneSilenceSim)
+	}
+
+	// "silence" should be closer to silence audio than to tone audio
+	silenceSilenceSim := cosineSimilarity(silenceTextEmb, silenceEmb)
+	silenceToneSim := cosineSimilarity(silenceTextEmb, toneEmb)
+	t.Logf("  sim(\"silence\", silence audio) = %.4f", silenceSilenceSim)
+	t.Logf("  sim(\"silence\", tone audio) = %.4f", silenceToneSim)
+
+	if silenceSilenceSim <= silenceToneSim {
+		t.Errorf("Retrieval failed: \"silence\" closer to tone (%.4f) than to silence (%.4f)",
+			silenceToneSim, silenceSilenceSim)
+	} else {
+		t.Logf("Retrieval OK: \"silence\" correctly closer to silence audio (margin=%.4f)",
+			silenceSilenceSim-silenceToneSim)
+	}
+}
+
+// testMixedModalityBatchCLAP verifies that a single embed request containing
+// both text and audio content parts returns correct, distinct embeddings.
+func testMixedModalityBatchCLAP(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	audioData := createTestAudio(t, 48000, 1.0, 440.0)
+
+	parts := []oapi.ContentPart{
+		makeTextContentPart(t, "a dog barking"),
+		makeAudioContentPart(t, audioData),
+	}
+
+	embeddings := embedMultimodal(t, ctx, serverURL, clapModelName, parts)
+
+	if len(embeddings) != 2 {
+		t.Fatalf("Expected 2 embeddings from mixed batch, got %d", len(embeddings))
+	}
+
+	for i, emb := range embeddings {
+		if len(emb) != clapEmbeddingDim {
+			t.Errorf("Embedding %d: expected dim %d, got %d", i, clapEmbeddingDim, len(emb))
+		}
+	}
+
+	// Text and audio embeddings should not be identical
+	sim := cosineSimilarity(embeddings[0], embeddings[1])
+	t.Logf("Mixed batch: text-audio similarity = %.4f", sim)
+	if sim > 0.99 {
+		t.Error("Mixed batch text and audio embeddings are suspiciously identical")
+	}
 }

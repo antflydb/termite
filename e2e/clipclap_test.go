@@ -18,10 +18,13 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/antflydb/termite/pkg/client"
+	"github.com/antflydb/termite/pkg/client/oapi"
 	"github.com/antflydb/termite/pkg/termite"
 	"go.uber.org/zap/zaptest"
 )
@@ -112,6 +115,18 @@ func TestCLIPCLAPE2E(t *testing.T) {
 
 	t.Run("CrossModalSimilarity", func(t *testing.T) {
 		testCrossModalSimilarityCLIPCLAP(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("CrossModalRetrieval", func(t *testing.T) {
+		testCrossModalRetrievalCLIPCLAP(t, ctx, termiteClient, serverURL)
+	})
+
+	t.Run("MixedModalityBatch", func(t *testing.T) {
+		testMixedModalityBatchCLIPCLAP(t, ctx, serverURL)
+	})
+
+	t.Run("NegativePairBounds", func(t *testing.T) {
+		testNegativePairBoundsCLIPCLAP(t, ctx, termiteClient, serverURL)
 	})
 
 	// Graceful shutdown
@@ -266,5 +281,164 @@ func testCrossModalSimilarityCLIPCLAP(t *testing.T, ctx context.Context, c *clie
 	}
 	if textAudioSim > 0.99 {
 		t.Errorf("Text and audio embeddings are suspiciously similar (%.4f)", textAudioSim)
+	}
+}
+
+// testCrossModalRetrievalCLIPCLAP verifies that text queries retrieve the
+// semantically correct content from other modalities. Tests both text-to-image
+// and text-to-audio retrieval in the unified embedding space.
+func testCrossModalRetrievalCLIPCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+	t.Helper()
+
+	// -- Text-to-Image retrieval --
+	t.Log("Testing text-to-image retrieval")
+
+	catData, err := os.ReadFile(filepath.Join("testdata", "cat.jpg"))
+	if err != nil {
+		t.Skipf("Skipping text-to-image retrieval: cat.jpg not found: %v", err)
+	}
+	carData, err := os.ReadFile(filepath.Join("testdata", "car.jpg"))
+	if err != nil {
+		t.Skipf("Skipping text-to-image retrieval: car.jpg not found: %v", err)
+	}
+
+	catEmb := embedImageWithMimeType(t, ctx, serverURL, clipclapModelName, catData, "image/jpeg")
+	carEmb := embedImageWithMimeType(t, ctx, serverURL, clipclapModelName, carData, "image/jpeg")
+
+	textEmbs, err := c.Embed(ctx, clipclapModelName, []string{"a photo of a cat"})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+	catTextEmb := textEmbs[0]
+
+	simCatTextCatImg := cosineSimilarity(catTextEmb, catEmb)
+	simCatTextCarImg := cosineSimilarity(catTextEmb, carEmb)
+	t.Logf("  sim(\"a photo of a cat\", cat image) = %.4f", simCatTextCatImg)
+	t.Logf("  sim(\"a photo of a cat\", car image) = %.4f", simCatTextCarImg)
+
+	if simCatTextCatImg <= simCatTextCarImg {
+		t.Errorf("Text-to-image retrieval failed: \"a photo of a cat\" closer to car (%.4f) than cat (%.4f)",
+			simCatTextCarImg, simCatTextCatImg)
+	} else {
+		t.Logf("Text-to-image retrieval OK (margin=%.4f)", simCatTextCatImg-simCatTextCarImg)
+	}
+
+	// -- Text-to-Audio retrieval --
+	t.Log("Testing text-to-audio retrieval")
+
+	toneAudio := createTestAudio(t, 48000, 1.0, 440.0)
+	silenceAudio := createTestAudio(t, 48000, 1.0, 0.0)
+
+	toneEmb := embedAudio(t, ctx, serverURL, clipclapModelName, toneAudio)
+	silenceEmb := embedAudio(t, ctx, serverURL, clipclapModelName, silenceAudio)
+
+	textEmbs2, err := c.Embed(ctx, clipclapModelName, []string{"a musical tone"})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+	toneTextEmb := textEmbs2[0]
+
+	simToneTextTone := cosineSimilarity(toneTextEmb, toneEmb)
+	simToneTextSilence := cosineSimilarity(toneTextEmb, silenceEmb)
+	t.Logf("  sim(\"a musical tone\", tone audio) = %.4f", simToneTextTone)
+	t.Logf("  sim(\"a musical tone\", silence audio) = %.4f", simToneTextSilence)
+
+	if simToneTextTone <= simToneTextSilence {
+		t.Errorf("Text-to-audio retrieval failed: \"a musical tone\" closer to silence (%.4f) than tone (%.4f)",
+			simToneTextSilence, simToneTextTone)
+	} else {
+		t.Logf("Text-to-audio retrieval OK (margin=%.4f)", simToneTextTone-simToneTextSilence)
+	}
+}
+
+// testMixedModalityBatchCLIPCLAP verifies that a single embed request containing
+// text, image, and audio content parts returns correct, distinct embeddings for
+// all three modalities.
+func testMixedModalityBatchCLIPCLAP(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	imageData := createTestImage(t, 100, 100, color.RGBA{255, 0, 0, 255})
+	audioData := createTestAudio(t, 48000, 1.0, 440.0)
+
+	parts := []oapi.ContentPart{
+		makeTextContentPart(t, "a photo of a cat"),
+		makeImageContentPart(t, imageData),
+		makeAudioContentPart(t, audioData),
+	}
+
+	embeddings := embedMultimodal(t, ctx, serverURL, clipclapModelName, parts)
+
+	if len(embeddings) != 3 {
+		t.Fatalf("Expected 3 embeddings from mixed batch, got %d", len(embeddings))
+	}
+
+	modalities := []string{"text", "image", "audio"}
+	for i, emb := range embeddings {
+		if len(emb) != clipclapEmbeddingDim {
+			t.Errorf("Embedding %d (%s): expected dim %d, got %d",
+				i, modalities[i], clipclapEmbeddingDim, len(emb))
+		}
+	}
+
+	// All three modality embeddings should be distinct
+	textImageSim := cosineSimilarity(embeddings[0], embeddings[1])
+	textAudioSim := cosineSimilarity(embeddings[0], embeddings[2])
+	imageAudioSim := cosineSimilarity(embeddings[1], embeddings[2])
+
+	t.Logf("Mixed batch similarities: text-image=%.4f, text-audio=%.4f, image-audio=%.4f",
+		textImageSim, textAudioSim, imageAudioSim)
+
+	if textImageSim > 0.99 {
+		t.Error("Mixed batch: text and image embeddings are suspiciously identical")
+	}
+	if textAudioSim > 0.99 {
+		t.Error("Mixed batch: text and audio embeddings are suspiciously identical")
+	}
+	if imageAudioSim > 0.99 {
+		t.Error("Mixed batch: image and audio embeddings are suspiciously identical")
+	}
+}
+
+// testNegativePairBoundsCLIPCLAP verifies that semantically related cross-modal
+// pairs have higher similarity than unrelated cross-modal pairs. This is the core
+// value proposition of unified multimodal embedders: all modalities share one space,
+// so cosine similarity is directly comparable across modalities.
+// If this test fails, it likely indicates that the projection layers or normalization
+// are not correctly aligning the modality-specific encoders into a shared space.
+func testNegativePairBoundsCLIPCLAP(t *testing.T, ctx context.Context, c *client.TermiteClient, serverURL string) {
+	t.Helper()
+
+	// Get text embedding
+	textEmbs, err := c.Embed(ctx, clipclapModelName, []string{"a photo of a cat"})
+	if err != nil {
+		t.Fatalf("Text embedding failed: %v", err)
+	}
+	textEmb := textEmbs[0]
+
+	// Semantically related: cat photograph (same concept, different modality)
+	catData, err := os.ReadFile(filepath.Join("testdata", "cat.jpg"))
+	if err != nil {
+		t.Skipf("Skipping negative pair bounds: cat.jpg not found: %v", err)
+	}
+	relatedImgEmb := embedImageWithMimeType(t, ctx, serverURL, clipclapModelName, catData, "image/jpeg")
+
+	// Semantically unrelated: silence audio (completely different concept AND modality)
+	silenceAudio := createTestAudio(t, 48000, 1.0, 0.0)
+	unrelatedAudioEmb := embedAudio(t, ctx, serverURL, clipclapModelName, silenceAudio)
+
+	// In a properly aligned shared space, a related cross-modal pair should
+	// score higher than an unrelated one regardless of which modalities are involved.
+	relatedSim := cosineSimilarity(textEmb, relatedImgEmb)
+	unrelatedSim := cosineSimilarity(textEmb, unrelatedAudioEmb)
+
+	t.Logf("Related pair   (\"a photo of a cat\" <-> cat image):     %.4f", relatedSim)
+	t.Logf("Unrelated pair (\"a photo of a cat\" <-> silence audio): %.4f", unrelatedSim)
+
+	if relatedSim <= unrelatedSim {
+		t.Errorf("Negative pair bounds violated: related pair (%.4f) should score higher than unrelated pair (%.4f); "+
+			"this may indicate projection layers are not aligning modalities into a shared space",
+			relatedSim, unrelatedSim)
+	} else {
+		t.Logf("Negative pair bounds OK: margin = %.4f", relatedSim-unrelatedSim)
 	}
 }
