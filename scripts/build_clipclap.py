@@ -9,15 +9,24 @@
 #     "datasets",
 #     "huggingface_hub",
 #     "pillow",
+#     "soundfile",
+#     "librosa",
+#     "torchcodec",
 # ]
 # ///
 """
 Build the antflydb/clipclap unified multimodal model.
 
 Loads CLIP (text+image) and CLAP (audio), trains a linear projection mapping
-CLAP audio embeddings into CLIP space using text as a bridge, then exports
-all ONNX files and configs needed for a single model that embeds text, images,
-and audio into a shared 512-dim space.
+CLAP audio embeddings into CLIP space using audio-caption pairs from AudioCaps,
+then exports all ONNX files and configs needed for a single model that embeds
+text, images, and audio into a shared 512-dim space.
+
+Training approach:
+  1. Load audio-caption pairs from OpenSound/AudioCaps
+  2. Encode audio through CLAP (audio encoder + audio_projection + L2 normalize)
+  3. Encode captions through CLIP (text encoder + text_projection + L2 normalize)
+  4. Train a 512→512 linear projection: CLAP audio space → CLIP text space
 
 At inference time:
   - Text  → CLIP text encoder → 512-dim (CLIP space)
@@ -98,10 +107,10 @@ def parse_args():
         help="Projection training learning rate (default: 1e-3)",
     )
     parser.add_argument(
-        "--num-captions",
+        "--num-samples",
         type=int,
         default=5000,
-        help="Number of COCO captions for projection training (default: 5000)",
+        help="Number of audio-caption pairs from AudioCaps for projection training (default: 5000)",
     )
     parser.add_argument(
         "--push-to-hub",
@@ -116,29 +125,40 @@ def parse_args():
 # Projection training
 # ---------------------------------------------------------------------------
 
-def load_captions(num_captions: int) -> list[str]:
-    """Load diverse captions from Conceptual Captions dataset."""
+def load_audio_caption_pairs(num_samples: int) -> tuple[list, list[str], int]:
+    """Load audio-caption pairs from AudioCaps dataset.
+
+    Returns (audio_arrays, captions, sample_rate) where audio_arrays is a list
+    of numpy arrays and captions is a list of strings.
+    """
     from datasets import load_dataset
 
-    logger.info(f"Loading {num_captions} captions from Conceptual Captions...")
-    ds = load_dataset(
-        "google-research-datasets/conceptual_captions",
-        split="train",
-        streaming=True,
-    )
+    logger.info(f"Loading {num_samples} audio-caption pairs from AudioCaps...")
+    ds = load_dataset("OpenSound/AudioCaps", split="train", streaming=True)
 
+    audio_arrays = []
     captions: list[str] = []
-    seen: set[str] = set()
+    sample_rate = None
+
     for example in ds:
         caption = example.get("caption", "")
-        if caption and caption not in seen:
-            seen.add(caption)
-            captions.append(caption)
-            if len(captions) >= num_captions:
-                break
+        audio = example.get("audio")
+        if not caption or audio is None:
+            continue
 
-    logger.info(f"Collected {len(captions)} unique captions")
-    return captions
+        audio_arrays.append(audio["array"])
+        if sample_rate is None:
+            sample_rate = audio["sampling_rate"]
+        captions.append(caption)
+
+        if len(captions) % 500 == 0:
+            logger.info(f"  Loaded {len(captions)}/{num_samples} pairs...")
+
+        if len(captions) >= num_samples:
+            break
+
+    logger.info(f"Collected {len(captions)} audio-caption pairs (sr={sample_rate})")
+    return audio_arrays, captions, sample_rate
 
 
 @torch.no_grad()
@@ -160,21 +180,60 @@ def encode_texts_clip(model, tokenizer, texts: list[str], batch_size: int = 64, 
 
 
 @torch.no_grad()
-def encode_texts_clap(model, processor, texts: list[str], batch_size: int = 64, device: str = "cpu") -> torch.Tensor:
-    """Encode texts with CLAP text encoder, return normalized embeddings."""
+def encode_audio_clap(
+    model, processor, audio_arrays: list, sample_rate: int, batch_size: int = 16, device: str = "cpu"
+) -> torch.Tensor:
+    """Encode audio with CLAP audio encoder, return normalized embeddings.
+
+    Produces the same embeddings as CLAP's get_audio_features():
+    audio_model(input_features) → pooler_output → audio_projection → L2 normalize
+    """
+    import librosa
+
+    target_sr = processor.feature_extractor.sampling_rate
+    if sample_rate != target_sr:
+        logger.info(f"    Resampling audio from {sample_rate}Hz to {target_sr}Hz...")
+        audio_arrays = [librosa.resample(a, orig_sr=sample_rate, target_sr=target_sr) for a in audio_arrays]
+        sample_rate = target_sr
+
     all_embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        inputs = processor(text=batch, return_tensors="pt", padding=True, truncation=True).to(device)
-        text_outputs = model.text_model(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs.get("attention_mask"),
-        )
-        pooled_output = text_outputs[1]
-        text_features = model.text_projection(pooled_output)
-        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        all_embeddings.append(text_features.cpu())
+    for i in range(0, len(audio_arrays), batch_size):
+        batch = audio_arrays[i : i + batch_size]
+        inputs = processor(
+            audio=batch, return_tensors="pt", sampling_rate=sample_rate, padding=True
+        ).to(device)
+
+        audio_outputs = model.audio_model(input_features=inputs["input_features"])
+        pooled_output = audio_outputs[1]  # pooler_output
+        audio_features = model.audio_projection(pooled_output)
+        audio_features = audio_features / audio_features.norm(dim=-1, keepdim=True)
+        all_embeddings.append(audio_features.cpu())
+
+        if (i // batch_size) % 10 == 0:
+            logger.info(f"    Encoded {min(i + batch_size, len(audio_arrays))}/{len(audio_arrays)} audio clips")
+
     return torch.cat(all_embeddings, dim=0)
+
+
+def clip_contrastive_loss(audio_features: torch.Tensor, text_features: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
+    """CLIP-style symmetric contrastive loss (InfoNCE).
+
+    Pushes matching audio-text pairs together while pushing non-matching pairs
+    apart within the batch. This preserves content discrimination, unlike plain
+    cosine similarity loss which only aligns without discriminating.
+    """
+    # Normalize for cosine similarity
+    audio_features = nn.functional.normalize(audio_features, dim=-1)
+    text_features = nn.functional.normalize(text_features, dim=-1)
+
+    # Similarity matrix: [batch, batch]
+    logits = audio_features @ text_features.T / temperature
+    labels = torch.arange(len(logits), device=logits.device)
+
+    # Symmetric loss: audio→text + text→audio
+    loss_a2t = nn.functional.cross_entropy(logits, labels)
+    loss_t2a = nn.functional.cross_entropy(logits.T, labels)
+    return (loss_a2t + loss_t2a) / 2
 
 
 def train_projection(
@@ -184,7 +243,12 @@ def train_projection(
     batch_size: int,
     lr: float,
 ) -> nn.Linear:
-    """Train a linear projection from CLAP space to CLIP space."""
+    """Train a linear projection from CLAP space to CLIP space.
+
+    Uses CLIP-style contrastive loss (InfoNCE) to preserve content discrimination:
+    matching audio-text pairs are pushed together while non-matching pairs in the
+    same batch are pushed apart.
+    """
     assert clip_embeddings.shape == clap_embeddings.shape
     embed_dim = clip_embeddings.shape[1]
 
@@ -198,14 +262,13 @@ def train_projection(
     train_dataset = TensorDataset(clap_embeddings[train_idx], clip_embeddings[train_idx])
     val_dataset = TensorDataset(clap_embeddings[val_idx], clip_embeddings[val_idx])
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, drop_last=True)
 
     projection = nn.Linear(embed_dim, embed_dim, bias=False)
     nn.init.eye_(projection.weight)
 
     optimizer = optim.Adam(projection.parameters(), lr=lr)
-    cos_loss = nn.CosineEmbeddingLoss()
 
     best_val_loss = float("inf")
     best_state = None
@@ -216,7 +279,7 @@ def train_projection(
         for clap_batch, clip_batch in train_loader:
             optimizer.zero_grad()
             projected = projection(clap_batch)
-            loss = cos_loss(projected, clip_batch, torch.ones(len(clap_batch)))
+            loss = clip_contrastive_loss(projected, clip_batch)
             loss.backward()
             optimizer.step()
             train_losses.append(loss.item())
@@ -226,7 +289,7 @@ def train_projection(
         with torch.no_grad():
             for clap_batch, clip_batch in val_loader:
                 projected = projection(clap_batch)
-                loss = cos_loss(projected, clip_batch, torch.ones(len(clap_batch)))
+                loss = clip_contrastive_loss(projected, clip_batch)
                 val_losses.append(loss.item())
 
         train_loss = sum(train_losses) / len(train_losses)
@@ -312,14 +375,14 @@ def main():
     # ── Step 2: Train projection ──────────────────────────────────────────
     logger.info(f"\n[2/5] Training CLAP→CLIP audio projection")
 
-    captions = load_captions(args.num_captions)
+    audio_arrays, captions, audio_sr = load_audio_caption_pairs(args.num_samples)
 
     logger.info("  Encoding captions with CLIP text encoder...")
     clip_embeddings = encode_texts_clip(clip_model, clip_tokenizer, captions, device=device)
     logger.info(f"    Shape: {clip_embeddings.shape}")
 
-    logger.info("  Encoding captions with CLAP text encoder...")
-    clap_embeddings = encode_texts_clap(clap_model, clap_processor, captions, device=device)
+    logger.info("  Encoding audio with CLAP audio encoder...")
+    clap_embeddings = encode_audio_clap(clap_model, clap_processor, audio_arrays, audio_sr, device=device)
     logger.info(f"    Shape: {clap_embeddings.shape}")
 
     projection = train_projection(
@@ -433,6 +496,9 @@ def main():
 
         def forward(self, x):
             x = self.clap_audio_proj(x)
+            # Normalize before the trained projection, matching training where
+            # CLAP audio embeddings were L2-normalized after audio_projection.
+            x = torch.nn.functional.normalize(x, dim=-1)
             x = self.trained_proj(x)
             return x
 
@@ -484,7 +550,9 @@ def main():
         "clip_model": args.clip_model,
         "clap_model": args.clap_model,
         "embed_dim": clip_dim,
-        "num_captions": len(captions),
+        "training_dataset": "OpenSound/AudioCaps",
+        "training_method": "clap_audio_to_clip_text",
+        "num_samples": len(captions),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "lr": args.lr,
