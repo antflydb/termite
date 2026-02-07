@@ -3,7 +3,7 @@ module github.com/antflydb/termite/e2e
 go 1.26rc2
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260207045125-de26f4ffd0a5
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/antflydb/termite/pkg/termite v0.0.0-00010101000000-000000000000
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
@@ -12,11 +12,11 @@ require (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.3 // indirect
+	github.com/ajroetker/go-highway v0.0.4 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/daulet/tokenizers v1.24.0 // indirect
+	github.com/daulet/tokenizers v1.25.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

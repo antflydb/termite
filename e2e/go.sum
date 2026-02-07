@@ -9,6 +9,7 @@ git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm9
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
 github.com/ajroetker/go-highway v0.0.3 h1:8Qbsg8PuUSkP2xnFB6QV2ajDDANB8VA+Wlt3ESdpqMs=
 github.com/ajroetker/go-highway v0.0.3/go.mod h1:YQ+hWNP2rFw8S+ba/qdNJ5p+/+23oS5W00OS8pV6qoU=
+github.com/ajroetker/go-highway v0.0.4/go.mod h1:C/zYPNSSpOaraejY89FUTZTyQNEhi5+rEbU0LjlqJeU=
 github.com/ajroetker/gomlx v0.0.0-antfly003 h1:YYYpql9esy109EayCAVR2kl1IzTt9zq7M7RuQ8ixD1U=
 github.com/ajroetker/gomlx v0.0.0-antfly003/go.mod h1:7VWYppVaTmZxMSP9S7ihHsekDz0PXuHpI+crBmSK1Cs=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly002 h1:jhFhzwgChAyM6ffBYQYK0Qa9UAqWx4qLY9/z6jzSDn8=
@@ -17,6 +18,7 @@ github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyR
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44 h1:7nYpfY9Nsuuv9Hyw0YzQR1sO4Bei2YVea4n9gQq+lcg=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260201045039-cb8261520b44/go.mod h1:HYBt7SBpjxH4GSB7rd1ahSbIj7ui2rbTBt464orHsjU=
+github.com/antflydb/antfly-go/libaf v0.0.0-20260207045125-de26f4ffd0a5/go.mod h1:aGc0IaPIM+hIiy/pzSZgoU/fE8wFJpKBVWKs+V4ncqM=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0/go.mod h1:lvDnEdqiQrp0O42VQGgmlKpxL1AP2+08jFMw88y4klk=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
@@ -40,6 +42,7 @@ github.com/charmbracelet/x/term v0.2.1 h1:AQeHeLZ1OqSXhrAWpYUtZyX1T3zVxfpZuEQMIQ
 github.com/charmbracelet/x/term v0.2.1/go.mod h1:oQ4enTYFV7QN4m0i9mzHrViD7TQKvNEEkHUMCmsxdUg=
 github.com/daulet/tokenizers v1.24.0 h1:pdT0kRPB9jYbIRxY1q82RJa9vfSbKI53YdHHNDTnvOE=
 github.com/daulet/tokenizers v1.24.0/go.mod h1:tGnMdZthXdcWY6DGD07IygpwJqiPvG85FQUnhs/wSCs=
+github.com/daulet/tokenizers v1.25.0/go.mod h1:tGnMdZthXdcWY6DGD07IygpwJqiPvG85FQUnhs/wSCs=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

@@ -7,8 +7,8 @@ codeberg.org/go-pdf/fpdf v0.10.0/go.mod h1:Y0DGRAdZ0OmnZPvjbMp/1bYxmIPxm0ws4tfoP
 git.sr.ht/~sbinet/gg v0.6.0 h1:RIzgkizAk+9r7uPzf/VfbJHBMKUr0F5hRFxTUGMnt38=
 git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm94=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/go-highway v0.0.3 h1:8Qbsg8PuUSkP2xnFB6QV2ajDDANB8VA+Wlt3ESdpqMs=
-github.com/ajroetker/go-highway v0.0.3/go.mod h1:YQ+hWNP2rFw8S+ba/qdNJ5p+/+23oS5W00OS8pV6qoU=
+github.com/ajroetker/go-highway v0.0.4 h1:RDQo+9OhTXI6BFctLo+5gYpHNbb92VYJ0ObnR4l6xAQ=
+github.com/ajroetker/go-highway v0.0.4/go.mod h1:C/zYPNSSpOaraejY89FUTZTyQNEhi5+rEbU0LjlqJeU=
 github.com/ajroetker/gomlx v0.0.0-antfly003 h1:YYYpql9esy109EayCAVR2kl1IzTt9zq7M7RuQ8ixD1U=
 github.com/ajroetker/gomlx v0.0.0-antfly003/go.mod h1:7VWYppVaTmZxMSP9S7ihHsekDz0PXuHpI+crBmSK1Cs=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly002 h1:jhFhzwgChAyM6ffBYQYK0Qa9UAqWx4qLY9/z6jzSDn8=
