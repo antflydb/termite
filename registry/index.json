@@ -2,6 +2,19 @@
   "schemaVersion": 2,
   "models": [
     {
+      "name": "clipclap",
+      "owner": "antflydb",
+      "type": "embedder",
+      "description": "",
+      "source": "antflydb/clipclap",
+      "size": 0,
+      "variants": [],
+      "capabilities": [
+        "multimodal",
+        "audio"
+      ]
+    },
+    {
       "name": "bge-small-en-v1.5",
       "owner": "BAAI",
       "type": "embedder",
