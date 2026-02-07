@@ -25,6 +25,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	mediachunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"go.uber.org/zap"
 )
 
@@ -37,6 +38,7 @@ type TermiteNode struct {
 	readerRegistry        ReaderRegistryInterface
 	transcriberRegistry   TranscriberRegistryInterface
 	chunker               ChunkerInterface
+	mediaChunker          *mediachunking.FixedMediaChunker
 	rerankerRegistry      RerankerRegistryInterface
 	generatorRegistry     GeneratorRegistryInterface
 	nerRegistry           NERRegistryInterface
@@ -496,6 +498,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 		embedderRegistry:      embedderRegistry,
 		chunker:               cachedChunker,
+		mediaChunker:          mediachunking.NewFixedMediaChunker(),
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,

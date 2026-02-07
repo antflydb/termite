@@ -307,6 +307,57 @@ func (c *TermiteClient) Chunk(ctx context.Context, text string, config ChunkConf
 	return resp.JSON200.Chunks, nil
 }
 
+// MediaChunkConfig contains configuration for media chunking.
+type MediaChunkConfig struct {
+	MaxChunks         int
+	WindowDurationMs  int
+	OverlapDurationMs int
+}
+
+// ChunkMedia splits binary media content (audio/wav, image/gif) into chunks.
+func (c *TermiteClient) ChunkMedia(ctx context.Context, data []byte, mimeType string, config MediaChunkConfig) ([]externalRef0.Chunk, error) {
+	// Build MediaContentPart
+	var part oapi.ContentPart
+	if err := part.FromMediaContentPart(oapi.MediaContentPart{
+		Type:     oapi.MediaContentPartTypeMedia,
+		Data:     data,
+		MimeType: mimeType,
+	}); err != nil {
+		return nil, fmt.Errorf("building media content part: %w", err)
+	}
+
+	var input oapi.ChunkRequest_Input
+	if err := input.FromContentPart(part); err != nil {
+		return nil, fmt.Errorf("building chunk request input: %w", err)
+	}
+
+	req := oapi.ChunkRequest{
+		Input: input,
+		Config: oapi.ChunkConfig{
+			MaxChunks:         config.MaxChunks,
+			WindowDurationMs:  config.WindowDurationMs,
+			OverlapDurationMs: config.OverlapDurationMs,
+		},
+	}
+
+	resp, err := c.client.ChunkTextWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200.Chunks, nil
+}
+
 // Rerank re-scores pre-rendered text prompts based on relevance to a query.
 func (c *TermiteClient) Rerank(ctx context.Context, model string, query string, prompts []string) ([]float32, error) {
 	req := oapi.RerankRequest{

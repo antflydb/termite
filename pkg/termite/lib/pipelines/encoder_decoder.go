@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gomlx/go-huggingface/tokenizers"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )

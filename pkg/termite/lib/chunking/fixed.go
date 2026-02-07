@@ -21,7 +21,7 @@ import (
 	"strings"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
-	"github.com/antflydb/termite/pkg/termite/lib/tokenizer"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 )
 
 // Fixed chunker model names
@@ -71,7 +71,7 @@ func DefaultFixedChunkerConfig() FixedChunkerConfig {
 // while respecting token count targets
 type FixedChunker struct {
 	config    FixedChunkerConfig
-	tokenizer tokenizer.Tokenizer
+	tokenizer tokenizers.TokenCounter
 }
 
 // NewFixedChunker creates a chunker that splits text into fixed-size chunks.
@@ -96,31 +96,15 @@ func NewFixedChunker(config FixedChunkerConfig) (*FixedChunker, error) {
 		config.MaxChunks = 50
 	}
 
-	// Validate model
-	if config.Model != ModelFixedBert && config.Model != ModelFixedBPE {
-		return nil, fmt.Errorf("model must be %q or %q for FixedChunker, got %q",
-			ModelFixedBert, ModelFixedBPE, config.Model)
-	}
-
 	// Validate config
 	if config.OverlapTokens >= config.TargetTokens {
 		return nil, errors.New("overlap_tokens must be less than target_tokens")
 	}
 
-	// Create tokenizer based on model
-	var tk tokenizer.Tokenizer
-	var err error
-	switch config.Model {
-	case ModelFixedBPE:
-		tk, err = tokenizer.NewBPETokenizer("cl100k_base")
-		if err != nil {
-			return nil, fmt.Errorf("failed to load BPE tokenizer: %w", err)
-		}
-	case ModelFixedBert:
-		tk, err = tokenizer.NewBertWordPieceTokenizer()
-		if err != nil {
-			return nil, fmt.Errorf("failed to load BERT tokenizer: %w", err)
-		}
+	// Create tokenizer
+	tk, err := tokenizers.NewTokenCounter()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token counter: %w", err)
 	}
 
 	return &FixedChunker{
@@ -207,12 +191,12 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 			// Finalize current chunk
 			chunkText := strings.TrimSpace(currentChunk.String())
 			if chunkText != "" {
-				chunks = append(chunks, chunking.Chunk{
-					Id:        uint32(len(chunks)),
-					Text:      chunkText,
-					StartChar: currentStartChar,
-					EndChar:   currentStartChar + len(chunkText),
-				})
+				chunks = append(chunks, chunking.NewTextChunk(
+					uint32(len(chunks)),
+					chunkText,
+					currentStartChar,
+					currentStartChar+len(chunkText),
+				))
 
 				// Check max chunks limit
 				if len(chunks) >= effectiveConfig.MaxChunks {
@@ -252,22 +236,22 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 	// Add final chunk
 	chunkText := strings.TrimSpace(currentChunk.String())
 	if chunkText != "" && len(chunks) < effectiveConfig.MaxChunks {
-		chunks = append(chunks, chunking.Chunk{
-			Id:        uint32(len(chunks)),
-			Text:      chunkText,
-			StartChar: currentStartChar,
-			EndChar:   currentStartChar + len(chunkText),
-		})
+		chunks = append(chunks, chunking.NewTextChunk(
+			uint32(len(chunks)),
+			chunkText,
+			currentStartChar,
+			currentStartChar+len(chunkText),
+		))
 	}
 
 	// If no chunks were created (text too short), return single chunk
 	if len(chunks) == 0 {
-		chunks = append(chunks, chunking.Chunk{
-			Id:        0,
-			Text:      strings.TrimSpace(text),
-			StartChar: 0,
-			EndChar:   len(text),
-		})
+		chunks = append(chunks, chunking.NewTextChunk(
+			0,
+			strings.TrimSpace(text),
+			0,
+			len(text),
+		))
 	}
 
 	return chunks, nil

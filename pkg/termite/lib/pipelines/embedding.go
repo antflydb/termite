@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gomlx/go-huggingface/tokenizers"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
@@ -931,7 +931,7 @@ func loadTextEmbeddingPipeline(
 	loaderCfg *embeddingLoaderConfig,
 ) (*EmbeddingPipeline, error) {
 	// Load tokenizer
-	tokenizer, err := LoadTokenizer(modelPath)
+	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading tokenizer: %w", err)
 	}

@@ -14,15 +14,18 @@
 
 //go:build !onnx || !ORT
 
-package pipelines
+package tokenizers
 
-import (
-	"github.com/gomlx/go-huggingface/tokenizers"
-	"github.com/gomlx/go-huggingface/tokenizers/api"
-)
+import "github.com/gomlx/go-huggingface/tokenizers/api"
+
+// newRustTokenCounter is a stub when the Rust tokenizer is not available.
+// Returns (nil, nil) to signal fallback to pure Go tokenizer.
+func newRustTokenCounter() (TokenCounter, error) {
+	return nil, nil
+}
 
 // loadRustTokenizer is a stub when Rust tokenizer is not available.
-func loadRustTokenizer(_ string, _ *api.Config) (tokenizers.Tokenizer, error) {
+func loadRustTokenizer(_ string, _ *api.Config) (Tokenizer, error) {
 	return nil, nil // Return nil to signal fallback to Go tokenizer
 }
 
