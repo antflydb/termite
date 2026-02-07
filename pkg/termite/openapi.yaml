@@ -112,11 +112,31 @@ components:
         image_url:
           $ref: "#/components/schemas/ImageURL"
 
+    MediaContentPart:
+      type: object
+      description: Inline binary media content (audio, image, etc.)
+      required:
+        - type
+        - data
+        - mime_type
+      properties:
+        type:
+          type: string
+          enum: [media]
+        data:
+          type: string
+          format: byte
+          description: "Base64-encoded binary data"
+        mime_type:
+          type: string
+          description: "MIME type (audio/wav, image/gif, image/png, etc.)"
+
     ContentPart:
-      description: A content part for multimodal embedding (text or image)
+      description: A content part for multimodal input (text, image URL, or inline media)
       oneOf:
         - $ref: "#/components/schemas/TextContentPart"
         - $ref: "#/components/schemas/ImageURLContentPart"
+        - $ref: "#/components/schemas/MediaContentPart"
 
     # Embedding Types (Ollama-compatible with multimodal extension)
     EmbedRequest:
@@ -218,15 +238,33 @@ components:
           description: Confidence threshold for ONNX models (0.0-1.0)
           example: 0.5
           default: 0.5
+        window_duration_ms:
+          type: integer
+          description: "Window duration in ms for audio chunking (default: 30000)"
+          default: 30000
+        overlap_duration_ms:
+          type: integer
+          description: "Overlap duration in ms between audio chunks (default: 0)"
+          default: 0
 
     ChunkRequest:
       type: object
-      required:
-        - text
       properties:
+        input:
+          description: |
+            Input content to chunk. Supports two formats:
+            - Text string: `"This is a long document..."` (backward compatible)
+            - ContentPart: `{"type": "media", "data": "<base64>", "mime_type": "audio/wav"}`
+            - ContentPart: `{"type": "text", "text": "..."}`
+          oneOf:
+            - type: string
+              description: "Text to chunk (backward compatible)"
+            - $ref: "#/components/schemas/ContentPart"
+              description: "Content part (text or media)"
         text:
           type: string
-          description: Text to chunk
+          deprecated: true
+          description: "DEPRECATED: Use 'input' instead. Text to chunk."
           example: "This is a long document that needs to be split into smaller chunks..."
         config:
           $ref: "#/components/schemas/ChunkConfig"

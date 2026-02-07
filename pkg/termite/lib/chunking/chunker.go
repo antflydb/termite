@@ -211,12 +211,12 @@ func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.Ch
 	// Convert pipelines.Chunk to chunking.Chunk
 	result := make([]chunking.Chunk, len(pipelineChunks))
 	for i, c := range pipelineChunks {
-		result[i] = chunking.Chunk{
-			Id:        uint32(c.Index),
-			Text:      c.Text,
-			StartChar: c.Start,
-			EndChar:   c.End,
-		}
+		result[i] = chunking.NewTextChunk(
+			uint32(c.Index),
+			c.Text,
+			c.Start,
+			c.End,
+		)
 	}
 
 	// Enforce max chunks limit if configured

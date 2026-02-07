@@ -21,10 +21,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gomlx/go-huggingface/tokenizers"
-	"github.com/gomlx/go-huggingface/tokenizers/api"
-
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 )
 
 // PaddingStrategy specifies how to pad sequences.
@@ -142,7 +140,7 @@ func New(tokenizer tokenizers.Tokenizer, model backends.Model, opts ...PipelineO
 
 	// Try to get pad token from tokenizer if not set
 	if config.PadTokenID == 0 {
-		if padID, err := tokenizer.SpecialTokenID(api.TokPad); err == nil {
+		if padID, err := tokenizer.SpecialTokenID(tokenizers.TokPad); err == nil {
 			config.PadTokenID = int32(padID)
 		}
 	}
@@ -155,7 +153,7 @@ func New(tokenizer tokenizers.Tokenizer, model backends.Model, opts ...PipelineO
 }
 
 // TokenSpan represents the byte span of a token in the original text.
-type TokenSpan = api.TokenSpan
+type TokenSpan = tokenizers.TokenSpan
 
 // EncodedBatch holds the result of encoding a batch of texts.
 type EncodedBatch struct {
@@ -261,7 +259,7 @@ func (p *Pipeline) EncodeWithSpans(texts []string) (*EncodedBatch, error) {
 	}
 
 	// Check if tokenizer supports spans
-	tokWithSpans, hasSpans := p.Tokenizer.(api.TokenizerWithSpans)
+	tokWithSpans, hasSpans := p.Tokenizer.(tokenizers.TokenizerWithSpans)
 
 	// Tokenize all texts
 	type tokenResult struct {
@@ -394,12 +392,12 @@ func (p *Pipeline) Close() error {
 func (p *Pipeline) EncodePair(text1, text2 string) (*EncodedBatch, error) {
 	// Get special token IDs
 	// TokEndOfSentence is used for [SEP] in BERT-style models
-	sepID, err := p.Tokenizer.SpecialTokenID(api.TokEndOfSentence)
+	sepID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokEndOfSentence)
 	if err != nil {
 		return nil, fmt.Errorf("getting SEP token: %w", err)
 	}
 	// TokClassification is used for [CLS] in BERT-style models
-	clsID, err := p.Tokenizer.SpecialTokenID(api.TokClassification)
+	clsID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokClassification)
 	if err != nil {
 		return nil, fmt.Errorf("getting CLS token: %w", err)
 	}

@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gomlx/go-huggingface/tokenizers"
+	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
@@ -991,7 +991,7 @@ func LoadSeq2SeqPipeline(
 	}
 
 	// Load the tokenizer
-	tokenizer, err := LoadTokenizer(modelPath)
+	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
 		model.Close()
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)

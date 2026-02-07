@@ -14,7 +14,7 @@
 
 //go:build onnx && ORT
 
-package pipelines
+package tokenizers
 
 import (
 	"fmt"
@@ -22,23 +22,52 @@ import (
 	"path/filepath"
 
 	"github.com/daulet/tokenizers"
-	goTokenizers "github.com/gomlx/go-huggingface/tokenizers"
 	"github.com/gomlx/go-huggingface/tokenizers/api"
 )
 
-// rustTokenizer wraps the Rust HuggingFace tokenizers library.
+// rustTokenCounter uses the Rust HuggingFace tokenizers library for fast token counting.
+type rustTokenCounter struct {
+	tk *tokenizers.Tokenizer
+}
+
+// newRustTokenCounter creates a Rust-accelerated token counter from the embedded tokenizer.json.
+// Returns (nil, nil) if the Rust tokenizer should not be used (e.g., TOKENIZER_BACKEND=go).
+func newRustTokenCounter() (TokenCounter, error) {
+	// Allow forcing pure Go backend via environment variable
+	if os.Getenv("TOKENIZER_BACKEND") == "go" {
+		return nil, nil
+	}
+
+	tk, err := tokenizers.FromBytes(defaultTokenizerJSON)
+	if err != nil {
+		return nil, fmt.Errorf("loading Rust tokenizer: %w", err)
+	}
+
+	return &rustTokenCounter{tk: tk}, nil
+}
+
+// CountTokens returns the number of tokens in the text using the Rust tokenizer.
+func (t *rustTokenCounter) CountTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	output := t.tk.EncodeWithOptions(text, true)
+	return len(output.IDs)
+}
+
+// rustTokenizer wraps the Rust HuggingFace tokenizers library for full tokenization.
 // This is significantly faster than the pure Go implementation.
 type rustTokenizer struct {
 	tk     *tokenizers.Tokenizer
 	config *api.Config
 }
 
-// Ensure rustTokenizer implements tokenizers.Tokenizer
-var _ goTokenizers.Tokenizer = (*rustTokenizer)(nil)
+// Ensure rustTokenizer implements Tokenizer
+var _ Tokenizer = (*rustTokenizer)(nil)
 
 // loadRustTokenizer attempts to load a tokenizer using the Rust library.
 // Returns nil if the tokenizer can't be loaded (falls back to Go implementation).
-func loadRustTokenizer(modelPath string, config *api.Config) (goTokenizers.Tokenizer, error) {
+func loadRustTokenizer(modelPath string, config *api.Config) (Tokenizer, error) {
 	tokenizerJSONPath := filepath.Join(modelPath, "tokenizer.json")
 
 	data, err := os.ReadFile(tokenizerJSONPath)
@@ -127,8 +156,6 @@ func (t *rustTokenizer) Close() error {
 
 // rustTokenizerAvailable returns true when the Rust tokenizer is available.
 // Set TOKENIZER_BACKEND=go to force the pure Go tokenizer.
-// Valid values: "rust" (default), "go"
 func rustTokenizerAvailable() bool {
-	backend := os.Getenv("TOKENIZER_BACKEND")
-	return backend != "go"
+	return os.Getenv("TOKENIZER_BACKEND") != "go"
 }

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
+	"github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
@@ -381,6 +382,15 @@ func parseEmbedInput(
 				continue
 			}
 
+			// Try inline media content - check Type field
+			if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
+				contents[i] = []ai.ContentPart{ai.BinaryContent{
+					MIMEType: mediaPart.MimeType,
+					Data:     mediaPart.Data,
+				}}
+				continue
+			}
+
 			return nil, fmt.Errorf("unknown content type at index %d", i)
 		}
 		return contents, nil
@@ -428,7 +438,9 @@ func getMIMETypeList(caps embeddings.EmbedderCapabilities) []string {
 	return types
 }
 
-// handleApiChunk handles text chunking requests
+// handleApiChunk handles text and media chunking requests.
+// Supports both the new 'input' field (string or ContentPart) and the
+// deprecated 'text' field for backward compatibility.
 func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
@@ -458,12 +470,6 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the request
-	if req.Text == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
-		return
-	}
-
 	// Convert ChunkConfig to internal chunkConfig type
 	internalConfig := chunkConfig{
 		Model:         req.Config.Model,
@@ -474,12 +480,90 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		Threshold:     req.Config.Threshold,
 	}
 
-	// Use chunker to process the request
-	chunks, cacheHit, err := ln.chunker.Chunk(r.Context(), req.Text, internalConfig)
-	if err != nil {
-		ln.logger.Error("chunking failed", zap.Error(err))
-		http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
-		return
+	mediaOpts := chunking.ChunkOptions{
+		MaxChunks:         req.Config.MaxChunks,
+		WindowDurationMs:  req.Config.WindowDurationMs,
+		OverlapDurationMs: req.Config.OverlapDurationMs,
+	}
+
+	var chunks []chunking.Chunk
+	var cacheHit bool
+
+	// Determine input type: try 'input' first, fall back to deprecated 'text'
+	inputHandled := false
+
+	if req.Input.union != nil {
+		// Try as string (text)
+		if text, err := req.Input.AsChunkRequestInput0(); err == nil && text != "" {
+			chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), text, internalConfig)
+			if err != nil {
+				ln.logger.Error("chunking failed", zap.Error(err))
+				http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+				return
+			}
+			inputHandled = true
+		}
+
+		// Try as ContentPart
+		if !inputHandled {
+			if part, err := req.Input.AsContentPart(); err == nil {
+				// MediaContentPart — inline binary
+				if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
+					chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), mediaPart.Data, mediaPart.MimeType, mediaOpts)
+					if err != nil {
+						ln.logger.Error("media chunking failed", zap.Error(err))
+						http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
+						return
+					}
+					inputHandled = true
+				}
+
+				// TextContentPart
+				if !inputHandled {
+					if textPart, err := part.AsTextContentPart(); err == nil && textPart.Type == TextContentPartTypeText {
+						chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), textPart.Text, internalConfig)
+						if err != nil {
+							ln.logger.Error("chunking failed", zap.Error(err))
+							http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+							return
+						}
+						inputHandled = true
+					}
+				}
+
+				// ImageURLContentPart — download then dispatch to media chunker
+				if !inputHandled {
+					if imgPart, err := part.AsImageURLContentPart(); err == nil && imgPart.Type == ImageURLContentPartTypeImageUrl {
+						mimeType, data, err := scraping.DownloadContent(r.Context(), imgPart.ImageUrl.Url, ln.contentSecurityConfig, ln.s3Credentials)
+						if err != nil {
+							http.Error(w, fmt.Sprintf("downloading content: %v", err), http.StatusBadRequest)
+							return
+						}
+						chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), data, mimeType, mediaOpts)
+						if err != nil {
+							ln.logger.Error("media chunking failed", zap.Error(err))
+							http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
+							return
+						}
+						inputHandled = true
+					}
+				}
+			}
+		}
+	}
+
+	// Backward compat: fall back to deprecated 'text' field
+	if !inputHandled {
+		if req.Text == "" {
+			http.Error(w, "input or text is required", http.StatusBadRequest)
+			return
+		}
+		chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), req.Text, internalConfig)
+		if err != nil {
+			ln.logger.Error("chunking failed", zap.Error(err))
+			http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Record metrics

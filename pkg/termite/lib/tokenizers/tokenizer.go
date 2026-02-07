@@ -12,9 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pipelines
+// Package tokenizer provides token counting and tokenization for text processing.
+//
+// It consolidates all tokenizer functionality: simple token counting (for chunking/pruning)
+// and full tokenization (Encode/Decode/SpecialTokenID) for ML pipelines.
+//
+// The package re-exports key types from go-huggingface/tokenizers so that callers
+// don't need to import the upstream library directly.
+package tokenizers
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,10 +34,86 @@ import (
 	"github.com/gomlx/go-huggingface/tokenizers/hftokenizer"
 )
 
+// Re-export key types from go-huggingface/tokenizers so pipeline code
+// can import this package instead of the upstream library directly.
+type (
+	// Tokenizer is the full tokenizer interface with Encode/Decode/SpecialTokenID.
+	Tokenizer = tokenizers.Tokenizer
+
+	// TokenizerWithSpans extends Tokenizer with span tracking capability.
+	TokenizerWithSpans = tokenizers.TokenizerWithSpans
+
+	// TokenSpan represents the byte span of a token in the original text.
+	TokenSpan = api.TokenSpan
+
+	// EncodingResult contains tokens with their spans.
+	EncodingResult = api.EncodingResult
+
+	// Config holds HuggingFace's tokenizer_config.json contents.
+	Config = api.Config
+
+	// SpecialToken is an enum of commonly used special tokens.
+	SpecialToken = api.SpecialToken
+)
+
+// Re-export special token constants.
+const (
+	TokBeginningOfSentence = api.TokBeginningOfSentence
+	TokEndOfSentence       = api.TokEndOfSentence
+	TokUnknown             = api.TokUnknown
+	TokPad                 = api.TokPad
+	TokMask                = api.TokMask
+	TokClassification      = api.TokClassification
+)
+
+// Re-export config parsing functions.
+var (
+	ParseConfigContent = api.ParseConfigContent
+	ParseConfigFile    = api.ParseConfigFile
+)
+
+//go:embed tokenizer.json
+var defaultTokenizerJSON []byte
+
+// TokenCounter provides simple token counting for text chunking and pruning.
+type TokenCounter interface {
+	// CountTokens returns the number of tokens in the text.
+	CountTokens(text string) int
+}
+
+// hfTokenCounter uses the go-huggingface pure Go tokenizer with embedded BERT base uncased tokenizer.json.
+type hfTokenCounter struct {
+	tok *hftokenizer.Tokenizer
+}
+
+// NewTokenCounter creates a TokenCounter using the embedded BERT base uncased tokenizer.
+// When built with onnx+ORT tags, uses the fast Rust tokenizer; otherwise falls back to pure Go.
+func NewTokenCounter() (TokenCounter, error) {
+	// Try Rust tokenizer first (much faster when available)
+	if tc, err := newRustTokenCounter(); tc != nil && err == nil {
+		return tc, nil
+	}
+
+	// Fall back to pure Go tokenizer
+	tok, err := hftokenizer.NewFromContent(nil, defaultTokenizerJSON)
+	if err != nil {
+		return nil, fmt.Errorf("loading embedded tokenizer: %w", err)
+	}
+	return &hfTokenCounter{tok: tok}, nil
+}
+
+// CountTokens returns the number of tokens in the text.
+func (t *hfTokenCounter) CountTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	return len(t.tok.Encode(text))
+}
+
 // LoadTokenizer loads a tokenizer from a local model directory.
 // It auto-detects the tokenizer type (HuggingFace tokenizer.json or SentencePiece tokenizer.model).
 // When built with ONNX/ORT tags, it uses the fast Rust tokenizer; otherwise falls back to pure Go.
-func LoadTokenizer(modelPath string) (tokenizers.Tokenizer, error) {
+func LoadTokenizer(modelPath string) (Tokenizer, error) {
 	// First, try to load tokenizer_config.json for class information
 	var config *api.Config
 	configPath := filepath.Join(modelPath, "tokenizer_config.json")
@@ -81,14 +165,24 @@ func LoadTokenizer(modelPath string) (tokenizers.Tokenizer, error) {
 	return nil, fmt.Errorf("no tokenizer found in %s (expected tokenizer.json or tokenizer.model)", modelPath)
 }
 
-// sentencepieceTokenizer wraps esentencepiece.Processor to implement tokenizers.Tokenizer.
+// MustLoadTokenizer loads a tokenizer and panics on error.
+// Useful for tests and initialization code.
+func MustLoadTokenizer(modelPath string) Tokenizer {
+	tok, err := LoadTokenizer(modelPath)
+	if err != nil {
+		panic(fmt.Sprintf("failed to load tokenizer: %v", err))
+	}
+	return tok
+}
+
+// sentencepieceTokenizer wraps esentencepiece.Processor to implement Tokenizer.
 type sentencepieceTokenizer struct {
 	*esentencepiece.Processor
 	Info *esentencepiece.ModelInfo
 }
 
-// Ensure sentencepieceTokenizer implements tokenizers.Tokenizer
-var _ tokenizers.Tokenizer = (*sentencepieceTokenizer)(nil)
+// Ensure sentencepieceTokenizer implements Tokenizer
+var _ Tokenizer = (*sentencepieceTokenizer)(nil)
 
 // Encode returns the text encoded into a sequence of token IDs.
 func (t *sentencepieceTokenizer) Encode(text string) []int {
@@ -119,16 +213,6 @@ func (t *sentencepieceTokenizer) SpecialTokenID(token api.SpecialToken) (int, er
 	default:
 		return 0, fmt.Errorf("unknown special token: %s (%d)", token, int(token))
 	}
-}
-
-// MustLoadTokenizer loads a tokenizer and panics on error.
-// Useful for tests and initialization code.
-func MustLoadTokenizer(modelPath string) tokenizers.Tokenizer {
-	tok, err := LoadTokenizer(modelPath)
-	if err != nil {
-		panic(fmt.Sprintf("failed to load tokenizer: %v", err))
-	}
-	return tok
 }
 
 // normalizeTokenizerConfig reads a tokenizer_config.json file and normalizes
