@@ -303,7 +303,6 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 	for frame := 0; frame < numFrames; frame++ {
 		start := frame * hopLength
-		end := min(start+nFft, len(samples))
 
 		// Extract frame and apply window
 		frameData := make([]float32, nFft)
