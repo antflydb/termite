@@ -50,47 +50,43 @@ func discoverModelVariants(modelPath string) map[string]string {
 	return variants
 }
 
-// isMultimodalModel checks if a model directory contains CLIP-style multimodal model files.
-// These models have visual_model.onnx + text_model.onnx instead of a single model.onnx.
-func isMultimodalModel(modelPath string) (hasStandard, hasQuantized bool) {
-	visualPath := filepath.Join(modelPath, "visual_model.onnx")
-	textPath := filepath.Join(modelPath, "text_model.onnx")
-	visualQuantizedPath := filepath.Join(modelPath, "visual_model_quantized.onnx")
-	textQuantizedPath := filepath.Join(modelPath, "text_model_quantized.onnx")
-
-	hasStandard = fileExistsRegistry(visualPath) && fileExistsRegistry(textPath)
-	hasQuantized = fileExistsRegistry(visualQuantizedPath) && fileExistsRegistry(textQuantizedPath)
-	return
+// multimodalCaps describes which multimodal capabilities a model directory has,
+// for both standard and quantized variants.
+type multimodalCaps struct {
+	hasImage         bool
+	hasAudio         bool
+	hasImageQuantized bool
+	hasAudioQuantized bool
 }
 
-// isMultimodalAudioModel checks if a model directory contains CLAP-style multimodal audio model files.
-// These models have audio_model.onnx + text_model.onnx instead of a single model.onnx.
-// Also checks the onnx/ subdirectory where HuggingFace transformers.js models store encoder files.
-func isMultimodalAudioModel(modelPath string) (hasStandard, hasQuantized bool) {
-	// Check root directory
-	audioPath := filepath.Join(modelPath, "audio_model.onnx")
-	textPath := filepath.Join(modelPath, "text_model.onnx")
-	audioQuantizedPath := filepath.Join(modelPath, "audio_model_quantized.onnx")
-	textQuantizedPath := filepath.Join(modelPath, "text_model_quantized.onnx")
+// isMultimodal returns true if any multimodal capability was detected.
+func (m multimodalCaps) isMultimodal() bool {
+	return m.hasImage || m.hasAudio || m.hasImageQuantized || m.hasAudioQuantized
+}
 
-	hasStandard = fileExistsRegistry(audioPath) && fileExistsRegistry(textPath)
-	hasQuantized = fileExistsRegistry(audioQuantizedPath) && fileExistsRegistry(textQuantizedPath)
+// detectMultimodalCapabilities checks a model directory for visual and audio encoder files.
+// Returns which modalities are available for both standard and quantized variants.
+// Also checks the onnx/ subdirectory for HuggingFace transformers.js models.
+func detectMultimodalCapabilities(modelPath string) multimodalCaps {
+	var caps multimodalCaps
 
-	// Also check onnx/ subdirectory (where HuggingFace transformers.js stores encoder files)
-	if !hasStandard {
-		onnxSubdir := filepath.Join(modelPath, "onnx")
-		audioPathOnnx := filepath.Join(onnxSubdir, "audio_model.onnx")
-		textPathOnnx := filepath.Join(onnxSubdir, "text_model.onnx")
-		hasStandard = fileExistsRegistry(audioPathOnnx) && fileExistsRegistry(textPathOnnx)
+	// Check for visual encoder
+	caps.hasImage = fileExistsRegistry(filepath.Join(modelPath, "visual_model.onnx"))
+	caps.hasImageQuantized = fileExistsRegistry(filepath.Join(modelPath, "visual_model_quantized.onnx"))
+
+	// Check for audio encoder (root directory)
+	caps.hasAudio = fileExistsRegistry(filepath.Join(modelPath, "audio_model.onnx"))
+	caps.hasAudioQuantized = fileExistsRegistry(filepath.Join(modelPath, "audio_model_quantized.onnx"))
+
+	// Also check onnx/ subdirectory for audio (HuggingFace transformers.js format)
+	if !caps.hasAudio {
+		caps.hasAudio = fileExistsRegistry(filepath.Join(modelPath, "onnx", "audio_model.onnx"))
 	}
-	if !hasQuantized {
-		onnxSubdir := filepath.Join(modelPath, "onnx")
-		audioQuantizedPathOnnx := filepath.Join(onnxSubdir, "audio_model_quantized.onnx")
-		textQuantizedPathOnnx := filepath.Join(onnxSubdir, "text_model_quantized.onnx")
-		hasQuantized = fileExistsRegistry(audioQuantizedPathOnnx) && fileExistsRegistry(textQuantizedPathOnnx)
+	if !caps.hasAudioQuantized {
+		caps.hasAudioQuantized = fileExistsRegistry(filepath.Join(modelPath, "onnx", "audio_model_quantized.onnx"))
 	}
 
-	return
+	return caps
 }
 
 // fileExistsRegistry checks if a file exists
@@ -205,10 +201,9 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 		// Manifest not found or invalid - discover from files
 		variants := discoverModelVariants(modelPath)
 		if len(variants) == 0 {
-			// Check for multimodal, audio multimodal, or seq2seq models
-			hasStd, hasQt := isMultimodalModel(modelPath)
-			hasAudioStd, hasAudioQt := isMultimodalAudioModel(modelPath)
-			if !hasStd && !hasQt && !hasAudioStd && !hasAudioQt && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
+			// Check for multimodal, seq2seq, or generator models
+			caps := detectMultimodalCapabilities(modelPath)
+			if !caps.isMultimodal() && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
 				return nil // No model files found
 			}
 		}

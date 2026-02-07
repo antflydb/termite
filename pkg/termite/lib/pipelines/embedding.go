@@ -948,6 +948,24 @@ func loadTextEmbeddingPipeline(
 		return nil, fmt.Errorf("loading text model: %w", err)
 	}
 
+	// Check for text projection model (e.g., text_projection.onnx for CLIP/CLAP)
+	// This projects from hidden_size (e.g., 768) to projection_dim (e.g., 512)
+	var projector backends.Model
+	projectionFile := FindONNXFile(modelPath, []string{
+		"text_projection.onnx",
+	})
+	if projectionFile != "" {
+		projRelPath, err := filepath.Rel(modelPath, projectionFile)
+		if err != nil {
+			projRelPath = filepath.Base(projectionFile)
+		}
+		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
+		if err != nil {
+			model.Close()
+			return nil, fmt.Errorf("loading text projection: %w", err)
+		}
+	}
+
 	// Build pipeline config
 	pipelineConfig := &EmbeddingPipelineConfig{
 		MaxLength:        FirstNonZero(loaderCfg.maxLength, config.MaxTextLength, 512),
@@ -959,7 +977,9 @@ func loadTextEmbeddingPipeline(
 		pipelineConfig.Pooling = backends.PoolingMean
 	}
 
-	return NewEmbeddingPipeline(model, tokenizer, pipelineConfig), nil
+	pipeline := NewEmbeddingPipeline(model, tokenizer, pipelineConfig)
+	pipeline.Projector = projector
+	return pipeline, nil
 }
 
 // loadVisualEmbeddingPipeline loads the visual encoder as an EmbeddingPipeline.

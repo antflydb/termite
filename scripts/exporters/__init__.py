@@ -48,7 +48,14 @@ def get_exporter(
     """
     capabilities = capabilities or []
 
-    # Try to find a capability-specific exporter first
+    # Try combined capabilities first (e.g., "image,audio" for CLIPCLAP)
+    if len(capabilities) > 1:
+        combined = ",".join(sorted(capabilities))
+        key = (model_type, combined)
+        if key in _EXPORTER_REGISTRY:
+            return _EXPORTER_REGISTRY[key](model_id, output_dir, variants, **kwargs)
+
+    # Try individual capability-specific exporters
     for cap in capabilities:
         key = (model_type, cap)
         if key in _EXPORTER_REGISTRY:
@@ -75,6 +82,7 @@ def list_exporters() -> list[tuple[str, str | None, Type[BaseExporter]]]:
 from . import embedder
 from . import clip
 from . import clap
+from . import clipclap
 from . import classifier
 from . import reader
 from . import seq2seq

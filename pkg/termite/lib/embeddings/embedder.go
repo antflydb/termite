@@ -15,9 +15,14 @@
 package embeddings
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg" // Register JPEG decoder
+	_ "image/png"  // Register PNG decoder
 	"runtime"
+	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -41,10 +46,46 @@ var _ embeddings.Embedder = (*PooledEmbedder)(nil)
 // See batch_test.go for validation of this limitation.
 const DefaultEmbeddingBatchSize = 1
 
-// PooledEmbedder manages multiple EmbeddingPipeline instances for concurrent embedding generation.
-// Uses the new backends package (go-huggingface + gomlx/onnxruntime).
+// pipelineSet holds the pipelines for one pool slot.
+// Any combination of pipelines can be present: text-only models have only text,
+// CLIP models have text+visual, CLAP models have text+audio, and CLIPCLAP models
+// have all three.
+type pipelineSet struct {
+	text   *pipelines.EmbeddingPipeline
+	visual *pipelines.EmbeddingPipeline
+	audio  *pipelines.EmbeddingPipeline
+}
+
+// close releases all pipelines in the set.
+func (ps *pipelineSet) close() error {
+	var errs []error
+	if ps.text != nil {
+		if err := ps.text.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing text pipeline: %w", err))
+		}
+	}
+	if ps.visual != nil {
+		if err := ps.visual.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing visual pipeline: %w", err))
+		}
+	}
+	if ps.audio != nil {
+		if err := ps.audio.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing audio pipeline: %w", err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("errors closing pipelines: %v", errs)
+	}
+	return nil
+}
+
+// PooledEmbedder manages multiple pipeline sets for concurrent embedding generation.
+// Handles text-only, multimodal (CLIP), audio (CLAP), and unified (CLIPCLAP) models
+// through a single type. Content is automatically routed to the appropriate pipeline
+// based on input modality.
 type PooledEmbedder struct {
-	pipelines    []*pipelines.EmbeddingPipeline
+	pipelines    []pipelineSet
 	sem          *semaphore.Weighted
 	nextPipeline atomic.Uint64
 	logger       *zap.Logger
@@ -68,6 +109,9 @@ type PooledEmbedderConfig struct {
 	// Normalize enables L2 normalization of embeddings
 	Normalize bool
 
+	// Quantized enables quantized model loading (e.g., *_quantized.onnx files)
+	Quantized bool
+
 	// Pooling specifies the pooling strategy ("mean", "cls", "max")
 	Pooling backends.PoolingStrategy
 
@@ -78,8 +122,10 @@ type PooledEmbedderConfig struct {
 	Logger *zap.Logger
 }
 
-// NewPooledEmbedder creates a new EmbeddingPipeline-based pooled embedder.
-// This is the new implementation using go-huggingface tokenizers and the backends package.
+// NewPooledEmbedder creates a new pipeline-based pooled embedder.
+// Automatically detects and loads all available pipelines (text, visual, audio)
+// from the model directory. For text-only models, only the text pipeline is loaded.
+// For multimodal models, all available pipelines are loaded per pool slot.
 func NewPooledEmbedder(
 	cfg PooledEmbedderConfig,
 	sessionManager *backends.SessionManager,
@@ -111,77 +157,135 @@ func NewPooledEmbedder(
 		pooling = backends.PoolingMean
 	}
 
+	// Build loader options
+	opts := []pipelines.EmbeddingLoaderOption{
+		pipelines.WithEmbeddingNormalization(cfg.Normalize),
+		pipelines.WithPoolingStrategy(pooling),
+	}
+	if cfg.Quantized {
+		opts = append(opts, pipelines.WithQuantized(true))
+	}
+
 	logger.Info("Initializing pooled embedder",
 		zap.String("modelPath", cfg.ModelPath),
 		zap.Int("poolSize", poolSize),
-		zap.Int("batchSize", batchSize))
+		zap.Int("batchSize", batchSize),
+		zap.Bool("quantized", cfg.Quantized))
 
-	// Create N pipelines
-	pipelinesList := make([]*pipelines.EmbeddingPipeline, poolSize)
+	// Create N pipeline sets
+	pipelinesList := make([]pipelineSet, poolSize)
 	var backendUsed backends.BackendType
 
 	for i := 0; i < poolSize; i++ {
-		// LoadEmbeddingPipelines returns text, visual, and audio pipelines; we only need text
-		textPipeline, _, _, bt, err := pipelines.LoadEmbeddingPipelines(
+		textPipeline, visualPipeline, audioPipeline, bt, err := pipelines.LoadEmbeddingPipelines(
 			cfg.ModelPath,
 			sessionManager,
 			cfg.ModelBackends,
-			pipelines.WithEmbeddingNormalization(cfg.Normalize),
-			pipelines.WithPoolingStrategy(pooling),
+			opts...,
 		)
 		if err != nil {
-			// Clean up already-created pipelines
+			// Clean up already-created pipeline sets
 			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+				_ = pipelinesList[j].close()
 			}
-			logger.Error("Failed to create pipeline",
+			logger.Error("Failed to create pipeline set",
 				zap.Int("index", i),
 				zap.Error(err))
-			return nil, "", fmt.Errorf("creating pipeline %d: %w", i, err)
+			return nil, "", fmt.Errorf("creating pipeline set %d: %w", i, err)
 		}
-		if textPipeline == nil {
-			// Clean up already-created pipelines
+		if textPipeline == nil && visualPipeline == nil && audioPipeline == nil {
+			// Clean up already-created pipeline sets
 			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+				_ = pipelinesList[j].close()
 			}
-			return nil, "", fmt.Errorf("model at %s does not have a text encoder", cfg.ModelPath)
+			return nil, "", fmt.Errorf("model at %s does not have any encoder", cfg.ModelPath)
 		}
-		pipelinesList[i] = textPipeline
+		pipelinesList[i] = pipelineSet{
+			text:   textPipeline,
+			visual: visualPipeline,
+			audio:  audioPipeline,
+		}
 		backendUsed = bt
-		logger.Debug("Created pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+		logger.Debug("Created pipeline set",
+			zap.Int("index", i),
+			zap.String("backend", string(bt)),
+			zap.Bool("hasText", textPipeline != nil),
+			zap.Bool("hasVisual", visualPipeline != nil),
+			zap.Bool("hasAudio", audioPipeline != nil))
 	}
 
-	logger.Info("Successfully created pooled pipelines",
-		zap.Int("count", poolSize),
-		zap.String("backend", string(backendUsed)))
+	// Build capabilities from the first pipeline set (all sets are identical)
+	caps := buildCapabilities(pipelinesList[0].text, pipelinesList[0].visual, pipelinesList[0].audio)
+
+	logger.Info("Successfully created pooled embedder",
+		zap.Int("poolSize", poolSize),
+		zap.String("backend", string(backendUsed)),
+		zap.Bool("hasVisual", pipelinesList[0].visual != nil),
+		zap.Bool("hasAudio", pipelinesList[0].audio != nil))
 
 	return &PooledEmbedder{
 		pipelines:   pipelinesList,
 		sem:         semaphore.NewWeighted(int64(poolSize)),
 		logger:      logger,
 		poolSize:    poolSize,
-		caps:        embeddings.TextOnlyCapabilities(),
+		caps:        caps,
 		batchSize:   batchSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
 
-// Capabilities returns the capabilities of this embedder
+// buildCapabilities constructs EmbedderCapabilities based on available pipelines.
+func buildCapabilities(text, visual, audio *pipelines.EmbeddingPipeline) embeddings.EmbedderCapabilities {
+	caps := embeddings.EmbedderCapabilities{
+		SupportedMIMETypes: []embeddings.MIMETypeSupport{},
+	}
+
+	if text != nil {
+		caps.SupportedMIMETypes = append(caps.SupportedMIMETypes,
+			embeddings.MIMETypeSupport{MIMEType: "text/plain"})
+	}
+
+	if visual != nil {
+		caps.SupportedMIMETypes = append(caps.SupportedMIMETypes,
+			embeddings.MIMETypeSupport{MIMEType: "image/jpeg"},
+			embeddings.MIMETypeSupport{MIMEType: "image/png"},
+			embeddings.MIMETypeSupport{MIMEType: "image/*"})
+	}
+
+	if audio != nil {
+		caps.SupportedMIMETypes = append(caps.SupportedMIMETypes,
+			embeddings.MIMETypeSupport{MIMEType: "audio/wav"},
+			embeddings.MIMETypeSupport{MIMEType: "audio/wave"},
+			embeddings.MIMETypeSupport{MIMEType: "audio/x-wav"},
+			embeddings.MIMETypeSupport{MIMEType: "audio/*"})
+	}
+
+	return caps
+}
+
+// Capabilities returns the capabilities of this embedder.
 func (p *PooledEmbedder) Capabilities() embeddings.EmbedderCapabilities {
 	return p.caps
 }
 
-// BackendType returns the backend type used by this embedder
+// BackendType returns the backend type used by this embedder.
 func (p *PooledEmbedder) BackendType() backends.BackendType {
 	return p.backendType
 }
 
+// isMultimodal returns true if this embedder has visual or audio pipelines.
+func (p *PooledEmbedder) isMultimodal() bool {
+	if len(p.pipelines) == 0 {
+		return false
+	}
+	return p.pipelines[0].visual != nil || p.pipelines[0].audio != nil
+}
+
 // Embed generates embeddings for the given content.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
+// For text-only models, extracts text and processes in batches.
+// For multimodal models, routes each input to the appropriate pipeline
+// (text, visual, or audio) based on content type.
 func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart) ([][]float32, error) {
 	if len(contents) == 0 {
 		return [][]float32{}, nil
@@ -195,8 +299,18 @@ func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart)
 
 	// Round-robin pipeline selection
 	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	ps := p.pipelines[idx]
 
+	// Use multimodal path if visual or audio pipelines are available
+	if p.isMultimodal() {
+		return p.embedMultimodal(ctx, contents, ps, idx)
+	}
+
+	return p.embedTextOnly(ctx, contents, ps.text, idx)
+}
+
+// embedTextOnly handles the text-only fast path with batching.
+func (p *PooledEmbedder) embedTextOnly(ctx context.Context, contents [][]ai.ContentPart, textPipeline *pipelines.EmbeddingPipeline, pipelineIdx int) ([][]float32, error) {
 	// Extract text from content parts
 	texts := embeddings.ExtractText(contents)
 
@@ -205,14 +319,13 @@ func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart)
 	batchSize := p.batchSize
 
 	numBatches := (len(texts) + batchSize - 1) / batchSize
-	p.logger.Debug("Processing embeddings in batches",
-		zap.Int("pipelineIndex", idx),
+	p.logger.Debug("Processing text embeddings in batches",
+		zap.Int("pipelineIndex", pipelineIdx),
 		zap.Int("numTexts", len(texts)),
 		zap.Int("batchSize", batchSize),
 		zap.Int("numBatches", numBatches))
 
 	for batchStart := 0; batchStart < len(texts); batchStart += batchSize {
-		// Check context cancellation between batches
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -225,23 +338,20 @@ func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart)
 		}
 		batch := texts[batchStart:batchEnd]
 
-		// Run inference using EmbeddingPipeline.Embed which handles tokenization,
-		// pooling, and normalization internally
-		batchEmbeddings, err := pipeline.Embed(ctx, batch)
+		batchEmbeddings, err := textPipeline.Embed(ctx, batch)
 		if err != nil {
 			p.logger.Error("Pipeline inference failed",
-				zap.Int("pipelineIndex", idx),
+				zap.Int("pipelineIndex", pipelineIdx),
 				zap.Int("batchStart", batchStart),
 				zap.Int("batchSize", len(batch)),
 				zap.Error(err))
 			return nil, fmt.Errorf("running embedding inference (batch %d-%d): %w", batchStart, batchEnd, err)
 		}
 
-		// Validate embeddings
 		for i, embedding := range batchEmbeddings {
 			if len(embedding) == 0 {
 				p.logger.Error("Empty embedding returned",
-					zap.Int("pipelineIndex", idx),
+					zap.Int("pipelineIndex", pipelineIdx),
 					zap.Int("index", batchStart+i))
 				return nil, fmt.Errorf("empty embedding at index %d", batchStart+i)
 			}
@@ -250,24 +360,146 @@ func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart)
 		result = append(result, batchEmbeddings...)
 	}
 
-	p.logger.Debug("Embedding generation complete",
-		zap.Int("pipelineIndex", idx),
+	p.logger.Debug("Text embedding generation complete",
+		zap.Int("pipelineIndex", pipelineIdx),
 		zap.Int("numEmbeddings", len(result)))
 
 	return result, nil
 }
 
+// embedMultimodal handles mixed-modality content by routing to appropriate pipelines.
+func (p *PooledEmbedder) embedMultimodal(ctx context.Context, contents [][]ai.ContentPart, ps pipelineSet, pipelineIdx int) ([][]float32, error) {
+	results := make([][]float32, len(contents))
+
+	// Batch inputs by modality for efficiency
+	var textIndices []int
+	var textInputs []string
+	var imageIndices []int
+	var imageInputs []image.Image
+	var audioIndices []int
+	var audioInputs [][]byte
+
+	for i, parts := range contents {
+		text, img, audio, err := extractContent(parts)
+		if err != nil {
+			return nil, fmt.Errorf("extracting content at index %d: %w", i, err)
+		}
+
+		if text != "" {
+			textIndices = append(textIndices, i)
+			textInputs = append(textInputs, text)
+		} else if img != nil {
+			imageIndices = append(imageIndices, i)
+			imageInputs = append(imageInputs, img)
+		} else if audio != nil {
+			audioIndices = append(audioIndices, i)
+			audioInputs = append(audioInputs, audio)
+		} else {
+			return nil, fmt.Errorf("no text, image, or audio content found at index %d", i)
+		}
+	}
+
+	// Process text inputs one at a time (multimodal text models may only support batch_size=1)
+	if len(textInputs) > 0 {
+		if ps.text == nil {
+			return nil, fmt.Errorf("text embedding requested but no text encoder available")
+		}
+		for i, text := range textInputs {
+			embedding, err := ps.text.EmbedOne(ctx, text)
+			if err != nil {
+				return nil, fmt.Errorf("embedding text %d: %w", i, err)
+			}
+			results[textIndices[i]] = embedding
+		}
+	}
+
+	// Process image batch
+	if len(imageInputs) > 0 {
+		if ps.visual == nil {
+			return nil, fmt.Errorf("image embedding requested but no visual encoder available")
+		}
+		imageEmbeddings, err := ps.visual.EmbedImages(ctx, imageInputs)
+		if err != nil {
+			return nil, fmt.Errorf("embedding images: %w", err)
+		}
+		for i, idx := range imageIndices {
+			results[idx] = imageEmbeddings[i]
+		}
+	}
+
+	// Process audio inputs
+	if len(audioInputs) > 0 {
+		if ps.audio == nil {
+			return nil, fmt.Errorf("audio embedding requested but no audio encoder available")
+		}
+		audioEmbeddings, err := ps.audio.EmbedAudio(ctx, audioInputs)
+		if err != nil {
+			return nil, fmt.Errorf("embedding audio: %w", err)
+		}
+		for i, idx := range audioIndices {
+			results[idx] = audioEmbeddings[i]
+		}
+	}
+
+	p.logger.Debug("Multimodal embedding generation complete",
+		zap.Int("pipelineIndex", pipelineIdx),
+		zap.Int("textCount", len(textInputs)),
+		zap.Int("imageCount", len(imageInputs)),
+		zap.Int("audioCount", len(audioInputs)))
+
+	return results, nil
+}
+
+// extractContent extracts text, image, or audio from content parts.
+// Returns (text, image, audioData, error). Only one will be non-empty/non-nil.
+func extractContent(parts []ai.ContentPart) (string, image.Image, []byte, error) {
+	for _, part := range parts {
+		switch c := part.(type) {
+		case ai.TextContent:
+			if c.Text != "" {
+				return c.Text, nil, nil, nil
+			}
+		case ai.BinaryContent:
+			if isImageMIME(c.MIMEType) {
+				img, _, err := image.Decode(bytes.NewReader(c.Data))
+				if err != nil {
+					return "", nil, nil, fmt.Errorf("decoding image: %w", err)
+				}
+				return "", img, nil, nil
+			}
+			if isAudioMIME(c.MIMEType) {
+				audioCopy := make([]byte, len(c.Data))
+				copy(audioCopy, c.Data)
+				return "", nil, audioCopy, nil
+			}
+		case ai.ImageURLContent:
+			if c.URL != "" {
+				return c.URL, nil, nil, nil
+			}
+		}
+	}
+	return "", nil, nil, nil
+}
+
+// isImageMIME checks if the MIME type is an image type.
+func isImageMIME(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "image/")
+}
+
+// isAudioMIME checks if the MIME type is an audio type.
+func isAudioMIME(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "audio/")
+}
+
 // Close releases resources.
 func (p *PooledEmbedder) Close() error {
 	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
+	for i := range p.pipelines {
+		if err := p.pipelines[i].close(); err != nil {
+			p.logger.Warn("Failed to close pipeline set",
+				zap.Int("index", i),
+				zap.Error(err))
+			lastErr = err
 		}
 	}
 	p.pipelines = nil
