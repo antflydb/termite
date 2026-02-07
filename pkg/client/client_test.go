@@ -238,8 +238,8 @@ func TestClient_Chunk(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, chunks, 2)
-	assert.Equal(t, "This is a test", chunks[0].Text)
-	assert.Equal(t, "test document.", chunks[1].Text)
+	assert.Equal(t, "This is a test", chunks[0].GetText())
+	assert.Equal(t, "test document.", chunks[1].GetText())
 }
 
 func TestClient_Chunk_EmptyText(t *testing.T) {

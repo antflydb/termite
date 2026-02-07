@@ -184,22 +184,26 @@ Natural language processing helps computers understand human language. It powers
 	// Log the chunks
 	t.Logf("Semantic chunking produced %d chunks:", len(chunks))
 	for i, chunk := range chunks {
-		preview := chunk.Text
+		tc, err := chunk.AsTextContent()
+		require.NoError(t, err, "Chunk %d should be text content", i)
+		preview := tc.Text
 		if len(preview) > 80 {
 			preview = preview[:80] + "..."
 		}
-		t.Logf("  Chunk %d [%d:%d]: %q", i, chunk.StartChar, chunk.EndChar, preview)
+		t.Logf("  Chunk %d [%d:%d]: %q", i, tc.StartChar, tc.EndChar, preview)
 	}
 
 	// Verify chunk properties
 	for i, chunk := range chunks {
-		assert.NotEmpty(t, chunk.Text, "Chunk %d should have text", i)
-		assert.GreaterOrEqual(t, chunk.EndChar, chunk.StartChar, "Chunk %d end should be >= start", i)
+		tc, err := chunk.AsTextContent()
+		require.NoError(t, err, "Chunk %d should be text content", i)
+		assert.NotEmpty(t, tc.Text, "Chunk %d should have text", i)
+		assert.GreaterOrEqual(t, tc.EndChar, tc.StartChar, "Chunk %d end should be >= start", i)
 
 		// Verify chunk text matches the original text slice
-		if int(chunk.EndChar) <= len(text) && int(chunk.StartChar) <= int(chunk.EndChar) {
-			expected := text[chunk.StartChar:chunk.EndChar]
-			assert.Equal(t, expected, chunk.Text, "Chunk %d text should match source slice", i)
+		if tc.EndChar <= len(text) && tc.StartChar <= tc.EndChar {
+			expected := text[tc.StartChar:tc.EndChar]
+			assert.Equal(t, expected, tc.Text, "Chunk %d text should match source slice", i)
 		}
 	}
 }
@@ -222,16 +226,18 @@ It uses a BERT tokenizer to count tokens and ensures consistent chunk sizes.`
 
 	t.Logf("Fixed chunking produced %d chunks:", len(chunks))
 	for i, chunk := range chunks {
-		preview := chunk.Text
+		tc, err := chunk.AsTextContent()
+		require.NoError(t, err, "Chunk %d should be text content", i)
+		preview := tc.Text
 		if len(preview) > 80 {
 			preview = preview[:80] + "..."
 		}
-		t.Logf("  Chunk %d [%d:%d]: %q", i, chunk.StartChar, chunk.EndChar, preview)
+		t.Logf("  Chunk %d [%d:%d]: %q", i, tc.StartChar, tc.EndChar, preview)
 	}
 
 	// Fixed chunking should produce relatively uniform chunk sizes
 	for i, chunk := range chunks {
-		assert.NotEmpty(t, chunk.Text, "Chunk %d should have text", i)
+		assert.NotEmpty(t, chunk.GetText(), "Chunk %d should have text", i)
 	}
 }
 
@@ -251,12 +257,12 @@ func testChunkBoundaries(t *testing.T, ctx context.Context, c *client.TermiteCli
 
 	t.Logf("Boundary test produced %d chunks:", len(chunks))
 	for i, chunk := range chunks {
-		t.Logf("  Chunk %d: %q", i, chunk.Text)
+		t.Logf("  Chunk %d: %q", i, chunk.GetText())
 	}
 
 	// Chunks should generally end at sentence boundaries (period + space or end of text)
 	for i, chunk := range chunks {
-		trimmed := strings.TrimSpace(chunk.Text)
+		trimmed := strings.TrimSpace(chunk.GetText())
 		if len(trimmed) > 0 && i < len(chunks)-1 {
 			// Non-final chunks should ideally end with punctuation
 			lastChar := trimmed[len(trimmed)-1]
@@ -293,12 +299,13 @@ func testLongDocumentChunking(t *testing.T, ctx context.Context, c *client.Termi
 	t.Logf("Long document (%d chars) produced %d chunks:", len(text), len(chunks))
 	totalChars := 0
 	for i, chunk := range chunks {
-		totalChars += len(chunk.Text)
-		preview := chunk.Text
+		chunkText := chunk.GetText()
+		totalChars += len(chunkText)
+		preview := chunkText
 		if len(preview) > 60 {
 			preview = preview[:60] + "..."
 		}
-		t.Logf("  Chunk %d (%d chars): %q", i, len(chunk.Text), preview)
+		t.Logf("  Chunk %d (%d chars): %q", i, len(chunkText), preview)
 	}
 
 	// Verify we're not losing significant content
