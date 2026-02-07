@@ -166,10 +166,9 @@ func NewPooledSeq2Seq(
 	// Auto-detect pool size from CPU count if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
-		if poolSize > 2 {
-			poolSize = 2 // Cap at 2 for seq2seq models (very memory intensive)
-		}
+		poolSize = min(runtime.NumCPU(),
+			// Cap at 2 for seq2seq models (very memory intensive)
+			2)
 	}
 
 	// Load seq2seq configuration

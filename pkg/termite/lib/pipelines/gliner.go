@@ -893,7 +893,7 @@ func (p *GLiNERPipeline) parseClassificationOutputs(
 
 				// Find max score for this label across all spans
 				maxScore := float32(-1000)
-				for spanIdx := 0; spanIdx < numSpans; spanIdx++ {
+				for spanIdx := range numSpans {
 					idx := spanIdx*labelsPerSpan + labelIdx
 					if idx < len(logits) && logits[idx] > maxScore {
 						maxScore = logits[idx]
@@ -1099,7 +1099,7 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	spanMask := make([]bool, numSpans)
 
 	for t := 0; t < numTextTokens; t++ {
-		for wi := 0; wi < maxWidth; wi++ {
+		for wi := range maxWidth {
 			spanI := t*maxWidth + wi
 			start := t
 			end := t + wi // span end position (token index)
@@ -1220,7 +1220,7 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 
 	// For now, use word-based iteration since we need word boundaries for entity text
 	// The logits are indexed by word position (after the prompt), not raw token position
-	for w := 0; w < numWords; w++ {
+	for w := range numWords {
 		for wi := 0; wi < maxWidth; wi++ {
 			start := w
 			end := w + wi // span end position (word index)

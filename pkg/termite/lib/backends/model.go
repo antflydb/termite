@@ -392,16 +392,16 @@ func PoolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32, pooli
 	switch pooling {
 	case PoolingCLS:
 		// Use [CLS] token (first token)
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			embeddings[i] = make([]float32, hiddenSize)
 			copy(embeddings[i], hiddenStates[i][0])
 		}
 
 	case PoolingMax:
 		// Max pooling over sequence
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			embeddings[i] = make([]float32, hiddenSize)
-			for h := 0; h < hiddenSize; h++ {
+			for h := range hiddenSize {
 				maxVal := float32(-1e9)
 				for j := 0; j < len(hiddenStates[i]); j++ {
 					if attentionMask[i][j] > 0 && hiddenStates[i][j][h] > maxVal {
@@ -414,19 +414,19 @@ func PoolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32, pooli
 
 	case PoolingMean, "":
 		// Mean pooling (default)
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			embeddings[i] = make([]float32, hiddenSize)
 			count := float32(0)
 			for j := 0; j < len(hiddenStates[i]); j++ {
 				if attentionMask[i][j] > 0 {
-					for h := 0; h < hiddenSize; h++ {
+					for h := range hiddenSize {
 						embeddings[i][h] += hiddenStates[i][j][h]
 					}
 					count++
 				}
 			}
 			if count > 0 {
-				for h := 0; h < hiddenSize; h++ {
+				for h := range hiddenSize {
 					embeddings[i][h] /= count
 				}
 			}
@@ -434,7 +434,7 @@ func PoolHiddenStates(hiddenStates [][][]float32, attentionMask [][]int32, pooli
 
 	default:
 		// No pooling - return first token
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			embeddings[i] = make([]float32, hiddenSize)
 			copy(embeddings[i], hiddenStates[i][0])
 		}

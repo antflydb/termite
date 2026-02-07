@@ -4,6 +4,7 @@ package reading
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 )
@@ -78,9 +79,7 @@ func donutParseFieldsWithPrefix(text string, prefix string) map[string]string {
 
 		if strings.Contains(fieldValue, "<s_") {
 			nested := donutParseFieldsWithPrefix(fieldValue, fullKey)
-			for k, v := range nested {
-				result[k] = v
-			}
+			maps.Copy(result, nested)
 		} else {
 			result[fullKey] = fieldValue
 		}

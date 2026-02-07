@@ -59,10 +59,10 @@ type ToolDefinition struct {
 
 // FunctionDefinition describes a function that can be called by the model.
 type FunctionDefinition struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"` // JSON Schema
-	Strict      bool                   `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema
+	Strict      bool           `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
 }
 
 // ToolCall represents a tool call made by the model.
@@ -328,7 +328,7 @@ func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig
 	switch v := cfg.EOSTokenID.(type) {
 	case float64:
 		eosTokenID = int32(v)
-	case []interface{}:
+	case []any:
 		if len(v) > 0 {
 			if f, ok := v[0].(float64); ok {
 				eosTokenID = int32(f)
@@ -340,7 +340,7 @@ func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig
 		switch v := genCfg.EOSTokenID.(type) {
 		case float64:
 			eosTokenID = int32(v)
-		case []interface{}:
+		case []any:
 			if len(v) > 0 {
 				if f, ok := v[0].(float64); ok {
 					eosTokenID = int32(f)
@@ -451,8 +451,8 @@ func (m *generativeModel) Forward(ctx context.Context, inputs *backends.ModelInp
 
 	// Flatten input IDs to int64 for most models
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
@@ -485,7 +485,7 @@ func (m *generativeModel) Forward(ctx context.Context, inputs *backends.ModelInp
 	// Reshape logits to [batch, vocab_size] (taking last position if sequence)
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
 		// Take logits from last position
 		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize
@@ -550,8 +550,8 @@ func (m *generativeModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 			startPos = pastKV.SeqLen
 		}
 		posIDs := make([]int64, batchSize*seqLen)
-		for i := 0; i < batchSize; i++ {
-			for j := 0; j < seqLen; j++ {
+		for i := range batchSize {
+			for j := range seqLen {
 				posIDs[i*seqLen+j] = int64(startPos + j)
 			}
 		}
@@ -909,7 +909,7 @@ func (p *TextGenerationPipeline) GenerateBatch(ctx context.Context, prompts []st
 		padLen := maxLen - len(tokens)
 		paddedInputs[i] = make([]int32, maxLen)
 		// Left-pad with pad token
-		for j := 0; j < padLen; j++ {
+		for j := range padLen {
 			paddedInputs[i][j] = padTokenID
 		}
 		copy(paddedInputs[i][padLen:], tokens)
@@ -967,7 +967,7 @@ func (p *TextGenerationPipeline) GenerateBatch(ctx context.Context, prompts []st
 		kvCache = output.PastKeyValues
 
 		// Select next token for each sequence
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			if finished[i] {
 				continue
 			}

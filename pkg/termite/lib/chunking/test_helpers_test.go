@@ -3,6 +3,8 @@ package chunking
 import (
 	"math"
 	"testing"
+
+	"github.com/antflydb/termite/pkg/termite/lib/audio"
 )
 
 // generateTestWAV creates a valid WAV file with a sine wave at the given
@@ -18,7 +20,7 @@ func generateTestWAV(t *testing.T, sampleRate, bitsPerSample, durationMs int) []
 		samples[i] = float32(math.Sin(2.0 * math.Pi * 440.0 * float64(i) / float64(sampleRate)))
 	}
 
-	data, err := EncodeWAV(samples, WAVFormat{
+	data, err := audio.EncodeWAV(samples, audio.Format{
 		SampleRate:    sampleRate,
 		BitsPerSample: bitsPerSample,
 		NumChannels:   1,

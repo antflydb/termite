@@ -1,4 +1,4 @@
-package chunking
+package audio
 
 import (
 	"math"
@@ -19,7 +19,7 @@ func TestWAVEncode_Roundtrip(t *testing.T) {
 	sampleRate := 16000
 	samples := generateSineWave(sampleRate, 1000) // 1 second
 
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    sampleRate,
 		BitsPerSample: 16,
 		NumChannels:   1,
@@ -64,7 +64,7 @@ func TestWAVEncode_Roundtrip(t *testing.T) {
 func TestWAVEncode_16bit(t *testing.T) {
 	samples := generateSineWave(16000, 100) // 100ms
 
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    16000,
 		BitsPerSample: 16,
 		NumChannels:   1,
@@ -89,7 +89,7 @@ func TestWAVEncode_16bit(t *testing.T) {
 }
 
 func TestWAVEncode_EmptySamples(t *testing.T) {
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    16000,
 		BitsPerSample: 16,
 		NumChannels:   1,
@@ -117,7 +117,7 @@ func TestParseWAV_ValidHeader(t *testing.T) {
 
 	samples := generateSineWave(sampleRate, 50) // 50ms
 
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    sampleRate,
 		BitsPerSample: bitsPerSample,
 		NumChannels:   numChannels,
@@ -148,7 +148,7 @@ func TestWAVEncode_Roundtrip_8bit(t *testing.T) {
 	sampleRate := 16000
 	samples := generateSineWave(sampleRate, 100) // 100ms
 
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    sampleRate,
 		BitsPerSample: 8,
 		NumChannels:   1,
@@ -185,7 +185,7 @@ func TestWAVEncode_Roundtrip_8bit(t *testing.T) {
 }
 
 func TestWAVEncode_InvalidSampleRate(t *testing.T) {
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    0,
 		BitsPerSample: 16,
 		NumChannels:   1,
@@ -198,7 +198,7 @@ func TestWAVEncode_InvalidSampleRate(t *testing.T) {
 }
 
 func TestWAVEncode_InvalidBitsPerSample(t *testing.T) {
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    16000,
 		BitsPerSample: 12,
 		NumChannels:   1,

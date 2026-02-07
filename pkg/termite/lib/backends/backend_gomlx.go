@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/gomlx/gomlx/backends"
@@ -509,14 +510,14 @@ const (
 // onnxModel implements inference for ONNX models using onnx-gomlx.
 // This converts ONNX graphs to GoMLX for execution.
 type onnxModel struct {
-	path            string
-	pooling         string
-	normalize       bool
-	maxCacheSize    int
-	onnxModel       *onnx.Model
-	ctx             *mlctx.Context
-	engine          backends.Backend
-	exec            *mlctx.Exec // Cached compiled inference graph
+	path             string
+	pooling          string
+	normalize        bool
+	maxCacheSize     int
+	onnxModel        *onnx.Model
+	ctx              *mlctx.Context
+	engine           backends.Backend
+	exec             *mlctx.Exec // Cached compiled inference graph
 	hasAttentionMask bool
 	hasTokenTypeIds  bool
 	modelType        onnxModelType
@@ -559,26 +560,20 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 	}
 	// If no standard text or vision inputs found, treat as embeddings/projection model.
 	if modelType == onnxModelText {
-		hasStandardInput := false
-		for _, name := range inputNames {
-			if name == "input_ids" {
-				hasStandardInput = true
-				break
-			}
-		}
+		hasStandardInput := slices.Contains(inputNames, "input_ids")
 		if !hasStandardInput {
 			modelType = onnxModelEmbeddings
 		}
 	}
 
 	model := &onnxModel{
-		path:            onnxPath,
-		pooling:         pooling,
-		normalize:       normalize,
-		maxCacheSize:    buckets.maxCacheSize,
-		onnxModel:       om,
-		ctx:             ctx,
-		engine:          engine,
+		path:             onnxPath,
+		pooling:          pooling,
+		normalize:        normalize,
+		maxCacheSize:     buckets.maxCacheSize,
+		onnxModel:        om,
+		ctx:              ctx,
+		engine:           engine,
 		hasAttentionMask: hasAttentionMask,
 		hasTokenTypeIds:  hasTokenTypeIds,
 		modelType:        modelType,
@@ -1170,7 +1165,7 @@ func gomlxToNamedTensor(t *tensors.Tensor, name string) (NamedTensor, error) {
 	}
 
 	// Extract data based on dtype
-	var data interface{}
+	var data any
 	switch shape.DType {
 	case dtypes.Float32:
 		data = extractFloat32Data(t)
@@ -1225,7 +1220,7 @@ func extractBoolData(t *tensors.Tensor) []bool {
 }
 
 // flattenFloat32 recursively flattens multi-dimensional float32 data.
-func flattenFloat32(val interface{}) []float32 {
+func flattenFloat32(val any) []float32 {
 	switch v := val.(type) {
 	case []float32:
 		return v
@@ -1259,7 +1254,7 @@ func flattenFloat32(val interface{}) []float32 {
 }
 
 // flattenFloat64 recursively flattens multi-dimensional float64 data.
-func flattenFloat64(val interface{}) []float64 {
+func flattenFloat64(val any) []float64 {
 	switch v := val.(type) {
 	case []float64:
 		return v
@@ -1283,7 +1278,7 @@ func flattenFloat64(val interface{}) []float64 {
 }
 
 // flattenInt64 recursively flattens multi-dimensional int64 data.
-func flattenInt64(val interface{}) []int64 {
+func flattenInt64(val any) []int64 {
 	switch v := val.(type) {
 	case []int64:
 		return v
@@ -1307,7 +1302,7 @@ func flattenInt64(val interface{}) []int64 {
 }
 
 // flattenInt32 recursively flattens multi-dimensional int32 data.
-func flattenInt32(val interface{}) []int32 {
+func flattenInt32(val any) []int32 {
 	switch v := val.(type) {
 	case []int32:
 		return v
@@ -1331,7 +1326,7 @@ func flattenInt32(val interface{}) []int32 {
 }
 
 // flattenBool recursively flattens multi-dimensional bool data.
-func flattenBool(val interface{}) []bool {
+func flattenBool(val any) []bool {
 	switch v := val.(type) {
 	case []bool:
 		return v

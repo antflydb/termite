@@ -31,6 +31,7 @@ import (
 	_ "image/png"
 	"net/http"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -151,11 +152,8 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		for name, caps := range capsMap {
 			resp.Recognizers = append(resp.Recognizers, name)
 			// Extract zero-shot capable models for Extractors field
-			for _, c := range caps {
-				if c == string(modelregistry.CapabilityZeroshot) {
-					resp.Extractors = append(resp.Extractors, name)
-					break
-				}
+			if slices.Contains(caps, string(modelregistry.CapabilityZeroshot)) {
+				resp.Extractors = append(resp.Extractors, name)
 			}
 		}
 		if len(capsMap) > 0 {
@@ -1483,11 +1481,8 @@ func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request)
 	hasNERClassifiers := false
 	if ln.nerRegistry != nil {
 		for _, caps := range ln.nerRegistry.List() {
-			for _, c := range caps {
-				if c == string(modelregistry.CapabilityClassification) {
-					hasNERClassifiers = true
-					break
-				}
+			if slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
+				hasNERClassifiers = true
 			}
 			if hasNERClassifiers {
 				break

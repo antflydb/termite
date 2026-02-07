@@ -247,13 +247,13 @@ func (p *FunctionGemmaParser) FormatToolsPrompt(tools []ToolDefinition) string {
 }
 
 // formatParams formats a JSON Schema parameters object for the prompt.
-func (p *FunctionGemmaParser) formatParams(params map[string]interface{}) string {
+func (p *FunctionGemmaParser) formatParams(params map[string]any) string {
 	if len(params) == 0 {
 		return "{}"
 	}
 
 	// Extract properties from JSON Schema
-	properties, ok := params["properties"].(map[string]interface{})
+	properties, ok := params["properties"].(map[string]any)
 	if !ok {
 		// If not a JSON Schema, just stringify the params
 		data, err := json.Marshal(params)
@@ -263,7 +263,7 @@ func (p *FunctionGemmaParser) formatParams(params map[string]interface{}) string
 		return string(data)
 	}
 
-	required, _ := params["required"].([]interface{})
+	required, _ := params["required"].([]any)
 	requiredSet := make(map[string]bool)
 	for _, r := range required {
 		if s, ok := r.(string); ok {
@@ -273,7 +273,7 @@ func (p *FunctionGemmaParser) formatParams(params map[string]interface{}) string
 
 	var parts []string
 	for name, propRaw := range properties {
-		prop, ok := propRaw.(map[string]interface{})
+		prop, ok := propRaw.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -348,18 +348,18 @@ func (p *FunctionGemmaParser) Feed(token string) []ToolCall {
 // Format: function_name{param1:<escape>value1<escape>,param2:<escape>value2<escape>}
 func (p *FunctionGemmaParser) parseCall(content string) (ToolCall, bool) {
 	// Find the function name (everything before the first {)
-	braceIdx := strings.Index(content, "{")
-	if braceIdx == -1 {
+	before, after, ok := strings.Cut(content, "{")
+	if !ok {
 		return ToolCall{}, false
 	}
 
-	funcName := strings.TrimSpace(content[:braceIdx])
+	funcName := strings.TrimSpace(before)
 	if funcName == "" {
 		return ToolCall{}, false
 	}
 
 	// Extract parameters
-	paramsStr := content[braceIdx+1:]
+	paramsStr := after
 	if strings.HasSuffix(paramsStr, "}") {
 		paramsStr = paramsStr[:len(paramsStr)-1]
 	}
@@ -389,8 +389,8 @@ func (p *FunctionGemmaParser) parseCall(content string) (ToolCall, bool) {
 
 // splitParams parses the parameter string into a map.
 // Format: param1:<escape>value1<escape>,param2:<escape>value2<escape>
-func (p *FunctionGemmaParser) splitParams(s string) map[string]interface{} {
-	result := make(map[string]interface{})
+func (p *FunctionGemmaParser) splitParams(s string) map[string]any {
+	result := make(map[string]any)
 	if s == "" {
 		return result
 	}
@@ -430,21 +430,21 @@ func (p *FunctionGemmaParser) splitParams(s string) map[string]interface{} {
 }
 
 // parseParam parses a single "key:value" parameter.
-func (p *FunctionGemmaParser) parseParam(param string, result map[string]interface{}) {
-	colonIdx := strings.Index(param, ":")
-	if colonIdx == -1 {
+func (p *FunctionGemmaParser) parseParam(param string, result map[string]any) {
+	before, after, ok := strings.Cut(param, ":")
+	if !ok {
 		return
 	}
 
-	key := strings.TrimSpace(param[:colonIdx])
-	value := strings.TrimSpace(param[colonIdx+1:])
+	key := strings.TrimSpace(before)
+	value := strings.TrimSpace(after)
 
 	if key == "" {
 		return
 	}
 
 	// Try to parse value as JSON (for numbers, booleans, etc.)
-	var jsonValue interface{}
+	var jsonValue any
 	if err := json.Unmarshal([]byte(value), &jsonValue); err == nil {
 		result[key] = jsonValue
 	} else {

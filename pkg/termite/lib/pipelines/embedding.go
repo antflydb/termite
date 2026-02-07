@@ -588,7 +588,7 @@ func (p *EmbeddingPipeline) Embed(ctx context.Context, texts []string) ([][]floa
 	for i := range allInputIDs {
 		origLen := len(allInputIDs[i])
 		allAttentionMask[i] = make([]int32, maxLen)
-		for j := 0; j < origLen; j++ {
+		for j := range origLen {
 			allAttentionMask[i][j] = 1
 		}
 		// Pad input IDs
@@ -1043,7 +1043,6 @@ func loadVisualEmbeddingPipeline(
 	pipeline.Projector = projector
 	return pipeline, nil
 }
-
 
 // loadAudioEmbeddingPipeline loads the audio encoder as an EmbeddingPipeline.
 func loadAudioEmbeddingPipeline(

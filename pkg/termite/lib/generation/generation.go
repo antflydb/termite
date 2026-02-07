@@ -16,6 +16,7 @@ package generation
 
 import (
 	"context"
+	"strings"
 )
 
 // Generator is the interface for text generation models.
@@ -51,13 +52,13 @@ func (m Message) GetTextContent() string {
 	if len(m.Parts) == 0 {
 		return m.Content
 	}
-	var text string
+	var text strings.Builder
 	for _, part := range m.Parts {
 		if part.Type == "text" {
-			text += part.Text
+			text.WriteString(part.Text)
 		}
 	}
-	return text
+	return text.String()
 }
 
 // HasImages returns true if this message contains any image parts.
@@ -91,10 +92,10 @@ type GenerateOptions struct {
 
 // FunctionDefinition describes a function that can be called by the model.
 type FunctionDefinition struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Parameters  map[string]interface{} `json:"parameters,omitempty"` // JSON Schema
-	Strict      bool                   `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema
+	Strict      bool           `json:"strict,omitempty"`     // Whether to enforce strict parameter validation
 }
 
 // GenerateResult holds the output of text generation.

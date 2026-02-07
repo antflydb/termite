@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -425,18 +426,12 @@ func (m *MockNERRegistry) HasCapability(modelName string, capability modelregist
 	if !ok {
 		return false
 	}
-	for _, c := range caps {
-		if c == string(capability) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(caps, string(capability))
 }
 
 func (m *MockNERRegistry) Close() error {
 	return nil
 }
-
 
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)

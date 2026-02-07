@@ -14,6 +14,7 @@ require (
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.0.3
 	github.com/oapi-codegen/runtime v1.1.2

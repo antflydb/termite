@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/audio"
 )
 
 const (
@@ -26,20 +27,36 @@ const (
 	defaultOverlapDurationMs = 0
 )
 
-// AudioChunker segments WAV audio into fixed-duration windows.
+// AudioChunker segments audio into fixed-duration windows.
 // Preserves the original sample rate and bit depth.
 type AudioChunker struct{}
 
 // ChunkAudio parses a WAV file and segments it into fixed-duration windows.
 // Each output chunk is a valid WAV file at the original sample rate/bit depth.
 func (a *AudioChunker) ChunkAudio(ctx context.Context, data []byte, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
-	samples, format, err := ParseWAV(data)
+	samples, format, err := audio.ParseWAV(data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing WAV: %w", err)
 	}
 
+	return a.ChunkPCM(ctx, samples, format, opts)
+}
+
+// ChunkMP3 decodes an MP3 file and segments it into fixed-duration WAV windows.
+func (a *AudioChunker) ChunkMP3(ctx context.Context, data []byte, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
+	samples, format, err := audio.ParseMP3(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing MP3: %w", err)
+	}
+
+	return a.ChunkPCM(ctx, samples, format, opts)
+}
+
+// ChunkPCM segments decoded PCM samples into fixed-duration windows.
+// Each output chunk is a valid WAV file encoded at the given format's sample rate/bit depth.
+func (a *AudioChunker) ChunkPCM(ctx context.Context, samples []float32, format audio.Format, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	if len(samples) == 0 {
-		return nil, fmt.Errorf("WAV file contains no samples")
+		return nil, fmt.Errorf("audio contains no samples")
 	}
 
 	windowMs := opts.WindowDurationMs
@@ -70,18 +87,15 @@ func (a *AudioChunker) ChunkAudio(ctx context.Context, data []byte, opts chunkin
 		default:
 		}
 
-		end := offset + windowSamples
-		if end > totalSamples {
-			end = totalSamples
-		}
+		end := min(offset+windowSamples, totalSamples)
 
 		windowData := samples[offset:end]
 
 		// Encode window as WAV with original format
-		wavBytes, err := EncodeWAV(windowData, WAVFormat{
+		wavBytes, err := audio.EncodeWAV(windowData, audio.Format{
 			SampleRate:    format.SampleRate,
 			BitsPerSample: format.BitsPerSample,
-			NumChannels:   1, // ParseWAV outputs mono
+			NumChannels:   1, // decoded samples are mono
 		})
 		if err != nil {
 			return nil, fmt.Errorf("encoding WAV chunk %d: %w", len(chunks), err)
