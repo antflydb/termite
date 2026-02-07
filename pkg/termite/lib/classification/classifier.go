@@ -136,10 +136,9 @@ func NewPooledClassifier(
 	// Auto-detect pool size from CPU count if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
-		if poolSize > 4 {
-			poolSize = 4 // Cap at 4 for ZSC models (memory intensive)
-		}
+		poolSize = min(runtime.NumCPU(),
+			// Cap at 4 for ZSC models (memory intensive)
+			4)
 	}
 
 	// Load ZSC configuration (hypothesis template, multi-label settings)

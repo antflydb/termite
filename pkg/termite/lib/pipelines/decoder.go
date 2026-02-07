@@ -474,7 +474,7 @@ func TopP(probs []float32, p float32) []float32 {
 	}
 
 	// Sort descending by probability
-	for i := 0; i < len(pairs); i++ {
+	for i := range pairs {
 		maxIdx := i
 		for j := i + 1; j < len(pairs); j++ {
 			if pairs[j].prob > pairs[maxIdx].prob {

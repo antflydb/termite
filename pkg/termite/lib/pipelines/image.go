@@ -110,8 +110,8 @@ func (p *ImageProcessor) toTensor(img image.Image) []float32 {
 	pixels := make([]float32, channels*height*width)
 
 	// Extract pixels and normalize
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			c := img.At(bounds.Min.X+x, bounds.Min.Y+y)
 			r, g, b, _ := c.RGBA()
 
@@ -163,8 +163,8 @@ func cropImage(img image.Image, x, y, width, height int) image.Image {
 	bounds := img.Bounds()
 	cropped := image.NewRGBA(image.Rect(0, 0, width, height))
 
-	for dy := 0; dy < height; dy++ {
-		for dx := 0; dx < width; dx++ {
+	for dy := range height {
+		for dx := range width {
 			srcX := bounds.Min.X + x + dx
 			srcY := bounds.Min.Y + y + dy
 			if srcX < bounds.Max.X && srcY < bounds.Max.Y {
@@ -191,8 +191,8 @@ func resize(img image.Image, targetWidth, targetHeight int) image.Image {
 	xRatio := float64(srcWidth) / float64(targetWidth)
 	yRatio := float64(srcHeight) / float64(targetHeight)
 
-	for y := 0; y < targetHeight; y++ {
-		for x := 0; x < targetWidth; x++ {
+	for y := range targetHeight {
+		for x := range targetWidth {
 			// Source coordinates (floating point)
 			srcX := float64(x) * xRatio
 			srcY := float64(y) * yRatio
@@ -280,8 +280,8 @@ func PadImage(img image.Image, targetWidth, targetHeight int, padColor color.Col
 	padded := image.NewRGBA(image.Rect(0, 0, targetWidth, targetHeight))
 
 	// Fill with pad color
-	for y := 0; y < targetHeight; y++ {
-		for x := 0; x < targetWidth; x++ {
+	for y := range targetHeight {
+		for x := range targetWidth {
 			padded.Set(x, y, padColor)
 		}
 	}
@@ -290,8 +290,8 @@ func PadImage(img image.Image, targetWidth, targetHeight int, padColor color.Col
 	offsetX := (targetWidth - srcWidth) / 2
 	offsetY := (targetHeight - srcHeight) / 2
 
-	for y := 0; y < srcHeight; y++ {
-		for x := 0; x < srcWidth; x++ {
+	for y := range srcHeight {
+		for x := range srcWidth {
 			padded.Set(offsetX+x, offsetY+y, img.At(bounds.Min.X+x, bounds.Min.Y+y))
 		}
 	}
@@ -317,9 +317,9 @@ func CropMargin(img image.Image, tolerance uint32) image.Image {
 	bottom := height - 1
 
 	// Find left boundary
-	for x := 0; x < width; x++ {
+	for x := range width {
 		hasContent := false
-		for y := 0; y < height; y++ {
+		for y := range height {
 			if !isMarginColor(img.At(bounds.Min.X+x, bounds.Min.Y+y), refR, refG, refB, tolerance) {
 				hasContent = true
 				break
@@ -334,7 +334,7 @@ func CropMargin(img image.Image, tolerance uint32) image.Image {
 	// Find right boundary
 	for x := width - 1; x >= left; x-- {
 		hasContent := false
-		for y := 0; y < height; y++ {
+		for y := range height {
 			if !isMarginColor(img.At(bounds.Min.X+x, bounds.Min.Y+y), refR, refG, refB, tolerance) {
 				hasContent = true
 				break
@@ -347,7 +347,7 @@ func CropMargin(img image.Image, tolerance uint32) image.Image {
 	}
 
 	// Find top boundary
-	for y := 0; y < height; y++ {
+	for y := range height {
 		hasContent := false
 		for x := left; x <= right; x++ {
 			if !isMarginColor(img.At(bounds.Min.X+x, bounds.Min.Y+y), refR, refG, refB, tolerance) {

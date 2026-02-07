@@ -3,9 +3,11 @@ package chunking
 import (
 	"context"
 	"math"
+	"os"
 	"testing"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/audio"
 )
 
 func TestAudioChunker_BasicWindowing(t *testing.T) {
@@ -179,7 +181,7 @@ func TestAudioChunker_RoundtripWAV(t *testing.T) {
 			t.Fatalf("chunk[%d].AsBinaryContent() failed: %v", i, err)
 		}
 
-		samples, format, err := ParseWAV(bc.Data)
+		samples, format, err := audio.ParseWAV(bc.Data)
 		if err != nil {
 			t.Fatalf("ParseWAV on chunk[%d] failed: %v", i, err)
 		}
@@ -197,5 +199,90 @@ func TestAudioChunker_RoundtripWAV(t *testing.T) {
 		if len(samples) != expectedSamplesPerChunk {
 			t.Errorf("chunk[%d] has %d samples, want %d", i, len(samples), expectedSamplesPerChunk)
 		}
+	}
+}
+
+func TestChunkPCM_Direct(t *testing.T) {
+	sampleRate := 16000
+	durationMs := 3000
+	numSamples := sampleRate * durationMs / 1000
+	samples := make([]float32, numSamples)
+	for i := range samples {
+		samples[i] = float32(math.Sin(2.0 * math.Pi * 440.0 * float64(i) / float64(sampleRate)))
+	}
+
+	ac := &AudioChunker{}
+	chunks, err := ac.ChunkPCM(context.Background(), samples, audio.Format{
+		SampleRate:    sampleRate,
+		BitsPerSample: 16,
+		NumChannels:   1,
+	}, chunking.ChunkOptions{
+		WindowDurationMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ChunkPCM failed: %v", err)
+	}
+
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks, want 3", len(chunks))
+	}
+
+	for i, chunk := range chunks {
+		if chunk.MimeType != "audio/wav" {
+			t.Errorf("chunk[%d].MimeType = %q, want %q", i, chunk.MimeType, "audio/wav")
+		}
+	}
+}
+
+func TestChunkMP3_Windowing(t *testing.T) {
+	data, err := os.ReadFile("../audio/testdata/sine_440hz_3s.mp3")
+	if err != nil {
+		t.Fatalf("reading MP3 fixture: %v", err)
+	}
+
+	ac := &AudioChunker{}
+	chunks, err := ac.ChunkMP3(context.Background(), data, chunking.ChunkOptions{
+		WindowDurationMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ChunkMP3 failed: %v", err)
+	}
+
+	// 3s MP3 with 1s windows should produce 3-4 chunks (MP3 encoding may add padding)
+	if len(chunks) < 3 || len(chunks) > 4 {
+		t.Fatalf("got %d chunks, want 3-4", len(chunks))
+	}
+
+	for i, chunk := range chunks {
+		if chunk.MimeType != "audio/wav" {
+			t.Errorf("chunk[%d].MimeType = %q, want %q", i, chunk.MimeType, "audio/wav")
+		}
+		bc, err := chunk.AsBinaryContent()
+		if err != nil {
+			t.Fatalf("chunk[%d].AsBinaryContent() failed: %v", i, err)
+		}
+		if len(bc.Data) == 0 {
+			t.Errorf("chunk[%d] has empty data", i)
+		}
+	}
+}
+
+func TestChunkMP3_MaxChunks(t *testing.T) {
+	data, err := os.ReadFile("../audio/testdata/sine_440hz_3s.mp3")
+	if err != nil {
+		t.Fatalf("reading MP3 fixture: %v", err)
+	}
+
+	ac := &AudioChunker{}
+	chunks, err := ac.ChunkMP3(context.Background(), data, chunking.ChunkOptions{
+		WindowDurationMs: 1000,
+		MaxChunks:        2,
+	})
+	if err != nil {
+		t.Fatalf("ChunkMP3 failed: %v", err)
+	}
+
+	if len(chunks) != 2 {
+		t.Fatalf("got %d chunks, want 2 (max_chunks limit)", len(chunks))
 	}
 }

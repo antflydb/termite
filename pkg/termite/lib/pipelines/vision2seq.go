@@ -298,7 +298,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 		switch v := dec.EOSTokenID.(type) {
 		case float64:
 			eosTokenID = int32(v)
-		case []interface{}:
+		case []any:
 			if len(v) > 0 {
 				if f, ok := v[0].(float64); ok {
 					eosTokenID = int32(f)
@@ -336,7 +336,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 		switch v := text.EOSTokenID.(type) {
 		case float64:
 			eosTokenID = int32(v)
-		case []interface{}:
+		case []any:
 			if len(v) > 0 {
 				if f, ok := v[0].(float64); ok {
 					eosTokenID = int32(f)
@@ -371,7 +371,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 	switch v := cfg.EOSTokenID.(type) {
 	case float64:
 		eosTokenID = int32(v)
-	case []interface{}:
+	case []any:
 		if len(v) > 0 {
 			if f, ok := v[0].(float64); ok {
 				eosTokenID = int32(f)
@@ -476,14 +476,14 @@ func extractImageSize(v any) int {
 		return int(val)
 	case int:
 		return val
-	case []interface{}:
+	case []any:
 		// Handle array like [width, height] - return the first element (width)
 		if len(val) > 0 {
 			if f, ok := val[0].(float64); ok {
 				return int(f)
 			}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		// Handle {height: N, width: N} or {shortest_edge: N}
 		if h, ok := val["height"].(float64); ok {
 			return int(h)
@@ -678,8 +678,8 @@ func (m *vision2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 
 	// Flatten input IDs to int64 for most models
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
@@ -729,7 +729,7 @@ func (m *vision2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 	// Reshape logits to [batch, vocab_size] (taking last position if sequence)
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
 		// Take logits from last position
 		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize

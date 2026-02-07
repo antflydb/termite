@@ -17,14 +17,14 @@ import (
 func generateTestGIF(t *testing.T, numFrames int, width, height int) []byte {
 	t.Helper()
 	g := &gif.GIF{}
-	for i := 0; i < numFrames; i++ {
+	for i := range numFrames {
 		img := image.NewPaletted(image.Rect(0, 0, width, height), color.Palette{
 			color.RGBA{uint8(i * 50), 0, 0, 255},
 			color.RGBA{0, uint8(i * 50), 0, 255},
 		})
 		// Fill with first color
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
+		for y := range height {
+			for x := range width {
 				img.SetColorIndex(x, y, 0)
 			}
 		}

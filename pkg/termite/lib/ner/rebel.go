@@ -155,8 +155,8 @@ func parseREBELTriplets(text string, config REBELConfig, score float32) []triple
 
 	if hasSpecialTokens {
 		// Parse using special tokens
-		parts := strings.Split(text, config.TripletToken)
-		for _, part := range parts {
+		parts := strings.SplitSeq(text, config.TripletToken)
+		for part := range parts {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

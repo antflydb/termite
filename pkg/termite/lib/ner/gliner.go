@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -550,10 +551,8 @@ func (p *PooledGLiNER) SupportsQA() bool {
 // SupportsClassification returns true if the model supports text classification.
 func (p *PooledGLiNER) SupportsClassification() bool {
 	// Check config capabilities first
-	for _, cap := range p.config.Capabilities {
-		if cap == "classification" {
-			return true
-		}
+	if slices.Contains(p.config.Capabilities, "classification") {
+		return true
 	}
 	// Fall back to model type check
 	return p.config.ModelType == GLiNERModelGLiNER2

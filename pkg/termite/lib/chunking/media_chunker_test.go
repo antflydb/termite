@@ -2,6 +2,7 @@ package chunking
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
@@ -74,6 +75,50 @@ func TestFixedMediaChunker_EmptyData(t *testing.T) {
 	_, err := chunker.ChunkMedia(context.Background(), []byte{}, "audio/wav", chunking.ChunkOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty data, got nil")
+	}
+}
+
+func TestFixedMediaChunker_DispatchMP3(t *testing.T) {
+	mp3Data, err := os.ReadFile("../audio/testdata/sine_440hz_3s.mp3")
+	if err != nil {
+		t.Fatalf("reading MP3 fixture: %v", err)
+	}
+
+	chunker := NewFixedMediaChunker()
+	chunks, err := chunker.ChunkMedia(context.Background(), mp3Data, "audio/mpeg", chunking.ChunkOptions{
+		WindowDurationMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ChunkMedia returned error: %v", err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk, got 0")
+	}
+
+	for i, chunk := range chunks {
+		if chunk.MimeType != "audio/wav" {
+			t.Errorf("chunk %d: expected mime_type %q, got %q", i, "audio/wav", chunk.MimeType)
+		}
+	}
+}
+
+func TestFixedMediaChunker_DispatchMP3Alias(t *testing.T) {
+	mp3Data, err := os.ReadFile("../audio/testdata/sine_440hz_3s.mp3")
+	if err != nil {
+		t.Fatalf("reading MP3 fixture: %v", err)
+	}
+
+	chunker := NewFixedMediaChunker()
+	chunks, err := chunker.ChunkMedia(context.Background(), mp3Data, "audio/mp3", chunking.ChunkOptions{
+		WindowDurationMs: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ChunkMedia returned error: %v", err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk, got 0")
 	}
 }
 

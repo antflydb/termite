@@ -194,9 +194,9 @@ func (ap *AudioProcessor) bytesToSamples(data []byte, bitsPerSample, numChannels
 
 	reader := bytes.NewReader(data)
 
-	for i := 0; i < numSamples; i++ {
+	for i := range numSamples {
 		var sampleSum float64
-		for ch := 0; ch < numChannels; ch++ {
+		for range numChannels {
 			var sample float64
 			switch bitsPerSample {
 			case 8:
@@ -244,7 +244,7 @@ func (ap *AudioProcessor) resample(samples []float32, fromRate, toRate int) []fl
 	newLen := int(float64(len(samples)) / ratio)
 	resampled := make([]float32, newLen)
 
-	for i := 0; i < newLen; i++ {
+	for i := range newLen {
 		srcIdx := float64(i) * ratio
 		srcIdxInt := int(srcIdx)
 		frac := float32(srcIdx - float64(srcIdxInt))
@@ -284,7 +284,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	padAmount := nFft / 2
 	paddedSamples := make([]float32, len(samples)+2*padAmount)
 	// Fill with padding value (zeros)
-	for i := 0; i < padAmount; i++ {
+	for i := range padAmount {
 		paddedSamples[i] = ap.Config.PaddingValue
 	}
 	copy(paddedSamples[padAmount:], samples)
@@ -295,10 +295,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 	// Calculate number of frames: exactly n_samples / hop_length for Whisper
 	// (original samples length before center padding)
-	numFrames := targetLen / hopLength
-	if numFrames < 1 {
-		numFrames = 1
-	}
+	numFrames := max(targetLen/hopLength, 1)
 
 	// Compute STFT magnitude
 	stftMag := make([][]float32, numFrames)
@@ -306,10 +303,6 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 	for frame := 0; frame < numFrames; frame++ {
 		start := frame * hopLength
-		end := start + nFft
-		if end > len(samples) {
-			end = len(samples)
-		}
 
 		// Extract frame and apply window
 		frameData := make([]float32, nFft)
@@ -322,7 +315,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 		// Compute magnitude spectrum
 		stftMag[frame] = make([]float32, nBins)
-		for i := 0; i < nBins; i++ {
+		for i := range nBins {
 			stftMag[frame][i] = float32(cmplx.Abs(fftResult[i]))
 		}
 	}
@@ -331,7 +324,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	melSpec := make([][]float32, numFrames)
 	for frame := 0; frame < numFrames; frame++ {
 		melSpec[frame] = make([]float32, nMels)
-		for mel := 0; mel < nMels; mel++ {
+		for mel := range nMels {
 			var sum float32
 			for bin := 0; bin < nBins && bin < len(ap.melFilters[mel]); bin++ {
 				sum += stftMag[frame][bin] * ap.melFilters[mel][bin]
@@ -356,7 +349,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 		// First pass: compute log10 and find global maximum
 		var globalMax float32 = -1000.0
 		for frame := 0; frame < numFrames; frame++ {
-			for mel := 0; mel < nMels; mel++ {
+			for mel := range nMels {
 				val := melSpec[frame][mel]
 				if val < logFloor {
 					val = logFloor
@@ -372,7 +365,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 		// Second pass: clip to (globalMax - 8.0) and normalize
 		minClip := globalMax - 8.0
 		for frame := 0; frame < numFrames; frame++ {
-			for mel := 0; mel < nMels; mel++ {
+			for mel := range nMels {
 				logVal := melSpec[frame][mel]
 				// Clip minimum
 				if logVal < minClip {
@@ -387,7 +380,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 		// Simple log mel spectrogram for CLAP and other audio models
 		// Use natural log without Whisper-specific normalization
 		for frame := 0; frame < numFrames; frame++ {
-			for mel := 0; mel < nMels; mel++ {
+			for mel := range nMels {
 				val := melSpec[frame][mel]
 				if val < logFloor {
 					val = logFloor
@@ -402,7 +395,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	// For now, return [time, n_mels] flattened
 	result := make([]float32, numFrames*nMels)
 	for frame := 0; frame < numFrames; frame++ {
-		for mel := 0; mel < nMels; mel++ {
+		for mel := range nMels {
 			result[frame*nMels+mel] = melSpec[frame][mel]
 		}
 	}
@@ -448,7 +441,7 @@ func (ap *AudioProcessor) computeMelFilterBank() [][]float32 {
 
 	// Create filter bank
 	filters := make([][]float32, nMels)
-	for mel := 0; mel < nMels; mel++ {
+	for mel := range nMels {
 		filters[mel] = make([]float32, nBins)
 		startBin := binIndices[mel]
 		centerBin := binIndices[mel+1]
@@ -476,7 +469,7 @@ func (ap *AudioProcessor) computeMelFilterBank() [][]float32 {
 func (ap *AudioProcessor) computeHannWindow() []float32 {
 	n := ap.Config.NFft
 	window := make([]float32, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		window[i] = float32(0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(n-1))))
 	}
 	return window
@@ -495,7 +488,7 @@ func (ap *AudioProcessor) fft(input []float32) []complex128 {
 
 	// Convert to complex
 	data := make([]complex128, nextPow2)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		data[i] = complex(float64(input[i]), 0)
 	}
 
@@ -518,7 +511,7 @@ func (ap *AudioProcessor) fft(input []float32) []complex128 {
 		halfSize := size / 2
 		tableStep := nextPow2 / size
 		for i := 0; i < nextPow2; i += size {
-			for j := 0; j < halfSize; j++ {
+			for j := range halfSize {
 				angle := -2 * math.Pi * float64(j*tableStep) / float64(nextPow2)
 				w := complex(math.Cos(angle), math.Sin(angle))
 				t := w * data[i+j+halfSize]

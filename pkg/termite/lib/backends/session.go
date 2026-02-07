@@ -41,7 +41,7 @@ type Session interface {
 type NamedTensor struct {
 	Name  string
 	Shape []int64
-	Data  interface{} // []float32, []int64, []int32, etc.
+	Data  any // []float32, []int64, []int32, etc.
 }
 
 // TensorInfo describes a tensor's metadata.

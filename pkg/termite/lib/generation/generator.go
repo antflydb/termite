@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
@@ -418,19 +419,19 @@ func (p *PooledPipelineGenerator) Close() error {
 // messagesToPrompt converts messages to a simple prompt string.
 // For more sophisticated chat templating, consider using a proper chat template.
 func messagesToPrompt(messages []Message) string {
-	var prompt string
+	var prompt strings.Builder
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			prompt += fmt.Sprintf("System: %s\n\n", msg.GetTextContent())
+			prompt.WriteString(fmt.Sprintf("System: %s\n\n", msg.GetTextContent()))
 		case "user":
-			prompt += fmt.Sprintf("User: %s\n\n", msg.GetTextContent())
+			prompt.WriteString(fmt.Sprintf("User: %s\n\n", msg.GetTextContent()))
 		case "assistant":
-			prompt += fmt.Sprintf("Assistant: %s\n\n", msg.GetTextContent())
+			prompt.WriteString(fmt.Sprintf("Assistant: %s\n\n", msg.GetTextContent()))
 		default:
-			prompt += msg.GetTextContent() + "\n\n"
+			prompt.WriteString(msg.GetTextContent() + "\n\n")
 		}
 	}
-	prompt += "Assistant: "
-	return prompt
+	prompt.WriteString("Assistant: ")
+	return prompt.String()
 }

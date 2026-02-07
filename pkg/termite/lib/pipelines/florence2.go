@@ -224,7 +224,7 @@ func (m *florence2Model) runFlorence2Encoder(ctx context.Context, inputs *backen
 
 		// Flatten prompt tokens to int64
 		flatPromptTokens := make([]int64, batchSize*promptLen)
-		for i := 0; i < batchSize; i++ {
+		for i := range batchSize {
 			for j := 0; j < promptLen; j++ {
 				if i < len(promptTokenIDs) && j < len(promptTokenIDs[i]) {
 					flatPromptTokens[i*promptLen+j] = int64(promptTokenIDs[i][j])
@@ -258,9 +258,9 @@ func (m *florence2Model) runFlorence2Encoder(ctx context.Context, inputs *backen
 	totalSeqLen := imageSeqLen + promptLen
 	inputsEmbeds := make([]float32, batchSize*totalSeqLen*hiddenSize)
 
-	for b := 0; b < batchSize; b++ {
+	for b := range batchSize {
 		// Copy image features
-		for s := 0; s < imageSeqLen; s++ {
+		for s := range imageSeqLen {
 			srcIdx := b*imageSeqLen*hiddenSize + s*hiddenSize
 			dstIdx := b*totalSeqLen*hiddenSize + s*hiddenSize
 			copy(inputsEmbeds[dstIdx:dstIdx+hiddenSize], imageFeaturesData[srcIdx:srcIdx+hiddenSize])
@@ -336,8 +336,8 @@ func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelI
 
 	// Flatten input IDs to int64
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
@@ -370,7 +370,7 @@ func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelI
 	// Reshape logits to [batch, vocab_size]
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
 		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize
 		copy(logits[i], logitsData[startIdx:startIdx+vocabSize])
@@ -639,7 +639,7 @@ func NewFlorence2Pipeline(
 
 // RunWithPrompt processes an image with a text prompt.
 // For Florence-2, the prompt is embedded alongside the image in the encoder.
-func (p *Florence2Pipeline) RunWithPrompt(ctx context.Context, img interface{}, prompt string) (*Vision2SeqResult, error) {
+func (p *Florence2Pipeline) RunWithPrompt(ctx context.Context, img any, prompt string) (*Vision2SeqResult, error) {
 	// Preprocess image
 	var pixels []float32
 	var err error
@@ -649,7 +649,7 @@ func (p *Florence2Pipeline) RunWithPrompt(ctx context.Context, img interface{}, 
 		pixels, err = p.ImageProcessor.ProcessBytes(v)
 	default:
 		// Assume it's an image.Image
-		if imgTyped, ok := img.(interface{ Bounds() interface{} }); ok {
+		if imgTyped, ok := img.(interface{ Bounds() any }); ok {
 			_ = imgTyped // use the variable
 		}
 		pixels, err = p.ImageProcessor.ProcessBytes(nil) // This will fail, need proper handling

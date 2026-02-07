@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -38,7 +39,7 @@ const DefaultKeepAlive = 5 * time.Minute
 type ModelInfo struct {
 	Name             string
 	Path             string
-	OnnxFilename     string   // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
+	OnnxFilename     string // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
 	PoolSize         int
 	ModelType        string   // "embedder" or "multimodal"
 	Quantized        bool     // Whether to load quantized variant (*_quantized.onnx)
@@ -661,12 +662,7 @@ func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregis
 		return false
 	}
 
-	for _, c := range info.Capabilities {
-		if c == string(capability) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(info.Capabilities, string(capability))
 }
 
 // Stats returns cache statistics

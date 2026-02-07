@@ -53,6 +53,8 @@ func (m *FixedMediaChunker) ChunkMedia(ctx context.Context, data []byte, mimeTyp
 	switch {
 	case mimeType == "audio/wav" || mimeType == "audio/x-wav" || mimeType == "audio/wave":
 		return m.audio.ChunkAudio(ctx, data, opts)
+	case mimeType == "audio/mpeg" || mimeType == "audio/mp3":
+		return m.audio.ChunkMP3(ctx, data, opts)
 	case mimeType == "image/gif":
 		return m.gif.ChunkGIF(ctx, data, opts)
 	default:

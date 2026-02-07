@@ -285,7 +285,7 @@ func buildSpeech2SeqDecoderConfig(cfg *rawSpeech2SeqConfig) *backends.DecoderCon
 	switch v := cfg.EOSTokenID.(type) {
 	case float64:
 		eosTokenID = int32(v)
-	case []interface{}:
+	case []any:
 		if len(v) > 0 {
 			if f, ok := v[0].(float64); ok {
 				eosTokenID = int32(f)
@@ -474,8 +474,8 @@ func (m *speech2SeqModel) runEncoder(ctx context.Context, inputs *backends.Model
 
 	// Transpose from [time, n_mels] to [n_mels, time]
 	transposed := make([]float32, len(inputs.AudioFeatures))
-	for t := 0; t < time; t++ {
-		for mel := 0; mel < nMels; mel++ {
+	for t := range time {
+		for mel := range nMels {
 			// Original: [t, mel] = t * nMels + mel
 			// Target: [mel, t] = mel * time + t
 			transposed[mel*time+t] = inputs.AudioFeatures[t*nMels+mel]
@@ -547,8 +547,8 @@ func (m *speech2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 
 	// Flatten input IDs to int64 for most models
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
@@ -600,7 +600,7 @@ func (m *speech2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 	// Reshape logits to [batch, vocab_size] (taking last position if sequence)
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
 		// Take logits from last position
 		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize

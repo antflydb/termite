@@ -238,7 +238,7 @@ func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerati
 	switch v := cfg.EOSTokenID.(type) {
 	case float64:
 		eosTokenID = int32(v)
-	case []interface{}:
+	case []any:
 		if len(v) > 0 {
 			if f, ok := v[0].(float64); ok {
 				eosTokenID = int32(f)
@@ -250,7 +250,7 @@ func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerati
 		switch v := genCfg.EOSTokenID.(type) {
 		case float64:
 			eosTokenID = int32(v)
-		case []interface{}:
+		case []any:
 			if len(v) > 0 {
 				if f, ok := v[0].(float64); ok {
 					eosTokenID = int32(f)
@@ -428,16 +428,16 @@ func (m *seq2SeqModel) runEncoder(ctx context.Context, inputs *backends.ModelInp
 
 	// Flatten input IDs to int64
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
 
 	// Flatten attention mask to int64
 	flatMask := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			if attentionMask != nil && i < len(attentionMask) && j < len(attentionMask[i]) {
 				flatMask[i*seqLen+j] = int64(attentionMask[i][j])
 			} else {
@@ -503,8 +503,8 @@ func (m *seq2SeqModel) runDecoder(ctx context.Context, inputs *backends.ModelInp
 
 	// Flatten input IDs to int64
 	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := 0; i < batchSize; i++ {
-		for j := 0; j < seqLen; j++ {
+	for i := range batchSize {
+		for j := range seqLen {
 			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
 		}
 	}
@@ -548,7 +548,7 @@ func (m *seq2SeqModel) runDecoder(ctx context.Context, inputs *backends.ModelInp
 	// Reshape logits to [batch, vocab_size] (taking last position if sequence)
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
-	for i := 0; i < batchSize; i++ {
+	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
 		// Take logits from last position
 		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize

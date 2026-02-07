@@ -332,10 +332,7 @@ func (p *PooledEmbedder) embedTextOnly(ctx context.Context, contents [][]ai.Cont
 		default:
 		}
 
-		batchEnd := batchStart + batchSize
-		if batchEnd > len(texts) {
-			batchEnd = len(texts)
-		}
+		batchEnd := min(batchStart+batchSize, len(texts))
 		batch := texts[batchStart:batchEnd]
 
 		batchEmbeddings, err := textPipeline.Embed(ctx, batch)

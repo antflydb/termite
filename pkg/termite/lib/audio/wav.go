@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package chunking
+package audio
 
 import (
 	"bytes"
@@ -22,8 +22,8 @@ import (
 	"math"
 )
 
-// WAVFormat describes the audio format parameters of a WAV file.
-type WAVFormat struct {
+// Format describes the audio format parameters of a WAV file.
+type Format struct {
 	SampleRate    int
 	BitsPerSample int
 	NumChannels   int
@@ -31,31 +31,31 @@ type WAVFormat struct {
 
 // ParseWAV parses a WAV file and returns mono float32 samples along with the format info.
 // Unlike AudioProcessor.loadWAV, this does NOT resample — it returns samples at the original rate.
-func ParseWAV(data []byte) ([]float32, WAVFormat, error) {
+func ParseWAV(data []byte) ([]float32, Format, error) {
 	reader := bytes.NewReader(data)
 
 	// Read RIFF header
 	var riffHeader [4]byte
 	if _, err := io.ReadFull(reader, riffHeader[:]); err != nil {
-		return nil, WAVFormat{}, fmt.Errorf("reading RIFF header: %w", err)
+		return nil, Format{}, fmt.Errorf("reading RIFF header: %w", err)
 	}
 	if string(riffHeader[:]) != "RIFF" {
-		return nil, WAVFormat{}, fmt.Errorf("not a RIFF file")
+		return nil, Format{}, fmt.Errorf("not a RIFF file")
 	}
 
 	// Skip file size
 	var fileSize uint32
 	if err := binary.Read(reader, binary.LittleEndian, &fileSize); err != nil {
-		return nil, WAVFormat{}, fmt.Errorf("reading file size: %w", err)
+		return nil, Format{}, fmt.Errorf("reading file size: %w", err)
 	}
 
 	// Read WAVE format
 	var waveHeader [4]byte
 	if _, err := io.ReadFull(reader, waveHeader[:]); err != nil {
-		return nil, WAVFormat{}, fmt.Errorf("reading WAVE header: %w", err)
+		return nil, Format{}, fmt.Errorf("reading WAVE header: %w", err)
 	}
 	if string(waveHeader[:]) != "WAVE" {
-		return nil, WAVFormat{}, fmt.Errorf("not a WAVE file")
+		return nil, Format{}, fmt.Errorf("not a WAVE file")
 	}
 
 	// Parse chunks
@@ -70,36 +70,36 @@ func ParseWAV(data []byte) ([]float32, WAVFormat, error) {
 			if err == io.EOF {
 				break
 			}
-			return nil, WAVFormat{}, fmt.Errorf("reading chunk ID: %w", err)
+			return nil, Format{}, fmt.Errorf("reading chunk ID: %w", err)
 		}
 
 		var chunkSize uint32
 		if err := binary.Read(reader, binary.LittleEndian, &chunkSize); err != nil {
-			return nil, WAVFormat{}, fmt.Errorf("reading chunk size: %w", err)
+			return nil, Format{}, fmt.Errorf("reading chunk size: %w", err)
 		}
 
 		switch string(chunkID[:]) {
 		case "fmt ":
 			if err := binary.Read(reader, binary.LittleEndian, &audioFormat); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading audio format: %w", err)
+				return nil, Format{}, fmt.Errorf("reading audio format: %w", err)
 			}
 			if err := binary.Read(reader, binary.LittleEndian, &numChannels); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading num channels: %w", err)
+				return nil, Format{}, fmt.Errorf("reading num channels: %w", err)
 			}
 			if err := binary.Read(reader, binary.LittleEndian, &sampleRate); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading sample rate: %w", err)
+				return nil, Format{}, fmt.Errorf("reading sample rate: %w", err)
 			}
 			// Skip byteRate and blockAlign
 			var byteRate uint32
 			var blockAlign uint16
 			if err := binary.Read(reader, binary.LittleEndian, &byteRate); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading byte rate: %w", err)
+				return nil, Format{}, fmt.Errorf("reading byte rate: %w", err)
 			}
 			if err := binary.Read(reader, binary.LittleEndian, &blockAlign); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading block align: %w", err)
+				return nil, Format{}, fmt.Errorf("reading block align: %w", err)
 			}
 			if err := binary.Read(reader, binary.LittleEndian, &bitsPerSample); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading bits per sample: %w", err)
+				return nil, Format{}, fmt.Errorf("reading bits per sample: %w", err)
 			}
 			// Skip any extra format bytes
 			remaining := int(chunkSize) - 16
@@ -110,7 +110,7 @@ func ParseWAV(data []byte) ([]float32, WAVFormat, error) {
 		case "data":
 			audioData = make([]byte, chunkSize)
 			if _, err := io.ReadFull(reader, audioData); err != nil {
-				return nil, WAVFormat{}, fmt.Errorf("reading audio data: %w", err)
+				return nil, Format{}, fmt.Errorf("reading audio data: %w", err)
 			}
 
 		default:
@@ -120,15 +120,15 @@ func ParseWAV(data []byte) ([]float32, WAVFormat, error) {
 	}
 
 	if audioData == nil {
-		return nil, WAVFormat{}, fmt.Errorf("no audio data found")
+		return nil, Format{}, fmt.Errorf("no audio data found")
 	}
 
 	// Only support PCM format
 	if audioFormat != 1 {
-		return nil, WAVFormat{}, fmt.Errorf("unsupported audio format %d (only PCM supported)", audioFormat)
+		return nil, Format{}, fmt.Errorf("unsupported audio format %d (only PCM supported)", audioFormat)
 	}
 
-	format := WAVFormat{
+	format := Format{
 		SampleRate:    int(sampleRate),
 		BitsPerSample: int(bitsPerSample),
 		NumChannels:   int(numChannels),
@@ -137,7 +137,7 @@ func ParseWAV(data []byte) ([]float32, WAVFormat, error) {
 	// Convert to float32 mono samples
 	samples, err := bytesToMonoSamples(audioData, int(bitsPerSample), int(numChannels))
 	if err != nil {
-		return nil, WAVFormat{}, fmt.Errorf("converting to samples: %w", err)
+		return nil, Format{}, fmt.Errorf("converting to samples: %w", err)
 	}
 
 	return samples, format, nil
@@ -151,9 +151,9 @@ func bytesToMonoSamples(data []byte, bitsPerSample, numChannels int) ([]float32,
 
 	reader := bytes.NewReader(data)
 
-	for i := 0; i < numSamples; i++ {
+	for i := range numSamples {
 		var sampleSum float64
-		for ch := 0; ch < numChannels; ch++ {
+		for range numChannels {
 			var sample float64
 			switch bitsPerSample {
 			case 8:
@@ -188,7 +188,7 @@ func bytesToMonoSamples(data []byte, bitsPerSample, numChannels int) ([]float32,
 }
 
 // EncodeWAV encodes float32 mono samples into a WAV file at the given sample rate and bit depth.
-func EncodeWAV(samples []float32, format WAVFormat) ([]byte, error) {
+func EncodeWAV(samples []float32, format Format) ([]byte, error) {
 	if len(samples) == 0 {
 		return nil, fmt.Errorf("no samples to encode")
 	}
