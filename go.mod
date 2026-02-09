@@ -1,4 +1,4 @@
-module github.com/antflydb/termite/pkg/termite
+module github.com/antflydb/termite
 
 go 1.26rc2
 

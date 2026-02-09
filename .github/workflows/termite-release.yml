@@ -3,7 +3,7 @@ name: Termite Release
 on:
   push:
     tags:
-      - "termite-v*"  # Triggers on tags like termite-v1.0.0, termite-v0.1.0-rc1
+      - "v*"  # Triggers on tags like v1.0.0 (Go module root tag convention)
 
 permissions:
   contents: write      # Required for creating releases
@@ -73,11 +73,8 @@ jobs:
 
       - name: Extract version from tag
         run: |
-          # Strip termite- prefix from tag (termite-v1.0.0 -> v1.0.0)
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#termite-}"
-          echo "GORELEASER_CURRENT_TAG=${VERSION}" >> $GITHUB_ENV
-          echo "Extracted version: ${VERSION}"
+          echo "GORELEASER_CURRENT_TAG=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          echo "Release version: ${GITHUB_REF_NAME}"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

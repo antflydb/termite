@@ -1,15 +1,15 @@
 name: Termite Operator Container
 
 on:
-  # Trigger on tags matching termite-operator-v*
+  # Trigger on tags matching pkg/operator/v* (Go module tag convention)
   push:
     tags:
-      - "termite-operator-v*"
+      - "pkg/operator/v*"
   # Allow manual triggering
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "The release tag name (e.g., termite-operator-v0.1.0)"
+        description: "The release tag name (e.g., pkg/operator/v0.1.0)"
         required: false
         type: string
 
@@ -73,12 +73,12 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.auth.outputs.access_token }}
 
-      # Extract version from tag (e.g., termite-operator-v0.1.0 -> v0.1.0)
+      # Extract version from tag (e.g., pkg/operator/v0.1.0 -> v0.1.0)
       - name: Extract version
         id: version
         run: |
           TAG="${{ inputs.tag_name || github.ref_name }}"
-          VERSION="${TAG#termite-operator-}"
+          VERSION="${TAG#pkg/operator/}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "Extracted version: ${VERSION}"
 

@@ -1,5 +1,5 @@
 # GoReleaser configuration for Termite
-# Triggered by tags matching termite-v*
+# Triggered by tags matching v*
 #
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 # vim: set ts=2 sw=2 tw=0 fo=cnqoj
@@ -12,7 +12,7 @@ before:
   hooks:
     # Note: skip go generate since generated files are committed and openapi.yaml
     # has $ref paths to antfly-go/libaf that won't resolve in goreleaser context
-    - sh -c "cd pkg/termite && go mod tidy"
+    - go mod tidy
 
 builds:
   # Default pure Go build (no CGO required)
