@@ -48,6 +48,13 @@ make e2e E2E_TEST=TestName          # Run specific test
 make e2e E2E_TIMEOUT=15m            # Custom timeout (default: 15m)
 ```
 
+## Release Tags
+
+Tags follow Go module conventions and trigger CI:
+
+- `v*` — root module release + container build
+- `pkg/operator/v*` — operator + proxy container build
+
 ## Code Generation
 
 ```bash
