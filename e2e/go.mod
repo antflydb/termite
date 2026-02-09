@@ -3,9 +3,9 @@ module github.com/antflydb/termite/e2e
 go 1.26rc2
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260207045125-de26f4ffd0a5
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
+	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
-	github.com/antflydb/termite/pkg/termite v0.0.0-00010101000000-000000000000
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
@@ -18,10 +18,8 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/daulet/tokenizers v1.25.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eliben/go-sentencepiece v0.7.0 // indirect
-	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/getkin/kin-openapi v0.133.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -35,6 +33,7 @@ require (
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.3 // indirect
@@ -45,7 +44,6 @@ require (
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/minio-go/v7 v7.0.98 // indirect
-	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.2 // indirect
@@ -54,18 +52,12 @@ require (
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkoukk/tiktoken-go v0.1.8 // indirect
-	github.com/pkoukk/tiktoken-go-loader v0.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/schollz/progressbar/v2 v2.15.0 // indirect
-	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
-	github.com/sugarme/tokenizer v0.3.0 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -78,7 +70,7 @@ require (
 	golang.org/x/image v0.35.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
@@ -88,7 +80,7 @@ require (
 
 replace github.com/antflydb/termite/pkg/client => ../pkg/client
 
-replace github.com/antflydb/termite/pkg/termite => ../pkg/termite
+replace github.com/antflydb/termite => ../
 
 replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
 

@@ -4,7 +4,7 @@ go 1.26rc2
 
 require (
 	github.com/ajroetker/go-highway v0.0.4
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260207045125-de26f4ffd0a5
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -87,7 +87,7 @@ require (
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/mod v0.32.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.39.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect

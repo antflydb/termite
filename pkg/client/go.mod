@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/client
 go 1.26rc2
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260207045125-de26f4ffd0a5
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/oapi-codegen/runtime v1.1.2
 	github.com/stretchr/testify v1.11.1
@@ -48,7 +48,7 @@ require (
 	golang.org/x/mod v0.32.0 // indirect
 	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
