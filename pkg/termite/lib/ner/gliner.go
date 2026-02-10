@@ -683,25 +683,22 @@ func (p *PooledGLiNER) ExtractJSON(ctx context.Context, texts []string, schemas 
 		return nil, ErrNotSupported
 	}
 
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
-	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelineList[idx]
-
 	p.logger.Debug("Starting GLiNER2 JSON extraction",
-		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
 		zap.Int("num_schemas", len(schemas)))
 
-	// Process each text
+	// Process each text, acquiring a pipeline slot per-text so concurrent
+	// requests can interleave rather than one batch hogging a slot.
 	results := make([]ExtractionResult, len(texts))
 	for i, text := range texts {
-		result, err := extractJSONFromText(ctx, pipeline, text, schemas, config)
+		if err := p.sem.Acquire(ctx, 1); err != nil {
+			return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+		}
+		idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+		pipeline := p.pipelineList[idx]
+
+		result, err := extractJSONFromText(ctx, pipeline, text, schemas, config, p.logger)
+		p.sem.Release(1)
 		if err != nil {
 			p.logger.Error("GLiNER2 JSON extraction failed",
 				zap.Int("pipelineIndex", idx),
@@ -713,7 +710,6 @@ func (p *PooledGLiNER) ExtractJSON(ctx context.Context, texts []string, schemas 
 	}
 
 	p.logger.Debug("GLiNER2 JSON extraction completed",
-		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)))
 
 	return results, nil

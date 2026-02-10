@@ -17,8 +17,10 @@ package ner
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"go.uber.org/zap"
 )
 
 // extractJSONFromText processes a single text against all schemas using the pipeline.
@@ -28,11 +30,12 @@ func extractJSONFromText(
 	text string,
 	schemas []ExtractionSchema,
 	config ExtractionConfig,
+	logger *zap.Logger,
 ) (ExtractionResult, error) {
 	result := make(ExtractionResult, len(schemas))
 
 	for _, schema := range schemas {
-		instances, err := extractStructure(ctx, pipeline, text, schema, config)
+		instances, err := extractStructure(ctx, pipeline, text, schema, config, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -49,6 +52,7 @@ func extractStructure(
 	text string,
 	schema ExtractionSchema,
 	config ExtractionConfig,
+	logger *zap.Logger,
 ) ([]ExtractedInstance, error) {
 	// Collect field names as NER labels
 	labels := make([]string, len(schema.Fields))
@@ -88,9 +92,33 @@ func extractStructure(
 				bestSpan = s
 			}
 		}
+
+		// Short-circuit: if the span text exactly matches a choice (case-insensitive),
+		// use the canonical choice spelling directly and skip the inference call.
+		exactMatch := false
+		for _, c := range field.Choices {
+			if strings.EqualFold(bestSpan.Text, c) {
+				spansByField[field.Name] = []pipelines.GLiNERExtractedSpan{{
+					Text:  c,
+					Label: field.Name,
+					Start: bestSpan.Start,
+					End:   bestSpan.End,
+					Score: bestSpan.Score,
+				}}
+				exactMatch = true
+				break
+			}
+		}
+		if exactMatch {
+			continue
+		}
+
 		choice, score, err := pipeline.ClassifySpanText(ctx, bestSpan.Text, field.Choices)
 		if err != nil {
-			// Fall back to using the raw extracted text
+			logger.Warn("ClassifySpanText failed, using raw span text",
+				zap.String("field", field.Name),
+				zap.String("spanText", bestSpan.Text),
+				zap.Error(err))
 			continue
 		}
 		// Replace span text with the classified choice
@@ -106,7 +134,7 @@ func extractStructure(
 	}
 
 	// Assemble into instances using positional clustering
-	instances := assembleInstances(schema, spansByField, config)
+	instances := assembleInstances(schema, spansByField, config, len(text))
 
 	return instances, nil
 }
@@ -117,6 +145,7 @@ func assembleInstances(
 	schema ExtractionSchema,
 	spansByField map[string][]pipelines.GLiNERExtractedSpan,
 	config ExtractionConfig,
+	textLength int,
 ) []ExtractedInstance {
 	// Sort spans by position for each field
 	for field := range spansByField {
@@ -141,7 +170,7 @@ func assembleInstances(
 
 	// Cluster spans into instances based on positional gaps.
 	// A gap larger than the median span distance starts a new instance.
-	clusters := clusterSpans(allSpans)
+	clusters := clusterSpans(allSpans, config.ClusterGap, textLength)
 
 	// Build one instance per cluster
 	instances := make([]ExtractedInstance, 0, len(clusters))
@@ -164,7 +193,9 @@ func assembleInstances(
 }
 
 // clusterSpans groups spans into clusters based on positional proximity.
-func clusterSpans(spans []pipelines.GLiNERExtractedSpan) [][]pipelines.GLiNERExtractedSpan {
+// clusterGap overrides the adaptive threshold when > 0.
+// textLength is used for the adaptive floor calculation.
+func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLength int) [][]pipelines.GLiNERExtractedSpan {
 	if len(spans) <= 1 {
 		return [][]pipelines.GLiNERExtractedSpan{spans}
 	}
@@ -180,10 +211,15 @@ func clusterSpans(spans []pipelines.GLiNERExtractedSpan) [][]pipelines.GLiNERExt
 	}
 
 	// Use a threshold: gaps significantly larger than the median suggest a new instance.
-	// For v1, use a simple heuristic: gaps > 2x median gap start a new cluster,
-	// but only if we see repeated field labels (suggesting multiple instances).
+	// If clusterGap is explicitly set, use it; otherwise adapt to the text length.
 	medianGap := medianInt(gaps)
-	threshold := max(medianGap*3, 100) // At least 100 chars gap
+	var threshold int
+	if clusterGap > 0 {
+		threshold = clusterGap
+	} else {
+		minGap := min(100, textLength/10)
+		threshold = max(medianGap*3, minGap)
+	}
 
 	// Check if we have repeated field labels (necessary for multiple instances)
 	labelCounts := make(map[string]int)

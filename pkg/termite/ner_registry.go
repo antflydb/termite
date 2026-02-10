@@ -586,6 +586,7 @@ func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.C
 
 // GetJSONExtractor returns a model that supports structured JSON extraction.
 // Returns nil and an error if the model doesn't exist or doesn't support JSON extraction.
+// The caller MUST call Release() when done to allow the model to be evicted.
 func (r *NERRegistry) GetJSONExtractor(modelName string) (ner.JSONExtractor, error) {
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
@@ -601,6 +602,16 @@ func (r *NERRegistry) GetJSONExtractor(modelName string) (ner.JSONExtractor, err
 	if !extractor.SupportsJSONExtraction() {
 		return nil, fmt.Errorf("model %s does not support JSON extraction", modelName)
 	}
+
+	// Increment reference count to prevent eviction during use
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	count := r.refCounts[modelName]
+	r.refCountsMu.Unlock()
+
+	r.logger.Debug("Acquired JSON extractor",
+		zap.String("model", modelName),
+		zap.Int("refCount", count))
 
 	return extractor, nil
 }

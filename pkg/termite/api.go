@@ -927,7 +927,10 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 	// Update queue metrics
 	UpdateQueueMetrics(ln.requestQueue.Stats())
 
-	// Decode request
+	// Decode request manually instead of using the generated ExtractRequest type because
+	// the generated type uses `bool` with `omitzero`, making it impossible to distinguish
+	// an unset flat_ner (should default to true) from an explicitly set false value.
+	// Using *bool here lets us detect the difference.
 	var req struct {
 		Model             string              `json:"model"`
 		Texts             []string            `json:"texts"`
@@ -980,6 +983,7 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("model not found or does not support JSON extraction: %s", req.Model), http.StatusNotFound)
 		return
 	}
+	defer ln.nerRegistry.Release(req.Model)
 
 	// Perform extraction
 	results, err := extractor.ExtractJSON(r.Context(), req.Texts, schemas, config)
@@ -1052,7 +1056,9 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 }
 
 // extractFieldValueJSON is a response-only type for JSON serialization.
-// Uses *int pointers for Start/End so offset 0 is not silently dropped by omitzero.
+// We cannot use the generated ExtractFieldValue because it declares Start/End as
+// `int` with `omitzero`, which silently drops offset 0 during marshalling.
+// Using *int pointers here ensures offset 0 is serialized correctly.
 type extractFieldValueJSON struct {
 	Value string   `json:"value"`
 	Score float32  `json:"score,omitempty"`

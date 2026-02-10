@@ -111,9 +111,18 @@ func TestParseSchemaString(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "invalid type",
-			schema:  map[string][]string{"person": {"name::invalid"}},
-			wantErr: true,
+			name: "unknown suffix becomes part of field name",
+			schema: map[string][]string{
+				"person": {"name::invalid"},
+			},
+			want: []ExtractionSchema{
+				{
+					Name: "person",
+					Fields: []SchemaField{
+						{Name: "name::invalid", Type: FieldTypeStr},
+					},
+				},
+			},
 		},
 		{
 			name:    "empty field def",
@@ -167,6 +176,10 @@ func TestParseFieldDef(t *testing.T) {
 		{def: "role::[|b]", wantErr: true},
 		{def: "", wantErr: true},
 		{def: "::str", wantErr: true},
+		// Right-to-left parsing: field names containing "::"
+		{def: "person::name::str", want: SchemaField{Name: "person::name", Type: FieldTypeStr}},
+		{def: "person::name", want: SchemaField{Name: "person::name", Type: FieldTypeStr}},
+		{def: "a::b::[x|y]", want: SchemaField{Name: "a::b", Type: FieldTypeStr, Choices: []string{"x", "y"}}},
 	}
 
 	for _, tt := range tests {

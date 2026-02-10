@@ -58,6 +58,9 @@ type ExtractionConfig struct {
 	IncludeConfidence bool
 	// IncludeSpans if true, include span offsets in output.
 	IncludeSpans bool
+	// ClusterGap overrides the adaptive clustering gap threshold (in characters).
+	// Zero means adaptive (default): uses min(100, textLength/10) as a floor.
+	ClusterGap int
 }
 
 // DefaultExtractionConfig returns sensible defaults for extraction.
@@ -137,61 +140,90 @@ func ParseSchemaString(schema map[string][]string) ([]ExtractionSchema, error) {
 	return schemas, nil
 }
 
+// isTypeSpecifier returns true if s is a recognised type keyword.
+func isTypeSpecifier(s string) bool {
+	switch strings.ToLower(s) {
+	case "str", "string", "list", "array":
+		return true
+	}
+	return false
+}
+
+// isChoiceSpecifier returns true if s looks like "[opt1|opt2|...]".
+func isChoiceSpecifier(s string) bool {
+	return strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]")
+}
+
 // parseFieldDef parses a single field definition string.
+// Parsing proceeds right-to-left so that field names containing "::" are handled
+// correctly. The rightmost segments that are recognised type specifiers or choice
+// brackets are consumed; everything else is the field name.
+//
+// Examples:
+//
+//	"person::name::str"  → name="person::name", type=str
+//	"role::[a|b]"        → name="role", choices=[a,b]
+//	"a::b::[x|y]"        → name="a::b", choices=[x,y]
+//	"name"               → name="name", type=str (default)
 func parseFieldDef(def string) (SchemaField, error) {
 	def = strings.TrimSpace(def)
 	if def == "" {
 		return SchemaField{}, fmt.Errorf("empty field definition")
 	}
 
-	// Split on "::" separator
-	parts := strings.SplitN(def, "::", 3)
+	// Split on all "::" separators
+	parts := strings.Split(def, "::")
 
 	field := SchemaField{
-		Name: strings.TrimSpace(parts[0]),
 		Type: FieldTypeStr, // default
 	}
 
-	if field.Name == "" {
-		return SchemaField{}, fmt.Errorf("empty field name in %q", def)
-	}
-
-	if len(parts) == 1 {
-		// Just a name, default to str
-		return field, nil
-	}
-
-	// Check for choice fields: "field::[opt1|opt2]::str" or "field::[opt1|opt2]"
-	for i := 1; i < len(parts); i++ {
+	// Walk backward from the last segment, consuming specifiers.
+	// Once we hit a segment that is neither a type nor a choice, stop —
+	// the remaining (leftward) segments form the field name.
+	nameEnd := len(parts) // exclusive upper bound of name parts
+	for i := len(parts) - 1; i >= 1; i-- {
 		part := strings.TrimSpace(parts[i])
 
-		if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
-			// Choice list
+		if isChoiceSpecifier(part) {
 			choicesStr := part[1 : len(part)-1]
 			choices := strings.Split(choicesStr, "|")
 			for j, c := range choices {
 				choices[j] = strings.TrimSpace(c)
 			}
 			if len(choices) < 2 {
-				return SchemaField{}, fmt.Errorf("choice field %q must have at least 2 options", field.Name)
+				return SchemaField{}, fmt.Errorf("choice field must have at least 2 options in %q", def)
 			}
 			for _, c := range choices {
 				if c == "" {
-					return SchemaField{}, fmt.Errorf("choice field %q has empty option", field.Name)
+					return SchemaField{}, fmt.Errorf("choice field has empty option in %q", def)
 				}
 			}
 			field.Choices = choices
-		} else {
-			// Type specifier
+			nameEnd = i
+		} else if isTypeSpecifier(part) {
 			switch strings.ToLower(part) {
 			case "str", "string":
 				field.Type = FieldTypeStr
 			case "list", "array":
 				field.Type = FieldTypeList
-			default:
-				return SchemaField{}, fmt.Errorf("unknown field type %q in %q (expected str or list)", part, def)
 			}
+			nameEnd = i
+		} else {
+			// Not a specifier — stop consuming from the right
+			break
 		}
+	}
+
+	// Everything from parts[0..nameEnd) is the field name, joined back with "::".
+	nameParts := make([]string, nameEnd)
+	for i := 0; i < nameEnd; i++ {
+		nameParts[i] = strings.TrimSpace(parts[i])
+	}
+	field.Name = strings.Join(nameParts, "::")
+
+	if field.Name == "" {
+		return SchemaField{}, fmt.Errorf("empty field name in %q", def)
 	}
 
 	return field, nil
