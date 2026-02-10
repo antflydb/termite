@@ -31,11 +31,12 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Ensure PooledGLiNER implements Model, Recognizer, and Classifier interfaces.
+// Ensure PooledGLiNER implements Model, Recognizer, Classifier, and JSONExtractor interfaces.
 var (
-	_ Model      = (*PooledGLiNER)(nil)
-	_ Recognizer = (*PooledGLiNER)(nil)
-	_ Classifier = (*PooledGLiNER)(nil)
+	_ Model         = (*PooledGLiNER)(nil)
+	_ Recognizer    = (*PooledGLiNER)(nil)
+	_ Classifier    = (*PooledGLiNER)(nil)
+	_ JSONExtractor = (*PooledGLiNER)(nil)
 )
 
 // =============================================================================
@@ -653,6 +654,69 @@ func countClassifications(results [][]Classification) int {
 		count += len(classifications)
 	}
 	return count
+}
+
+// =============================================================================
+// JSON Extraction Methods (GLiNER2 only)
+// =============================================================================
+
+// SupportsJSONExtraction returns true if the model supports structured JSON extraction.
+func (p *PooledGLiNER) SupportsJSONExtraction() bool {
+	// Check config capabilities first
+	for _, cap := range p.config.Capabilities {
+		if cap == "json_extraction" {
+			return true
+		}
+	}
+	// Fall back to model type check: any GLiNER2 model can do extraction
+	return p.config.ModelType == GLiNERModelGLiNER2
+}
+
+// ExtractJSON extracts structured JSON from texts based on the given schemas.
+// Returns extraction results for each input text.
+func (p *PooledGLiNER) ExtractJSON(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error) {
+	if len(texts) == 0 {
+		return []ExtractionResult{}, nil
+	}
+
+	if !p.SupportsJSONExtraction() {
+		return nil, ErrNotSupported
+	}
+
+	// Acquire semaphore slot
+	if err := p.sem.Acquire(ctx, 1); err != nil {
+		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	}
+	defer p.sem.Release(1)
+
+	// Round-robin pipeline selection
+	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+	pipeline := p.pipelineList[idx]
+
+	p.logger.Debug("Starting GLiNER2 JSON extraction",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)),
+		zap.Int("num_schemas", len(schemas)))
+
+	// Process each text
+	results := make([]ExtractionResult, len(texts))
+	for i, text := range texts {
+		result, err := extractJSONFromText(ctx, pipeline, text, schemas, config)
+		if err != nil {
+			p.logger.Error("GLiNER2 JSON extraction failed",
+				zap.Int("pipelineIndex", idx),
+				zap.Int("textIndex", i),
+				zap.Error(err))
+			return nil, fmt.Errorf("extracting JSON from text %d: %w", i, err)
+		}
+		results[i] = result
+	}
+
+	p.logger.Debug("GLiNER2 JSON extraction completed",
+		zap.Int("pipelineIndex", idx),
+		zap.Int("num_texts", len(texts)))
+
+	return results, nil
 }
 
 // =============================================================================

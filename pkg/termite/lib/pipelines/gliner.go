@@ -440,6 +440,12 @@ func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string
 
 // processText processes a single text with the given labels.
 func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []string) ([]GLiNEREntity, error) {
+	return p.processTextWithConfig(ctx, text, labels, p.PipelineConfig.Threshold, p.PipelineConfig.FlatNER)
+}
+
+// processTextWithConfig runs NER extraction with explicit threshold and flatNER parameters,
+// avoiding mutation of shared PipelineConfig state for thread safety.
+func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string, labels []string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
 	if text == "" {
 		return nil, nil
 	}
@@ -471,7 +477,7 @@ func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []
 	}
 
 	// Parse outputs to extract entities
-	entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text)
+	entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text, threshold, flatNER)
 	if err != nil {
 		return nil, fmt.Errorf("parsing outputs: %w", err)
 	}
@@ -1148,7 +1154,7 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 }
 
 // parseOutputs extracts entities from model outputs.
-func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string) ([]GLiNEREntity, error) {
+func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
 	// Find the logits output
 	var logits []float32
 	var logitsShape []int64
@@ -1216,7 +1222,6 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	// - Second index is the span width index (0 = width 1, 1 = width 2, etc.)
 	// We need to map token positions back to word positions for entity extraction
 	var entities []GLiNEREntity
-	threshold := p.PipelineConfig.Threshold
 
 	// For now, use word-based iteration since we need word boundaries for entity text
 	// The logits are indexed by word position (after the prompt), not raw token position
@@ -1268,7 +1273,7 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	}
 
 	// Apply flat NER (remove overlapping entities) if enabled
-	if p.PipelineConfig.FlatNER && len(entities) > 1 {
+	if flatNER && len(entities) > 1 {
 		entities = p.removeOverlappingEntities(entities)
 	}
 
@@ -1693,6 +1698,85 @@ func LoadGLiNERPipeline(
 	pipeline := NewGLiNERPipeline(session, tokenizer, modelConfig, pipelineConfig, backendType)
 
 	return pipeline, backendType, nil
+}
+
+// ============================================================================
+// JSON Extraction Support
+// ============================================================================
+
+// GLiNERExtractedSpan represents a span extracted for JSON extraction.
+type GLiNERExtractedSpan struct {
+	// Text is the extracted span text
+	Text string
+	// Label is the field label this span was extracted for
+	Label string
+	// Start is the character offset where the span begins
+	Start int
+	// End is the character offset where the span ends (exclusive)
+	End int
+	// Score is the confidence score (0.0 to 1.0)
+	Score float32
+}
+
+// ExtractSpansForLabels extracts entity spans using the given labels and threshold.
+// This is a thin wrapper around processText for use by JSON extraction.
+func (p *GLiNERPipeline) ExtractSpansForLabels(
+	ctx context.Context,
+	text string,
+	labels []string,
+	threshold float32,
+	flatNER bool,
+) ([]GLiNERExtractedSpan, error) {
+	if text == "" || len(labels) == 0 {
+		return nil, nil
+	}
+
+	entities, err := p.processTextWithConfig(ctx, text, labels, threshold, flatNER)
+	if err != nil {
+		return nil, err
+	}
+
+	spans := make([]GLiNERExtractedSpan, len(entities))
+	for i, e := range entities {
+		spans[i] = GLiNERExtractedSpan{
+			Text:  e.Text,
+			Label: e.Label,
+			Start: e.Start,
+			End:   e.End,
+			Score: e.Score,
+		}
+	}
+	return spans, nil
+}
+
+// ClassifySpanText classifies a span of text against a set of choices.
+// Uses the GLiNER2 classification prompt format.
+// Returns the best matching choice and its score.
+func (p *GLiNERPipeline) ClassifySpanText(
+	ctx context.Context,
+	spanText string,
+	choices []string,
+) (string, float32, error) {
+	if spanText == "" || len(choices) == 0 {
+		return "", 0, nil
+	}
+
+	config := &GLiNER2ClassificationConfig{
+		Threshold:  0.0, // Accept any score
+		MultiLabel: false,
+		TopK:       1,
+	}
+
+	classifications, err := p.classifySingleText(ctx, spanText, choices, config)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if len(classifications) == 0 {
+		return choices[0], 0, nil // Default to first choice
+	}
+
+	return classifications[0].Label, classifications[0].Score, nil
 }
 
 // ============================================================================

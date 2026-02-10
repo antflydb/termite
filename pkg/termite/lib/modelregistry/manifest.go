@@ -75,6 +75,10 @@ const (
 	// CapabilityClassification indicates the model supports text classification
 	// (e.g., GLiNER2 models)
 	CapabilityClassification Capability = "classification"
+
+	// CapabilityJSONExtraction indicates the model supports structured JSON extraction
+	// (e.g., GLiNER2 models)
+	CapabilityJSONExtraction Capability = "json_extraction"
 )
 
 // ParseModelType parses a string into a ModelType
