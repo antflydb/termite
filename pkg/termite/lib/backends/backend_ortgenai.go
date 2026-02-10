@@ -78,23 +78,12 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 		opts = DefaultGenerativeOptions()
 	}
 
-	// Calculate MaxLength: ortgenai's MaxLength is total sequence length (input + output)
-	// API's MaxTokens is intended as output tokens only
+	// MaxLength is ortgenai's total sequence budget (input + output).
+	// Use the model's full context length so large inputs (e.g. RAG prompts) are not rejected.
+	// MaxTokens (output token limit) is enforced by the caller, not by ortgenai's MaxLength.
 	maxLength := s.contextLength
 	if maxLength <= 0 {
 		maxLength = 8192 // reasonable default
-	}
-	// Cap at model's context length if specified
-	if opts.MaxTokens > 0 && opts.MaxTokens < maxLength {
-		// Add buffer for input (estimate ~4x output for typical prompts)
-		maxLength = opts.MaxTokens * 5
-		if maxLength < 1024 {
-			maxLength = 1024 // minimum
-		}
-		// But don't exceed model's context
-		if s.contextLength > 0 && maxLength > s.contextLength {
-			maxLength = s.contextLength
-		}
 	}
 
 	genOpts := &ortgenai.GenerationOptions{
@@ -153,23 +142,12 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 		opts = DefaultGenerativeOptions()
 	}
 
-	// Calculate MaxLength: ortgenai's MaxLength is total sequence length (input + output)
-	// API's MaxTokens is intended as output tokens only
+	// MaxLength is ortgenai's total sequence budget (input + output).
+	// Use the model's full context length so large inputs (e.g. RAG prompts) are not rejected.
+	// MaxTokens (output token limit) is enforced by the caller, not by ortgenai's MaxLength.
 	maxLength := s.contextLength
 	if maxLength <= 0 {
 		maxLength = 8192 // reasonable default
-	}
-	// Cap at model's context length if specified
-	if opts.MaxTokens > 0 && opts.MaxTokens < maxLength {
-		// Add buffer for input (estimate ~4x output for typical prompts)
-		maxLength = opts.MaxTokens * 5
-		if maxLength < 1024 {
-			maxLength = 1024 // minimum
-		}
-		// But don't exceed model's context
-		if s.contextLength > 0 && maxLength > s.contextLength {
-			maxLength = s.contextLength
-		}
 	}
 
 	genOpts := &ortgenai.GenerationOptions{
