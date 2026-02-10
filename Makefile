@@ -4,8 +4,8 @@
 # ====================================================================================
 # Go Version Configuration
 # ====================================================================================
-# Use go1.26rc2 with SIMD experiment enabled for hardware SIMD acceleration
-GO := GOEXPERIMENT=simd go1.26rc2
+# Use Go 1.26 with SIMD experiment enabled for hardware SIMD acceleration
+GO := GOEXPERIMENT=simd go
 
 # Image URLs for building/pushing
 OPERATOR_IMG ?= ghcr.io/antflydb/termite-operator:latest
@@ -14,10 +14,10 @@ TERMITE_IMG ?= ghcr.io/antflydb/termite:latest
 VERSION ?= latest
 
 # Get the currently used golang install path
-ifeq (,$(shell go1.26rc2 env GOBIN))
-GOBIN=$(shell go1.26rc2 env GOPATH)/bin
+ifeq (,$(shell go env GOBIN))
+GOBIN=$(shell go env GOPATH)/bin
 else
-GOBIN=$(shell go1.26rc2 env GOBIN)
+GOBIN=$(shell go env GOBIN)
 endif
 
 # Local bin directory for tools

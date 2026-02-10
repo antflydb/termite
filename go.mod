@@ -1,6 +1,6 @@
 module github.com/antflydb/termite
 
-go 1.26rc2
+go 1.26.0
 
 require (
 	github.com/ajroetker/go-highway v0.0.4

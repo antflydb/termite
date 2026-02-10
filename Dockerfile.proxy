@@ -1,5 +1,5 @@
 # Build the termite-proxy binary
-FROM golang:1.26rc2-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /workspace
 

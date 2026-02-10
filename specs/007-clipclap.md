@@ -110,5 +110,5 @@ Both CLIP and CLAP produce 512-dim embeddings in different spaces. We train a li
 
 1. **Training**: `uv run scripts/train_clipclap_projection.py --output-dir /tmp/clipclap_projection` → produces `audio_projection.onnx`
 2. **Export**: `uv run scripts/export_model_to_registry.py embedder antflydb/clipclap --capabilities image,audio --output-dir /tmp/clipclap` → assembles full model
-3. **Unit tests**: `GOEXPERIMENT=simd go1.26rc2 test ./pkg/termite/lib/embeddings/... -run CLIPCLAP`
+3. **Unit tests**: `GOEXPERIMENT=simd go test ./pkg/termite/lib/embeddings/... -run CLIPCLAP`
 4. **E2E**: `make e2e E2E_TEST=TestCLIPCLAPE2E` — tests all 3 modalities + cross-modal similarity
