@@ -4,20 +4,18 @@ FROM golang:1.26-alpine AS builder
 WORKDIR /workspace
 
 # Copy the Go Modules manifests
-COPY pkg/termite/go.mod pkg/termite/go.mod
-COPY pkg/termite/go.sum pkg/termite/go.sum
+COPY go.mod go.mod
+COPY go.sum go.sum
 
 # Copy the go source
 COPY pkg/termite/ pkg/termite/
-
-WORKDIR /workspace/pkg/termite
 
 # Declare build arguments for multi-arch support (automatically provided by Docker Buildx)
 ARG TARGETOS
 ARG TARGETARCH
 
 # Build for the target platform
-RUN GOEXPERIMENT=simd CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o /workspace/termite ./cmd
+RUN GOEXPERIMENT=simd CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o /workspace/termite ./pkg/termite/cmd
 
 # Use distroless as minimal base image to package the termite binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details

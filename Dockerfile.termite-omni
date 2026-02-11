@@ -62,13 +62,11 @@ ENV CGO_LDFLAGS="-L${ONNXRUNTIME_ROOT}/lib -lonnxruntime"
 ENV LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:/usr/local/lib"
 
 # Copy the Go Modules manifests
-COPY pkg/termite/go.mod pkg/termite/go.mod
-COPY pkg/termite/go.sum pkg/termite/go.sum
+COPY go.mod go.mod
+COPY go.sum go.sum
 
 # Copy the go source
 COPY pkg/termite/ pkg/termite/
-
-WORKDIR /workspace/pkg/termite
 
 # Build with both ONNX and XLA tags (omni build)
 # CGO is required for both backends
@@ -77,7 +75,7 @@ RUN GOEXPERIMENT=simd CGO_ENABLED=1 \
     -tags="onnx,ORT,xla,XLA" \
     -ldflags="-s -w" \
     -o /workspace/termite \
-    ./cmd
+    ./pkg/termite/cmd
 
 # =============================================================================
 # Stage 2: Runtime
