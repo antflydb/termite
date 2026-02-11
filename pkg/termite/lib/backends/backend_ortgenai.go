@@ -80,7 +80,6 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 
 	// MaxLength is ortgenai's total sequence budget (input + output).
 	// Use the model's full context length so large inputs (e.g. RAG prompts) are not rejected.
-	// MaxTokens (output token limit) is enforced by the caller, not by ortgenai's MaxLength.
 	maxLength := s.contextLength
 	if maxLength <= 0 {
 		maxLength = 8192 // reasonable default
@@ -93,6 +92,12 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 
 	// Convert messages to ortgenai format
 	ortMessages := toOrtgenaiMessages(messages)
+
+	// Use a cancellable context so we can stop generation when MaxTokens is reached.
+	// ortgenai only has MaxLength (input + output budget), so we enforce the output
+	// token limit here by cancelling the context after receiving enough tokens.
+	genCtx, genCancel := context.WithCancel(ctx)
+	defer genCancel()
 
 	// Check for multimodal (images)
 	var outputChan <-chan ortgenai.SequenceDelta
@@ -106,26 +111,41 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 			return nil, fmt.Errorf("loading images: %w", loadErr)
 		}
 		defer images.Destroy()
-		outputChan, errChan, err = s.session.GenerateWithImages(ctx, [][]ortgenai.Message{ortMessages}, images, genOpts)
+		outputChan, errChan, err = s.session.GenerateWithImages(genCtx, [][]ortgenai.Message{ortMessages}, images, genOpts)
 	} else {
-		outputChan, errChan, err = s.session.Generate(ctx, [][]ortgenai.Message{ortMessages}, genOpts)
+		outputChan, errChan, err = s.session.Generate(genCtx, [][]ortgenai.Message{ortMessages}, genOpts)
 	}
 
 	if err != nil {
 		return nil, fmt.Errorf("starting generation: %w", err)
 	}
 
-	// Collect tokens
+	// Collect tokens, enforcing MaxTokens output limit
+	maxOutputTokens := opts.MaxTokens
 	var generatedText strings.Builder
 	var tokenCount int
 	for delta := range outputChan {
 		generatedText.WriteString(delta.Tokens)
 		tokenCount++
+		if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
+			genCancel()
+			break
+		}
 	}
 
-	// Check for errors
+	// Determine finish reason
+	finishReason := "stop"
+	if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
+		finishReason = "length"
+	}
+
+	// Drain remaining tokens after cancel (channel may still have buffered items)
+	for range outputChan {
+	}
+
+	// Check for errors (ignore context.Canceled since we may have cancelled intentionally)
 	for err := range errChan {
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "context canceled") {
 			return nil, fmt.Errorf("generation error: %w", err)
 		}
 	}
@@ -133,7 +153,7 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 	return &GenerativeResult{
 		Text:         generatedText.String(),
 		TokensUsed:   tokenCount,
-		FinishReason: "stop",
+		FinishReason: finishReason,
 	}, nil
 }
 
@@ -144,7 +164,6 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 
 	// MaxLength is ortgenai's total sequence budget (input + output).
 	// Use the model's full context length so large inputs (e.g. RAG prompts) are not rejected.
-	// MaxTokens (output token limit) is enforced by the caller, not by ortgenai's MaxLength.
 	maxLength := s.contextLength
 	if maxLength <= 0 {
 		maxLength = 8192 // reasonable default
@@ -158,21 +177,33 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 	// Convert messages to ortgenai format
 	ortMessages := toOrtgenaiMessages(messages)
 
+	// Use a cancellable context so we can stop generation when MaxTokens is reached.
+	genCtx, genCancel := context.WithCancel(ctx)
+
 	// Start generation
-	outputChan, ortErrChan, err := s.session.Generate(ctx, [][]ortgenai.Message{ortMessages}, genOpts)
+	outputChan, ortErrChan, err := s.session.Generate(genCtx, [][]ortgenai.Message{ortMessages}, genOpts)
 	if err != nil {
+		genCancel()
 		return nil, nil, fmt.Errorf("starting streaming generation: %w", err)
 	}
 
-	// Adapt channels
+	// Adapt channels, enforcing MaxTokens output limit
+	maxOutputTokens := opts.MaxTokens
 	tokenChan := make(chan GenerativeToken)
 	errChan := make(chan error, 1)
 
 	go func() {
 		defer close(tokenChan)
 		defer close(errChan)
+		defer genCancel()
 
+		var tokenCount int
 		for delta := range outputChan {
+			tokenCount++
+			if maxOutputTokens > 0 && tokenCount > maxOutputTokens {
+				genCancel()
+				break
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -180,8 +211,12 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 			}
 		}
 
+		// Drain remaining tokens after cancel
+		for range outputChan {
+		}
+
 		for err := range ortErrChan {
-			if err != nil {
+			if err != nil && !strings.Contains(err.Error(), "context canceled") {
 				select {
 				case errChan <- err:
 				default:

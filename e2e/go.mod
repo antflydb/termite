@@ -1,6 +1,6 @@
 module github.com/antflydb/termite/e2e
 
-go 1.26rc2
+go 1.26.0
 
 require (
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
@@ -12,7 +12,7 @@ require (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.4 // indirect
+	github.com/ajroetker/go-highway v0.0.5 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

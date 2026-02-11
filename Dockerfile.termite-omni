@@ -8,7 +8,7 @@
 #   docker build -f Dockerfile.termite-omni -t termite:omni .
 #
 # Build arguments:
-#   --build-arg GO_VERSION=1.26rc2           Override Go version
+#   --build-arg GO_VERSION=1.26              Override Go version
 #   --build-arg ONNXRUNTIME_VERSION=1.23.2   Override ONNX Runtime version
 #   --build-arg TOKENIZERS_VERSION=1.24.0    Override tokenizers version
 #   --build-arg LIBTPU_VERSION=1.12.0        Override libtpu version
@@ -19,7 +19,7 @@
 #   GOMLX_BACKEND               Force XLA backend (xla:tpu, xla:cuda, xla:cpu)
 #   PJRT_PLUGIN_LIBRARY_PATH    Custom PJRT plugin path
 
-ARG GO_VERSION=1.26rc2-bookworm
+ARG GO_VERSION=1.26-bookworm
 ARG ONNXRUNTIME_VERSION=1.23.2
 ARG TOKENIZERS_VERSION=1.24.0
 ARG LIBTPU_VERSION=1.12.0
@@ -62,13 +62,11 @@ ENV CGO_LDFLAGS="-L${ONNXRUNTIME_ROOT}/lib -lonnxruntime"
 ENV LD_LIBRARY_PATH="${ONNXRUNTIME_ROOT}/lib:/usr/local/lib"
 
 # Copy the Go Modules manifests
-COPY pkg/termite/go.mod pkg/termite/go.mod
-COPY pkg/termite/go.sum pkg/termite/go.sum
+COPY go.mod go.mod
+COPY go.sum go.sum
 
 # Copy the go source
 COPY pkg/termite/ pkg/termite/
-
-WORKDIR /workspace/pkg/termite
 
 # Build with both ONNX and XLA tags (omni build)
 # CGO is required for both backends
@@ -77,7 +75,7 @@ RUN GOEXPERIMENT=simd CGO_ENABLED=1 \
     -tags="onnx,ORT,xla,XLA" \
     -ldflags="-s -w" \
     -o /workspace/termite \
-    ./cmd
+    ./pkg/termite/cmd
 
 # =============================================================================
 # Stage 2: Runtime
