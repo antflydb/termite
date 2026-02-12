@@ -1049,13 +1049,8 @@ func (ln *TermiteNode) handleApiGenerate(w http.ResponseWriter, r *http.Request)
 		messages[i] = convertChatMessage(m)
 	}
 
-	// Set options from request, using defaults for zero values
-	opts := generation.GenerateOptions{
-		MaxTokens:   256,
-		Temperature: 1.0,
-		TopP:        1.0,
-		TopK:        50,
-	}
+	// Set options from request, using defaults for zero values.
+	opts := generation.DefaultGenerateOptions()
 	if req.MaxTokens > 0 {
 		opts.MaxTokens = req.MaxTokens
 	}

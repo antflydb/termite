@@ -90,6 +90,17 @@ type GenerateOptions struct {
 	ForcedFunctionName string               `json:"forced_function_name,omitempty"` // Force a specific function
 }
 
+// DefaultGenerateOptions returns sensible defaults for generation.
+// These mirror backends.DefaultGenerativeOptions().
+func DefaultGenerateOptions() GenerateOptions {
+	return GenerateOptions{
+		MaxTokens:   2048,
+		Temperature: 1.0,
+		TopP:        1.0,
+		TopK:        0,
+	}
+}
+
 // FunctionDefinition describes a function that can be called by the model.
 type FunctionDefinition struct {
 	Name        string         `json:"name"`
