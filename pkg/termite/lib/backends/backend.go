@@ -250,14 +250,24 @@ func ParseBackendSpec(s string) (BackendSpec, error) {
 }
 
 // ParseBackendPriority parses a list of backend:device strings into BackendSpecs.
+// Each element can be a single spec ("onnx", "xla:tpu") or comma-separated
+// ("onnx,xla,go") to handle environment variables where viper returns the
+// entire value as a single string slice element.
 func ParseBackendPriority(priority []string) ([]BackendSpec, error) {
 	specs := make([]BackendSpec, 0, len(priority))
 	for _, s := range priority {
-		spec, err := ParseBackendSpec(s)
-		if err != nil {
-			return nil, fmt.Errorf("invalid backend priority %q: %w", s, err)
+		// Split on commas to handle env vars like TERMITE_BACKEND_PRIORITY="onnx,xla,go"
+		for _, part := range strings.Split(s, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			spec, err := ParseBackendSpec(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid backend priority %q: %w", part, err)
+			}
+			specs = append(specs, spec)
 		}
-		specs = append(specs, spec)
 	}
 	return specs, nil
 }

@@ -311,6 +311,20 @@ func (r *TermitePoolReconciler) generateCompleteConfig(pool *antflyaiv1alpha1.Te
 		}
 	}
 
+	// Set backend_priority based on accelerator type.
+	// For CPU-only pools, the default from the container env var is sufficient.
+	// This must be a JSON array (not a comma-separated string) so that
+	// viper.GetStringSlice parses it correctly.
+	if _, exists := config["backend_priority"]; !exists && pool.Spec.Hardware.Accelerator != "" {
+		if strings.Contains(pool.Spec.Hardware.Accelerator, "tpu") {
+			// TPU: prefer XLA backend
+			config["backend_priority"] = []string{"xla", "onnx", "go"}
+		} else {
+			// GPU (nvidia, etc.): prefer ONNX backend (CUDA support)
+			config["backend_priority"] = []string{"onnx", "xla", "go"}
+		}
+	}
+
 	// Marshal to JSON
 	configJSON, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
