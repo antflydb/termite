@@ -13,7 +13,7 @@
 #   ./scripts/download-pjrt.sh [PJRT_VERSION]
 #
 # Example:
-#   ./scripts/download-pjrt.sh 0.83.1
+#   ./scripts/download-pjrt.sh 0.83.4
 #
 # The libraries will be downloaded to ./pjrt/<platform>/
 # Set PJRT_ROOT environment variable to this directory when building.
@@ -21,9 +21,9 @@
 set -euo pipefail
 
 # Default versions - update these when upgrading dependencies
-PJRT_VERSION="${1:-0.83.1}"
+PJRT_VERSION="${1:-0.83.4}"
 HUGOT_VERSION="${HUGOT_VERSION:-0.5.8}"
-TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.24.0}"
+TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.25.0}"
 
 # Base URLs
 PJRT_BASE_URL="https://github.com/gomlx/pjrt-cpu-binaries/releases/download/v${PJRT_VERSION}"
