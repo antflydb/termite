@@ -4,13 +4,13 @@ go 1.26.0
 
 require (
 	github.com/ajroetker/go-highway v0.0.5
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260209221803-cbd589ffd1cd
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/goccy/go-json v0.10.5
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260213001558-7e30eb33f307
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
 	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
@@ -25,7 +25,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/yalue/onnxruntime_go v1.25.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/image v0.35.0
+	golang.org/x/image v0.36.0
 	golang.org/x/sync v0.19.0
 )
 
@@ -43,12 +43,12 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-coreml v0.0.0-20260127212041-4eb23e6742f6 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260213001558-7e30eb33f307 // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
@@ -83,14 +83,14 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
-	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
+	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
-	golang.org/x/tools v0.41.0 // indirect
+	golang.org/x/term v0.40.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/tools v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
