@@ -83,6 +83,29 @@ class BaseExporter(ABC):
             except OSError:
                 pass  # Directory not empty, that's fine
 
+        # Normalize variant filenames to match Termite's convention.
+        # HuggingFace repos use inconsistent naming (model_fp16.onnx, model_int8.onnx, etc.)
+        # while Termite expects model_f16.onnx, model_i8.onnx, etc.
+        variant_rename_map = {
+            "model_fp16.onnx": "model_f16.onnx",
+            "model_int8.onnx": "model_i8.onnx",
+            "model_uint8.onnx": "model_i8.onnx",
+            "model_quantized.onnx": "model_i8.onnx",
+        }
+        for old_name, new_name in variant_rename_map.items():
+            old_path = self.output_dir / old_name
+            new_path = self.output_dir / new_name
+            if old_path.exists() and not new_path.exists():
+                old_path.rename(new_path)
+                logger.info(f"  Renamed: {old_name} -> {new_name}")
+            # Also rename associated external data files (.onnx_data)
+            for suffix in [".onnx_data", ".onnx.data"]:
+                old_data = self.output_dir / old_name.replace(".onnx", suffix)
+                new_data = self.output_dir / new_name.replace(".onnx", suffix)
+                if old_data.exists() and not new_data.exists():
+                    old_data.rename(new_data)
+                    logger.info(f"  Renamed: {old_data.name} -> {new_data.name}")
+
         return self.output_dir
 
     @abstractmethod

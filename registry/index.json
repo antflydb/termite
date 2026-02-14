@@ -2,19 +2,6 @@
   "schemaVersion": 2,
   "models": [
     {
-      "name": "clipclap",
-      "owner": "antflydb",
-      "type": "embedder",
-      "description": "",
-      "source": "antflydb/clipclap",
-      "size": 0,
-      "variants": [],
-      "capabilities": [
-        "multimodal",
-        "audio"
-      ]
-    },
-    {
       "name": "bge-small-en-v1.5",
       "owner": "BAAI",
       "type": "embedder",
@@ -47,6 +34,19 @@
       "variants": [],
       "owner": "Xenova",
       "capabilities": [
+        "audio"
+      ]
+    },
+    {
+      "name": "clipclap",
+      "type": "embedder",
+      "description": "",
+      "source": "antflydb/clipclap",
+      "size": 896121908,
+      "variants": [],
+      "owner": "antflydb",
+      "capabilities": [
+        "image",
         "audio"
       ]
     },
@@ -112,7 +112,7 @@
       "type": "embedder",
       "description": "",
       "source": "nomic-ai/nomic-embed-text-v1.5",
-      "size": 548257185,
+      "size": 1257076073,
       "variants": [
         "f16",
         "i8"
@@ -127,9 +127,10 @@
       "type": "embedder",
       "description": "",
       "source": "onnx-community/embeddinggemma-300m-ONNX",
-      "size": 1269543797,
+      "size": 2757239267,
       "variants": [
-        "f16"
+        "f16",
+        "i8"
       ],
       "owner": "onnx-community",
       "backends": [

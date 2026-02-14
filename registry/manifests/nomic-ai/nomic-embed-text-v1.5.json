@@ -1,11 +1,99 @@
 {
   "schemaVersion": 2,
   "name": "nomic-embed-text-v1.5",
-  "owner": "nomic-ai",
   "type": "embedder",
-  "description": "Long-context embeddings with Matryoshka support. Flexible dimensions (64-768) and 8K token context.",
+  "description": "",
   "source": "nomic-ai/nomic-embed-text-v1.5",
-  "files": [],
-  "variants": {},
-  "backends": ["onnx"]
+  "files": [
+    {
+      "name": "config.json",
+      "digest": "sha256:0168e0883705b0bf8f2b381e10f45a9f3e1ef4b13869b43c160e4c8a70ddf442",
+      "size": 2331
+    },
+    {
+      "name": "config_sentence_transformers.json",
+      "digest": "sha256:482f42ca954f5a8d55bccbb437b8d6eb721ce19059c78330c815045ddd1a87eb",
+      "size": 140
+    },
+    {
+      "name": "model.onnx",
+      "digest": "sha256:147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965",
+      "size": 547310275
+    },
+    {
+      "name": "model_bnb4.onnx",
+      "digest": "sha256:eb81cef4642ae7a81cd135c08d9622d85cff3fa25d5adabb3561fba908a48b75",
+      "size": 158035801
+    },
+    {
+      "name": "model_q4.onnx",
+      "digest": "sha256:314976b7b9fba83283f9c8a29ee680a159fa485f52104e3fa39d3d5858337003",
+      "size": 165113221
+    },
+    {
+      "name": "model_q4f16.onnx",
+      "digest": "sha256:3dbab6709d866709a8f9df237fe9a008bd9ccfc30e32e4b8f7f5e085cdb68bf1",
+      "size": 111076526
+    },
+    {
+      "name": "model_quantized.onnx",
+      "digest": "sha256:b4342336debaea79de872370664b0aaeb67dea4605513d00ee236ea871a81f27",
+      "size": 137296292
+    },
+    {
+      "name": "model_uint8.onnx",
+      "digest": "sha256:f7ee635388c995ea16eeeb50bc82269533b740be291ab13dc86df8977b5c31df",
+      "size": 137296322
+    },
+    {
+      "name": "modules.json",
+      "digest": "sha256:f93c503b32fa7bc2e186843f0add961caa14eb68f7be516e327df3cadbcd541a",
+      "size": 255
+    },
+    {
+      "name": "sentence_bert_config.json",
+      "digest": "sha256:9f40185cc7d04eb95cfc50571d1abde0dce45fb59d9c1321ef4b599d152cef4d",
+      "size": 120
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+      "size": 695
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "size": 711396
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:d7e0000bcc80134debd2222220427e6bf5fa20a669f40a0d0d1409cc18e0a9bc",
+      "size": 1191
+    },
+    {
+      "name": "vocab.txt",
+      "digest": "sha256:07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+      "size": 231508
+    }
+  ],
+  "owner": "nomic-ai",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+    "downloadedAt": "2026-02-14T01:11:14.375066+00:00"
+  },
+  "backends": [
+    "onnx"
+  ],
+  "variants": {
+    "f16": {
+      "name": "model_f16.onnx",
+      "digest": "sha256:cf5b5a86edb00f895561803cfc04729090a958340b8ca2ad76c143f565f6bb04",
+      "size": 273859028
+    },
+    "i8": {
+      "name": "model_i8.onnx",
+      "digest": "sha256:b4342336debaea79de872370664b0aaeb67dea4605513d00ee236ea871a81f27",
+      "size": 137296292
+    }
+  }
 }

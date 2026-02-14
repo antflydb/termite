@@ -10,6 +10,7 @@
 #     "onnx",
 #     "onnxscript",
 #     "onnxconverter-common",
+#     "einops",
 #     "gliner",
 #     "gliner2",
 #     "onnxruntime-genai",
@@ -295,8 +296,7 @@ def discover_model_files(model_dir: Path) -> tuple[list[dict], dict[str, list[di
             # Also check for external data files associated with variants
             # e.g., model_f16.onnx_data or model_f16.onnx.data
             for data_suffix in ONNX_DATA_SUFFIXES:
-                onnx_suffix = suffix  # e.g., "_f16.onnx"
-                variant_data_suffix = onnx_suffix.replace(".onnx", data_suffix.replace(".onnx", ""))
+                variant_data_suffix = suffix.replace(".onnx", data_suffix)
                 if filename.endswith(variant_data_suffix):
                     return variant_id
         return None
@@ -847,6 +847,29 @@ def download_onnx_model(model_id: str, output_dir: Path) -> Path:
             onnx_dir.rmdir()
         except OSError:
             pass  # Directory not empty, that's fine
+
+    # Normalize variant filenames to match Termite's convention.
+    # HuggingFace repos use inconsistent naming (model_fp16.onnx, model_int8.onnx, etc.)
+    # while Termite expects model_f16.onnx, model_i8.onnx, etc.
+    variant_rename_map = {
+        "model_fp16.onnx": "model_f16.onnx",
+        "model_int8.onnx": "model_i8.onnx",
+        "model_uint8.onnx": "model_i8.onnx",
+        "model_quantized.onnx": "model_i8.onnx",
+    }
+    for old_name, new_name in variant_rename_map.items():
+        old_path = output_dir / old_name
+        new_path = output_dir / new_name
+        if old_path.exists() and not new_path.exists():
+            old_path.rename(new_path)
+            logger.info(f"  Renamed: {old_name} -> {new_name}")
+        # Also rename associated external data files (.onnx_data)
+        for suffix in [".onnx_data", ".onnx.data"]:
+            old_data = output_dir / old_name.replace(".onnx", suffix)
+            new_data = output_dir / new_name.replace(".onnx", suffix)
+            if old_data.exists() and not new_data.exists():
+                old_data.rename(new_data)
+                logger.info(f"  Renamed: {old_data.name} -> {new_data.name}")
 
     return output_dir
 
@@ -2093,15 +2116,17 @@ def collect_digests_from_manifest(manifest: dict) -> set[str]:
 
     # Base files
     for f in manifest.get("files", []):
-        digests.add(f["digest"])
+        if "digest" in f:
+            digests.add(f["digest"])
 
     # Variant files
     for variant_info in manifest.get("variants", {}).values():
         if isinstance(variant_info, list):
             # Multimodal: list of files per variant
             for f in variant_info:
-                digests.add(f["digest"])
-        else:
+                if "digest" in f:
+                    digests.add(f["digest"])
+        elif isinstance(variant_info, dict) and "digest" in variant_info:
             # Single file variant
             digests.add(variant_info["digest"])
 
@@ -2164,13 +2189,17 @@ def garbage_collect(
     r2_manifest_keys = {obj["Key"] for obj in manifest_objects}
     logger.info(f"Found {len(r2_manifest_keys)} manifest files in R2")
 
-    # Extract model names from R2 manifests
+    # Extract model names from R2 manifests, normalizing to match index convention
+    # (the export script normalizes names via .replace("_", "-").lower())
     r2_model_names = set()
+    r2_name_to_keys: dict[str, list[str]] = {}  # normalized name → R2 keys
     for key in r2_manifest_keys:
         filename = key.split("/")[-1]
         if filename.endswith(".json"):
-            model_name = filename[:-5]  # Remove .json
-            r2_model_names.add(model_name)
+            raw_name = filename[:-5]  # Remove .json
+            normalized = raw_name.replace("_", "-").lower()
+            r2_model_names.add(normalized)
+            r2_name_to_keys.setdefault(normalized, []).append(key)
 
     # Step 3: Find orphaned manifests (in R2 but not in local index)
     logger.info("\n[3/6] Finding orphaned manifests...")
@@ -2242,17 +2271,18 @@ def garbage_collect(
 
     for key in r2_manifest_keys:
         filename = key.split("/")[-1]
-        model_name = filename[:-5] if filename.endswith(".json") else filename
+        raw_name = filename[:-5] if filename.endswith(".json") else filename
+        normalized_name = raw_name.replace("_", "-").lower()
 
         # Only collect blobs from manifests that will be kept
-        if model_name in valid_model_names:
+        if normalized_name in valid_model_names:
             manifest = fetch_manifest_from_r2(s3, bucket, key)
             if manifest:
                 digests = collect_digests_from_manifest(manifest)
                 referenced_digests.update(digests)
-                logger.info(f"  {model_name}: {len(digests)} blobs (keeping)")
-        elif model_name in orphaned_manifests:
-            logger.info(f"  {model_name}: (orphaned, will delete)")
+                logger.info(f"  {normalized_name}: {len(digests)} blobs (keeping)")
+        elif normalized_name in orphaned_manifests:
+            logger.info(f"  {normalized_name}: (orphaned, will delete)")
 
     logger.info(f"Total referenced blobs: {len(referenced_digests)}")
 
@@ -2363,14 +2393,16 @@ def garbage_collect(
     )
     logger.info(f"Updated R2 index.json ({len(local_index['models'])} models)")
 
-    # Delete orphaned manifests
+    # Delete orphaned manifests (use original R2 keys to handle owner dirs and casing)
     if orphaned_manifests:
         logger.info("\nDeleting orphaned manifests...")
+        deleted_count = 0
         for name in orphaned_manifests:
-            key = f"{prefix}/manifests/{name}.json"
-            s3.delete_object(Bucket=bucket, Key=key)
-            logger.info(f"  Deleted {name}.json")
-        logger.info(f"Deleted {len(orphaned_manifests)} orphaned manifests")
+            for key in r2_name_to_keys.get(name, []):
+                s3.delete_object(Bucket=bucket, Key=key)
+                logger.info(f"  Deleted {key}")
+                deleted_count += 1
+        logger.info(f"Deleted {deleted_count} orphaned manifest files")
 
     # Delete orphaned blobs
     if orphaned_blobs:
