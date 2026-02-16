@@ -2,17 +2,24 @@ module github.com/antflydb/termite/e2e
 
 go 1.26.0
 
+replace (
+	github.com/antflydb/termite => ../
+	github.com/antflydb/termite/pkg/client => ../pkg/client
+	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly006
+	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly006
+)
+
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260209062304-4244b0976527
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260215003431-8c8c80510b4f
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
-	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
+	github.com/gomlx/gomlx v0.26.1-0.20260215082710-429182c8560c
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.5 // indirect
+	github.com/ajroetker/go-highway v0.0.9 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -27,8 +34,8 @@ require (
 	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-coreml v0.0.0-20260127212041-4eb23e6742f6 // indirect
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260127212041-4eb23e6742f6 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260213001558-7e30eb33f307 // indirect
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260213001558-7e30eb33f307 // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
@@ -36,7 +43,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/klauspost/compress v1.18.3 // indirect
+	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/knights-analytics/ortgenai v0.0.3 // indirect
@@ -61,27 +68,19 @@ require (
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/yalue/onnxruntime_go v1.25.0 // indirect
+	github.com/yalue/onnxruntime_go v1.26.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
-	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
-	golang.org/x/image v0.35.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
+	golang.org/x/image v0.36.0 // indirect
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/term v0.40.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 )
-
-replace github.com/antflydb/termite/pkg/client => ../pkg/client
-
-replace github.com/antflydb/termite => ../
-
-replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
-
-replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly002

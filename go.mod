@@ -2,9 +2,14 @@ module github.com/antflydb/termite
 
 go 1.26.0
 
+replace (
+	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly006
+	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly006
+)
+
 require (
-	github.com/ajroetker/go-highway v0.0.7
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260213225909-bda8c908f339
+	github.com/ajroetker/go-highway v0.0.9
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260215003431-8c8c80510b4f
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -12,7 +17,7 @@ require (
 	github.com/goccy/go-json v0.10.5
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260213001558-7e30eb33f307
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
-	github.com/gomlx/gomlx v0.26.1-0.20260202131145-a62d0a5f1c52
+	github.com/gomlx/gomlx v0.26.1-0.20260215082710-429182c8560c
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
@@ -23,7 +28,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
-	github.com/yalue/onnxruntime_go v1.25.0
+	github.com/yalue/onnxruntime_go v1.26.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/image v0.36.0
 	golang.org/x/sync v0.19.0
@@ -98,7 +103,3 @@ require (
 )
 
 tool github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
-
-replace github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly003
-
-replace github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly002
