@@ -38,9 +38,31 @@ const (
 	ModelTypeDonut ModelType = "donut"
 	// ModelTypeFlorence is a multi-task vision model (microsoft/Florence-2-*)
 	ModelTypeFlorence ModelType = "florence"
+	// ModelTypePix2Struct is a visual question answering model (google/pix2struct-*)
+	ModelTypePix2Struct ModelType = "pix2struct"
+	// ModelTypeSurya is a multi-stage OCR model (vikp/surya_*)
+	ModelTypeSurya ModelType = "surya"
+	// ModelTypePaddleOCR is a multi-stage OCR model (PaddleOCR PP-OCRv4)
+	ModelTypePaddleOCR ModelType = "paddleocr"
 	// ModelTypeGeneric is used when the model type is unknown
 	ModelTypeGeneric ModelType = "generic"
 )
+
+// RecognizedRegion represents a text region with recognized text and bounding box.
+// Populated by multi-stage OCR models (Surya, PaddleOCR).
+type RecognizedRegion struct {
+	// Text is the recognized text within this region.
+	Text string
+
+	// BBox is the bounding box [x1, y1, x2, y2] in pixel coordinates.
+	BBox [4]float64
+
+	// Confidence is the recognition confidence score.
+	Confidence float64
+
+	// Label is the semantic label (e.g., "text", "title", "table"), set by layout analysis.
+	Label string
+}
 
 // Result contains the output from reading an image.
 type Result struct {
@@ -51,6 +73,10 @@ type Result struct {
 	// Fields are flattened with dot notation for nested structures (e.g., "menu.nm", "menu.price").
 	// This is populated by models like Donut that output structured data.
 	Fields map[string]string
+
+	// Regions contains individual text regions with bounding boxes and recognized text.
+	// Populated by multi-stage OCR models (Surya, PaddleOCR).
+	Regions []RecognizedRegion
 }
 
 // Reader provides OCR and document understanding for images.
@@ -195,6 +221,15 @@ func detectModelType(modelPath string) ModelType {
 	if strings.Contains(pathLower, "florence") {
 		return ModelTypeFlorence
 	}
+	if strings.Contains(pathLower, "pix2struct") {
+		return ModelTypePix2Struct
+	}
+	if strings.Contains(pathLower, "surya") {
+		return ModelTypeSurya
+	}
+	if strings.Contains(pathLower, "paddleocr") || strings.Contains(pathLower, "ppocr") {
+		return ModelTypePaddleOCR
+	}
 
 	return ModelTypeGeneric
 }
@@ -271,6 +306,10 @@ func (r *PooledReader) parseOutput(text string, prompt string) Result {
 	case ModelTypeFlorence:
 		// Florence outputs are typically cleaner
 		result.Text = FlorenceParseOCR(text)
+
+	case ModelTypePix2Struct:
+		// Pix2Struct outputs direct answers as plain text
+		result.Text = strings.TrimSpace(text)
 
 	case ModelTypeTrOCR, ModelTypeGeneric:
 		// TrOCR and generic models output plain text

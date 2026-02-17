@@ -15,6 +15,7 @@ READER_MODEL_PATTERNS = {
     "donut": ["donut", "Donut"],
     "nougat": ["nougat", "Nougat"],
     "florence": ["florence", "Florence"],
+    "pix2struct": ["pix2struct", "Pix2Struct"],
 }
 
 
@@ -41,6 +42,7 @@ def get_reader_output_format(reader_type: str) -> str:
         "nougat": "markdown",
         "trocr": "text",
         "florence": "text",
+        "pix2struct": "text",
         "generic": "text",
     }
     return formats.get(reader_type, "text")

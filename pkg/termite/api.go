@@ -1761,6 +1761,20 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 			Text:   r.Text,
 			Fields: r.Fields,
 		}
+
+		// Populate regions from multi-stage OCR models
+		if len(r.Regions) > 0 {
+			apiRegions := make([]TextRegion, len(r.Regions))
+			for j, region := range r.Regions {
+				apiRegions[j] = TextRegion{
+					Text:       region.Text,
+					Bbox:       []float32{float32(region.BBox[0]), float32(region.BBox[1]), float32(region.BBox[2]), float32(region.BBox[3])},
+					Confidence: float32(region.Confidence),
+					Label:      region.Label,
+				}
+			}
+			apiResults[i].Regions = apiRegions
+		}
 	}
 
 	// Send response

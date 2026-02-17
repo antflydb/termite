@@ -557,6 +557,148 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 }
 
 // =============================================================================
+// Pix2Struct Tests
+// =============================================================================
+
+const (
+	pix2structDocVQARepo = "google/pix2struct-docvqa-base"
+	pix2structDocVQAName = "google/pix2struct-docvqa-base"
+)
+
+// TestPix2StructModelDownload tests downloading the Pix2Struct model
+func TestPix2StructModelDownload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Pix2Struct download test in short mode")
+	}
+
+	modelPath := ensureHuggingFaceModel(t, pix2structDocVQAName, pix2structDocVQARepo, ModelTypeReader)
+
+	requiredFiles := []string{"config.json"}
+	for _, file := range requiredFiles {
+		filePath := filepath.Join(modelPath, file)
+		_, err := os.Stat(filePath)
+		assert.NoError(t, err, "Missing required file: %s", file)
+	}
+
+	// Check for ONNX encoder
+	hasEncoder := fileExists(filepath.Join(modelPath, "encoder_model.onnx")) ||
+		fileExists(filepath.Join(modelPath, "onnx", "encoder_model.onnx"))
+	if hasEncoder {
+		t.Logf("Found ONNX encoder model")
+	}
+}
+
+// TestPix2StructDocVQA tests Pix2Struct for document VQA
+func TestPix2StructDocVQA(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Pix2Struct DocVQA test in short mode")
+	}
+
+	pageImagePath := filepath.Join("testdata", "sample-page-1.png")
+	if _, err := os.Stat(pageImagePath); os.IsNotExist(err) {
+		t.Skip("Pre-rendered page image not found at:", pageImagePath)
+	}
+
+	modelPath := ensureHuggingFaceModel(t, pix2structDocVQAName, pix2structDocVQARepo, ModelTypeReader)
+
+	reader, err := createReader(t, modelPath)
+	if err != nil {
+		t.Skipf("Could not create Pix2Struct reader: %v", err)
+	}
+	defer reader.Close()
+
+	t.Logf("Reader model type: %s", reader.ModelType())
+
+	// Load test image
+	imgFile, err := os.Open(pageImagePath)
+	require.NoError(t, err)
+	defer imgFile.Close()
+
+	img, _, err := image.Decode(imgFile)
+	require.NoError(t, err)
+
+	// Test with VQA prompt
+	ctx := context.Background()
+	prompt := reading.Pix2StructDocVQAPrompt("What type of document is this?")
+	results, err := reader.Read(ctx, []image.Image{img}, prompt, 128)
+	if err != nil {
+		t.Skipf("Pix2Struct inference failed: %v", err)
+	}
+
+	t.Logf("Pix2Struct output: %q", results[0].Text)
+	assert.NotEmpty(t, results[0].Text, "Expected non-empty VQA answer")
+}
+
+// =============================================================================
+// Shared helpers for multi-stage reader tests
+// =============================================================================
+
+// createMultiStageReader creates a MultiStageReader from a model directory.
+func createMultiStageReader(t *testing.T, modelPath string) (*reading.MultiStageReader, error) {
+	t.Helper()
+
+	logger := zap.NewNop()
+	sessionManager := backends.NewSessionManager()
+
+	cfg := &reading.MultiStageReaderConfig{
+		ModelPath: modelPath,
+		Logger:    logger,
+	}
+
+	modelBackends := []string{"onnx", "xla", "go"}
+
+	reader, _, err := reading.NewMultiStageReader(cfg, sessionManager, modelBackends)
+	if err != nil {
+		return nil, err
+	}
+
+	return reader, nil
+}
+
+// loadTestImage loads a PNG image from the testdata directory.
+func loadTestImage(t *testing.T, path string) image.Image {
+	t.Helper()
+
+	imgFile, err := os.Open(path)
+	require.NoError(t, err)
+	defer imgFile.Close()
+
+	img, _, err := image.Decode(imgFile)
+	require.NoError(t, err)
+
+	return img
+}
+
+// assertValidRegions validates that OCR regions have valid bounding boxes and text.
+func assertValidRegions(t *testing.T, regions []reading.RecognizedRegion, imgBounds image.Rectangle) {
+	t.Helper()
+
+	require.NotEmpty(t, regions, "Expected at least one recognized region")
+
+	imgW := float64(imgBounds.Dx())
+	imgH := float64(imgBounds.Dy())
+
+	for i, region := range regions {
+		// BBox should be [x1, y1, x2, y2]
+		assert.GreaterOrEqual(t, region.BBox[0], 0.0,
+			"Region %d: x1 should be >= 0", i)
+		assert.GreaterOrEqual(t, region.BBox[1], 0.0,
+			"Region %d: y1 should be >= 0", i)
+		assert.LessOrEqual(t, region.BBox[2], imgW,
+			"Region %d: x2 should be <= image width", i)
+		assert.LessOrEqual(t, region.BBox[3], imgH,
+			"Region %d: y2 should be <= image height", i)
+		assert.Less(t, region.BBox[0], region.BBox[2],
+			"Region %d: x1 should be < x2", i)
+		assert.Less(t, region.BBox[1], region.BBox[3],
+			"Region %d: y1 should be < y2", i)
+
+		assert.NotEmpty(t, region.Text,
+			"Region %d: text should not be empty", i)
+	}
+}
+
+// =============================================================================
 // Character Mapping Utilities (for corrupted PDF text)
 // =============================================================================
 

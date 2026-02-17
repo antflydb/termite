@@ -618,6 +618,28 @@ components:
           default: 256
           example: 256
 
+    TextRegion:
+      type: object
+      required:
+        - text
+        - bbox
+      properties:
+        text:
+          type: string
+          description: Recognized text within the region
+        bbox:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: "Bounding box [x1, y1, x2, y2] in pixel coordinates"
+        confidence:
+          type: number
+          description: Recognition confidence score (0-1)
+        label:
+          type: string
+          description: Semantic label from layout analysis (e.g., text, title, table)
     ReadResult:
       type: object
       required:
@@ -639,6 +661,13 @@ components:
             menu.nm: "Coffee"
             menu.price: "$3.50"
             total: "$123.45"
+        regions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TextRegion"
+          description: |
+            Individual text regions with bounding boxes and recognized text.
+            Populated by multi-stage OCR models (Surya, PaddleOCR).
 
     ReadResponse:
       type: object

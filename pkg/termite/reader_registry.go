@@ -24,6 +24,7 @@ import (
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
+	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
@@ -305,27 +306,47 @@ func (r *ReaderRegistry) Release(modelName string) {
 		zap.Int("refCount", count))
 }
 
-// loadModel loads a reader model from disk
+// loadModel loads a reader model from disk.
+// Multi-stage OCR models (Surya, PaddleOCR) are dispatched to MultiStageReader,
+// while Vision2Seq models (TrOCR, Donut, Florence-2, Nougat, Pix2Struct) use PooledReader.
 func (r *ReaderRegistry) loadModel(info *ReaderModelInfo) (reading.Reader, error) {
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
-	// Load using pipeline-based reader
-	cfg := &reading.PooledReaderConfig{
-		ModelPath: info.Path,
-		PoolSize:  info.PoolSize,
-		Logger:    r.logger.Named(info.Name),
-	}
-	model, backendUsed, err := reading.NewPooledReader(cfg, r.sessionManager, nil)
-	if err != nil {
-		return nil, fmt.Errorf("loading reader model %s: %w", info.Name, err)
+	var model reading.Reader
+	var backendUsed backends.BackendType
+	var err error
+
+	// Check if this is a multi-stage OCR model
+	if pipelines.IsMultiStageModel(info.Path) {
+		r.logger.Info("Detected multi-stage OCR model",
+			zap.String("model", info.Name))
+
+		cfg := &reading.MultiStageReaderConfig{
+			ModelPath: info.Path,
+			Logger:    r.logger.Named(info.Name),
+		}
+		model, backendUsed, err = reading.NewMultiStageReader(cfg, r.sessionManager, nil)
+		if err != nil {
+			return nil, fmt.Errorf("loading multi-stage reader model %s: %w", info.Name, err)
+		}
+	} else {
+		// Load using pipeline-based Vision2Seq reader
+		cfg := &reading.PooledReaderConfig{
+			ModelPath: info.Path,
+			PoolSize:  info.PoolSize,
+			Logger:    r.logger.Named(info.Name),
+		}
+		model, backendUsed, err = reading.NewPooledReader(cfg, r.sessionManager, nil)
+		if err != nil {
+			return nil, fmt.Errorf("loading reader model %s: %w", info.Name, err)
+		}
 	}
 
 	r.logger.Info("Successfully loaded reader model",
 		zap.String("name", info.Name),
-		zap.String("backend", string(backendUsed)),
-		zap.Int("poolSize", info.PoolSize))
+		zap.String("backend", string(backendUsed)))
 
 	// Add to cache
 	r.cache.Set(info.Name, model, r.keepAlive)
