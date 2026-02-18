@@ -16,6 +16,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -50,7 +51,15 @@ func (r *TermitePool) validateTermitePool() error {
 		allErrors = append(allErrors, err.Error())
 	}
 
+	if err := r.validateEKSConfig(); err != nil {
+		allErrors = append(allErrors, err.Error())
+	}
+
 	if err := r.validateNoConflictingSettings(); err != nil {
+		allErrors = append(allErrors, err.Error())
+	}
+
+	if err := r.validateNoConflictingCloudProviders(); err != nil {
 		allErrors = append(allErrors, err.Error())
 	}
 
@@ -135,14 +144,17 @@ Example (TPU with Spot pricing):
 	return nil
 }
 
-// validateNoConflictingSettings validates that hardware.spot doesn't conflict with Autopilot
+// validateNoConflictingSettings validates that hardware.spot and nodeSelector don't conflict with Autopilot
 func (r *TermitePool) validateNoConflictingSettings() error {
 	if r.Spec.GKE == nil || !r.Spec.GKE.Autopilot {
 		return nil
 	}
 
 	// Check hardware.spot conflicts with Autopilot
-	if r.Spec.Hardware.Spot {
+	// Exception: TPU workloads CAN use hardware.spot=true even in Autopilot mode
+	// because TPU provisioning doesn't use compute class (node selectors drive it)
+	isTPUWorkload := strings.Contains(r.Spec.Hardware.Accelerator, "tpu")
+	if r.Spec.Hardware.Spot && !isTPUWorkload {
 		return fmt.Errorf(`spec.hardware.spot=true conflicts with spec.gke.autopilot=true
 
 Problem: GKE Autopilot uses compute classes for spot scheduling, not node selectors.
@@ -158,6 +170,84 @@ Example:
     gke:
       autopilot: true
       autopilotComputeClass: 'autopilot-spot'  # ADD THIS`)
+	}
+
+	// GKE Autopilot overrides node selectors with compute class annotations.
+	// User-specified node selectors would be silently dropped.
+	if len(r.Spec.NodeSelector) > 0 {
+		return fmt.Errorf(`spec.nodeSelector conflicts with spec.gke.autopilot=true
+
+Problem: GKE Autopilot manages node scheduling via compute classes, not node selectors.
+Any custom nodeSelector values will be overridden.
+
+Solution: Remove spec.nodeSelector when using GKE Autopilot.
+Use spec.gke.autopilotComputeClass to control scheduling instead`)
+	}
+
+	return nil
+}
+
+// validateEKSConfig validates AWS EKS-specific configuration
+func (r *TermitePool) validateEKSConfig() error {
+	if r.Spec.EKS == nil || !r.Spec.EKS.Enabled {
+		return nil
+	}
+
+	eks := r.Spec.EKS
+
+	// Validate IRSA role ARN format if specified
+	if eks.IRSARoleARN != "" {
+		// AWS IAM Role ARN format: arn:aws:iam::<account-id>:role/<role-name>
+		// Also supports arn:aws-cn (China) and arn:aws-us-gov (GovCloud)
+		irsaPattern := regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:iam::\d{12}:role/.+$`)
+		if !irsaPattern.MatchString(eks.IRSARoleARN) {
+			return fmt.Errorf(`invalid IRSA role ARN format: '%s'
+
+Problem: The IRSARoleARN must be a valid AWS IAM role ARN.
+
+Expected format: arn:aws:iam::<account-id>:role/<role-name>
+
+Example:
+  spec:
+    eks:
+      enabled: true
+      irsaRoleARN: "arn:aws:iam::123456789012:role/termite-model-registry-role"`, eks.IRSARoleARN)
+		}
+	}
+
+	// Validate instance types format (basic validation)
+	for _, instanceType := range eks.InstanceTypes {
+		if instanceType == "" {
+			return fmt.Errorf("spec.eks.instanceTypes contains an empty string")
+		}
+		// Basic format validation: should match patterns like m5.large, c5.xlarge, etc.
+		instancePattern := regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+$`)
+		if !instancePattern.MatchString(instanceType) {
+			return fmt.Errorf(`invalid instance type format: '%s'
+
+Problem: Instance type should follow AWS naming convention.
+
+Expected format: <family><generation>.<size>
+Examples: m5.large, c5.xlarge, r6i.2xlarge, t3.medium`, instanceType)
+		}
+	}
+
+	return nil
+}
+
+// validateNoConflictingCloudProviders validates that GKE and EKS are not both enabled
+func (r *TermitePool) validateNoConflictingCloudProviders() error {
+	gkeEnabled := r.Spec.GKE != nil && r.Spec.GKE.Autopilot
+	eksEnabled := r.Spec.EKS != nil && r.Spec.EKS.Enabled
+
+	if gkeEnabled && eksEnabled {
+		return fmt.Errorf(`both spec.gke.autopilot=true and spec.eks.enabled=true are set
+
+Problem: A pool cannot be configured for both GKE and EKS simultaneously.
+
+Solution: Enable only one cloud provider configuration:
+  Option 1 (GKE): Remove or set spec.eks.enabled=false
+  Option 2 (EKS): Remove or set spec.gke.autopilot=false`)
 	}
 
 	return nil
@@ -225,6 +315,41 @@ Problem: Removing GKE configuration would change the scheduling behavior.
 
 Solution: Delete and recreate the pool to change this setting.`)
 		}
+	}
+
+	// Check if both old and new have EKS config
+	if r.Spec.EKS != nil && old.Spec.EKS != nil {
+		// Check EKS enabled immutability
+		if r.Spec.EKS.Enabled != old.Spec.EKS.Enabled {
+			errors = append(errors, fmt.Sprintf(
+				`field 'spec.eks.enabled' is immutable after deployment
+
+Problem: Changing EKS mode requires pod recreation, which may disrupt model serving.
+
+Solution: Delete and recreate the pool to change this setting.
+
+Current value: %v
+Attempted change: %v`,
+				old.Spec.EKS.Enabled, r.Spec.EKS.Enabled))
+		}
+	}
+
+	// Check if EKS was added after initial creation (old had no EKS, new has EKS enabled)
+	if r.Spec.EKS != nil && r.Spec.EKS.Enabled && (old.Spec.EKS == nil || !old.Spec.EKS.Enabled) {
+		errors = append(errors, `field 'spec.eks.enabled' cannot be enabled after pool creation
+
+Problem: Enabling EKS mode on an existing pool requires pod recreation, which may disrupt model serving.
+
+Solution: Delete and recreate the pool with EKS configuration.`)
+	}
+
+	// Check if GKE Autopilot was added after initial creation
+	if r.Spec.GKE != nil && r.Spec.GKE.Autopilot && (old.Spec.GKE == nil || !old.Spec.GKE.Autopilot) {
+		errors = append(errors, `field 'spec.gke.autopilot' cannot be enabled after pool creation
+
+Problem: Enabling GKE Autopilot mode on an existing pool requires pod recreation, which may disrupt model serving.
+
+Solution: Delete and recreate the pool with GKE Autopilot configuration.`)
 	}
 
 	if len(errors) > 0 {

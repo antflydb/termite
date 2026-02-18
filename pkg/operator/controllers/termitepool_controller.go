@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -452,8 +453,14 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 		},
 	}
 
+	// Apply user-specified scheduling constraints first (tolerations, nodeSelector, affinity, topologySpreadConstraints)
+	applySchedulingConstraints(&sts.Spec.Template, pool.Spec.Tolerations, pool.Spec.NodeSelector, pool.Spec.Affinity, pool.Spec.TopologySpreadConstraints)
+
 	// Apply GKE-specific pod configuration (Autopilot compute classes, spot instances, etc.)
 	r.applyGKEPodSpec(&sts.Spec.Template, pool)
+
+	// Apply EKS-specific pod configuration (Spot instances, instance type affinity, etc.)
+	r.applyEKSPodSpec(&sts.Spec.Template, pool)
 
 	// Add TPU node selector and tolerations (works in both Standard and Autopilot modes)
 	// In Autopilot, TPU provisioning is triggered by these selectors, not by compute class
@@ -521,12 +528,14 @@ func computePodTemplateHash(template *corev1.PodTemplateSpec) string {
 }
 
 func (r *TermitePoolReconciler) reconcilePDB(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
-	// Get PDB configuration from either GKE config or Availability config
+	// Get PDB configuration from GKE, EKS, or Availability config
 	var pdbConfig *antflyaiv1alpha1.PDBConfig
 
-	// Prefer GKE PDB config if available
+	// Prefer cloud-provider PDB config, fall back to Availability config
 	if pool.Spec.GKE != nil && pool.Spec.GKE.PodDisruptionBudget != nil {
 		pdbConfig = pool.Spec.GKE.PodDisruptionBudget
+	} else if pool.Spec.EKS != nil && pool.Spec.EKS.PodDisruptionBudget != nil {
+		pdbConfig = pool.Spec.EKS.PodDisruptionBudget
 	} else if pool.Spec.Availability != nil && pool.Spec.Availability.PodDisruptionBudget != nil {
 		pdbConfig = pool.Spec.Availability.PodDisruptionBudget
 	}
@@ -861,6 +870,35 @@ func (r *TermitePoolReconciler) validatePool(pool *antflyaiv1alpha1.TermitePool)
 		}
 	}
 
+	// Validate EKS config
+	if pool.Spec.EKS != nil && pool.Spec.EKS.Enabled {
+		eks := pool.Spec.EKS
+		// Validate IRSA role ARN format if specified
+		if eks.IRSARoleARN != "" {
+			irsaPattern := regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:iam::\d{12}:role/.+$`)
+			if !irsaPattern.MatchString(eks.IRSARoleARN) {
+				return fmt.Errorf("invalid IRSA role ARN format: '%s'", eks.IRSARoleARN)
+			}
+		}
+		// Validate instance types format
+		for _, instanceType := range eks.InstanceTypes {
+			if instanceType == "" {
+				return fmt.Errorf("spec.eks.instanceTypes contains an empty string")
+			}
+			instancePattern := regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+$`)
+			if !instancePattern.MatchString(instanceType) {
+				return fmt.Errorf("invalid instance type format: '%s'", instanceType)
+			}
+		}
+	}
+
+	// Validate no conflicting cloud providers
+	gkeEnabled := pool.Spec.GKE != nil && pool.Spec.GKE.Autopilot
+	eksEnabled := pool.Spec.EKS != nil && pool.Spec.EKS.Enabled
+	if gkeEnabled && eksEnabled {
+		return fmt.Errorf("both spec.gke.autopilot=true and spec.eks.enabled=true are set; a pool cannot be configured for both GKE and EKS simultaneously")
+	}
+
 	// Validate replica counts
 	if pool.Spec.Replicas.Min < 0 {
 		return fmt.Errorf("spec.replicas.min must be >= 0, got %d", pool.Spec.Replicas.Min)
@@ -874,6 +912,148 @@ func (r *TermitePoolReconciler) validatePool(pool *antflyaiv1alpha1.TermitePool)
 	}
 
 	return nil
+}
+
+// applySchedulingConstraints applies user-specified scheduling constraints to the pod template.
+// This is called before cloud-provider-specific functions so that their entries merge on top.
+func applySchedulingConstraints(podTemplate *corev1.PodTemplateSpec, tolerations []corev1.Toleration, nodeSelector map[string]string, affinity *corev1.Affinity, topologySpreadConstraints []corev1.TopologySpreadConstraint) {
+	// Apply tolerations
+	podTemplate.Spec.Tolerations = append(podTemplate.Spec.Tolerations, tolerations...)
+
+	// Apply node selector (merge into existing map)
+	if len(nodeSelector) > 0 {
+		if podTemplate.Spec.NodeSelector == nil {
+			podTemplate.Spec.NodeSelector = make(map[string]string)
+		}
+		for k, v := range nodeSelector {
+			podTemplate.Spec.NodeSelector[k] = v
+		}
+	}
+
+	// Apply affinity (deep merge to coexist with cloud-provider entries)
+	if affinity != nil {
+		if podTemplate.Spec.Affinity == nil {
+			podTemplate.Spec.Affinity = affinity.DeepCopy()
+		} else {
+			if affinity.NodeAffinity != nil {
+				if podTemplate.Spec.Affinity.NodeAffinity == nil {
+					podTemplate.Spec.Affinity.NodeAffinity = affinity.NodeAffinity.DeepCopy()
+				} else {
+					podTemplate.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+						podTemplate.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+						affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution...,
+					)
+					if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+						podTemplate.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.DeepCopy()
+					}
+				}
+			}
+			if affinity.PodAffinity != nil {
+				podTemplate.Spec.Affinity.PodAffinity = affinity.PodAffinity.DeepCopy()
+			}
+			if affinity.PodAntiAffinity != nil {
+				podTemplate.Spec.Affinity.PodAntiAffinity = affinity.PodAntiAffinity.DeepCopy()
+			}
+		}
+	}
+
+	// Apply topology spread constraints
+	if len(topologySpreadConstraints) > 0 {
+		podTemplate.Spec.TopologySpreadConstraints = append(podTemplate.Spec.TopologySpreadConstraints, topologySpreadConstraints...)
+	}
+}
+
+// applyEKSPodSpec applies AWS EKS-specific configuration to pod template spec
+func (r *TermitePoolReconciler) applyEKSPodSpec(podTemplate *corev1.PodTemplateSpec, pool *antflyaiv1alpha1.TermitePool) {
+	// Only apply EKS configuration if EKS is enabled
+	if pool.Spec.EKS == nil || !pool.Spec.EKS.Enabled {
+		return
+	}
+
+	eks := pool.Spec.EKS
+
+	// Initialize annotations if nil
+	if podTemplate.Annotations == nil {
+		podTemplate.Annotations = make(map[string]string)
+	}
+
+	// Initialize nodeSelector if nil
+	if podTemplate.Spec.NodeSelector == nil {
+		podTemplate.Spec.NodeSelector = make(map[string]string)
+	}
+
+	// Apply Spot Instance configuration
+	if eks.UseSpotInstances {
+		// EKS Spot Instances use the capacity type label
+		// This works with both managed node groups and Karpenter
+		podTemplate.Spec.NodeSelector["eks.amazonaws.com/capacityType"] = "SPOT"
+
+		// Set termination grace period for graceful shutdown on Spot interruption
+		// AWS gives 2-minute warning before Spot termination
+		gracePeriod := int64(25)
+		podTemplate.Spec.TerminationGracePeriodSeconds = &gracePeriod
+
+		// Add toleration for Spot Instance taint (common pattern)
+		spotToleration := corev1.Toleration{
+			Key:      "eks.amazonaws.com/capacityType",
+			Operator: corev1.TolerationOpEqual,
+			Value:    "SPOT",
+			Effect:   corev1.TaintEffectNoSchedule,
+		}
+		podTemplate.Spec.Tolerations = appendTolerationIfNotExists(podTemplate.Spec.Tolerations, spotToleration)
+	}
+
+	// Apply instance type node affinity if specified
+	if len(eks.InstanceTypes) > 0 {
+		r.applyEKSInstanceTypeAffinity(podTemplate, eks.InstanceTypes)
+	}
+}
+
+// applyEKSInstanceTypeAffinity adds node affinity to prefer specific EC2 instance types
+func (r *TermitePoolReconciler) applyEKSInstanceTypeAffinity(podTemplate *corev1.PodTemplateSpec, instanceTypes []string) {
+	if len(instanceTypes) == 0 {
+		return
+	}
+
+	// Create node affinity for instance types
+	instanceTypeRequirement := corev1.NodeSelectorRequirement{
+		Key:      "node.kubernetes.io/instance-type",
+		Operator: corev1.NodeSelectorOpIn,
+		Values:   instanceTypes,
+	}
+
+	// Initialize affinity if nil
+	if podTemplate.Spec.Affinity == nil {
+		podTemplate.Spec.Affinity = &corev1.Affinity{}
+	}
+	if podTemplate.Spec.Affinity.NodeAffinity == nil {
+		podTemplate.Spec.Affinity.NodeAffinity = &corev1.NodeAffinity{}
+	}
+
+	// Use preferred scheduling (soft affinity) to allow fallback to other instance types
+	// This prevents pods from being unschedulable if preferred types aren't available
+	weight := int32(100)
+	preferredTerm := corev1.PreferredSchedulingTerm{
+		Weight: weight,
+		Preference: corev1.NodeSelectorTerm{
+			MatchExpressions: []corev1.NodeSelectorRequirement{instanceTypeRequirement},
+		},
+	}
+
+	podTemplate.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution = append(
+		podTemplate.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution,
+		preferredTerm,
+	)
+}
+
+// appendTolerationIfNotExists adds a toleration if it doesn't already exist
+func appendTolerationIfNotExists(tolerations []corev1.Toleration, newToleration corev1.Toleration) []corev1.Toleration {
+	for _, t := range tolerations {
+		if t.Key == newToleration.Key && t.Operator == newToleration.Operator && t.Value == newToleration.Value {
+			return tolerations
+		}
+	}
+	return append(tolerations, newToleration)
 }
 
 // SetupWithManager sets up the controller with the Manager

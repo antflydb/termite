@@ -95,6 +95,31 @@ type TermitePoolSpec struct {
 	// +optional
 	GKE *GKEConfig `json:"gke,omitempty"`
 
+	// EKS defines AWS EKS-specific configuration (optional)
+	// +optional
+	EKS *EKSConfig `json:"eks,omitempty"`
+
+	// Tolerations defines tolerations for pod scheduling.
+	// Merged with any cloud-provider-specific tolerations (e.g., EKS Spot).
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// NodeSelector defines node selector labels for pod scheduling.
+	// Merged with any cloud-provider-specific node selectors.
+	// Note: GKE Autopilot mode overrides node selectors with compute class annotations.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Affinity defines affinity rules for pod scheduling.
+	// Cloud-provider-specific affinity rules (e.g., EKS instance type preference)
+	// are appended to any user-specified node affinity preferred terms.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
+
+	// TopologySpreadConstraints describes how pods should spread across topology domains.
+	// +optional
+	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
+
 	// Image is the Termite container image
 	// +optional
 	Image string `json:"image,omitempty"`
@@ -336,6 +361,36 @@ type GKEConfig struct {
 	AutopilotComputeClass string `json:"autopilotComputeClass,omitempty"`
 
 	// PodDisruptionBudget enables automatic PodDisruptionBudget creation
+	// +optional
+	PodDisruptionBudget *PDBConfig `json:"podDisruptionBudget,omitempty"`
+}
+
+// EKSConfig defines AWS EKS-specific configuration
+type EKSConfig struct {
+	// Enabled enables EKS-specific optimizations and configurations
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// UseSpotInstances enables EC2 Spot Instances for cost savings (up to 90%)
+	// When enabled, pods will be scheduled on Spot Instance nodes
+	// +optional
+	UseSpotInstances bool `json:"useSpotInstances,omitempty"`
+
+	// InstanceTypes specifies preferred EC2 instance types for node scheduling
+	// Examples: ["m5.large", "m5.xlarge", "m6i.large"]
+	// Used with node affinity to target specific instance types
+	// +optional
+	InstanceTypes []string `json:"instanceTypes,omitempty"`
+
+	// IRSARoleARN is the ARN of the IAM role for IRSA (IAM Roles for Service Accounts)
+	// Format: arn:aws:iam::<account-id>:role/<role-name>
+	// When specified, the operator will annotate the ServiceAccount with this role
+	// This enables pods to assume IAM roles for AWS API access (e.g., S3 model registry)
+	// +optional
+	IRSARoleARN string `json:"irsaRoleARN,omitempty"`
+
+	// PodDisruptionBudget enables automatic PodDisruptionBudget creation
+	// Recommended for production deployments to prevent excessive disruption
 	// +optional
 	PodDisruptionBudget *PDBConfig `json:"podDisruptionBudget,omitempty"`
 }
