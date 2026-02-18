@@ -108,6 +108,18 @@
       ]
     },
     {
+      "name": "paddleocr-onnx",
+      "type": "reader",
+      "description": "",
+      "source": "monkt/paddleocr-onnx",
+      "size": 10262574,
+      "variants": [],
+      "owner": "monkt",
+      "capabilities": [
+        "paddleocr"
+      ]
+    },
+    {
       "name": "nomic-embed-text-v1.5",
       "type": "embedder",
       "description": "",

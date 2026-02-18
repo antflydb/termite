@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "name": "paddleocr-onnx",
+  "type": "reader",
+  "description": "",
+  "source": "monkt/paddleocr-onnx",
+  "files": [
+    {
+      "name": "det.onnx",
+      "digest": "sha256:ee40e80071ba3a320d4efda75f3e22047a7d049e9bf7bcaaf9daea23fc21b935",
+      "size": 2429873
+    },
+    {
+      "name": "ppocr_keys_v1.txt",
+      "digest": "sha256:e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6",
+      "size": 1416
+    },
+    {
+      "name": "rec.onnx",
+      "digest": "sha256:4e16deb22c4da6468bdca539b2cd3c8687825538b67109177c47d359ab994cd7",
+      "size": 7830888
+    },
+    {
+      "name": "termite_metadata.json",
+      "digest": "sha256:43c527a6da1fffee0893b7406b8ae5d1a32b894ccb07ea27aae2cd982135c866",
+      "size": 397
+    }
+  ],
+  "owner": "monkt",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/monkt/paddleocr-onnx",
+    "downloadedAt": "2026-02-18T21:38:12.004354+00:00"
+  },
+  "capabilities": [
+    "paddleocr"
+  ]
+}
