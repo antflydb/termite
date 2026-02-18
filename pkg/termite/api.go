@@ -181,6 +181,20 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.readerRegistry != nil {
 		resp.Readers = t.node.readerRegistry.List()
+
+		capsMap := t.node.readerRegistry.ListWithCapabilities()
+		if len(capsMap) > 0 {
+			resp.ReaderInfo = make(map[string]ReaderModelInfo, len(capsMap))
+			for name, caps := range capsMap {
+				enumCaps := make([]ReaderCapability, len(caps))
+				for i, c := range caps {
+					enumCaps[i] = ReaderCapability(c)
+				}
+				resp.ReaderInfo[name] = ReaderModelInfo{
+					Capabilities: enumCaps,
+				}
+			}
+		}
 	}
 
 	if t.node.transcriberRegistry != nil {

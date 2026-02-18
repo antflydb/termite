@@ -38,6 +38,16 @@ class PaddleOCRExporter(BaseExporter):
     2. Download Paddle format models + convert via paddle2onnx
     """
 
+    def __init__(
+        self,
+        model_id: str,
+        output_dir: Path,
+        variants: list[str] | None = None,
+        trust_remote_code: bool = False,
+    ):
+        super().__init__(model_id, output_dir, variants)
+        self.trust_remote_code = trust_remote_code
+
     def export(self) -> Path:
         """Export PaddleOCR models to ONNX format."""
         logger.info(f"Exporting PaddleOCR model: {self.model_id}")
@@ -51,7 +61,14 @@ class PaddleOCRExporter(BaseExporter):
         return self._export_via_paddle2onnx()
 
     def _try_download_preexported(self) -> bool:
-        """Try to download pre-exported ONNX models from HuggingFace."""
+        """Try to download pre-exported ONNX models from HuggingFace.
+
+        The monkt/paddleocr-onnx repo organizes files in subdirectories:
+          detection/v3/det.onnx, languages/english/rec.onnx, etc.
+        We download just the needed files and flatten them to the output dir.
+        """
+        import shutil
+
         from huggingface_hub import hf_hub_download, list_repo_files
 
         try:
@@ -69,15 +86,41 @@ class PaddleOCRExporter(BaseExporter):
 
         logger.info("Found pre-exported ONNX models, downloading...")
 
-        for filename in repo_files:
-            # Skip large non-ONNX files
-            if filename.endswith((".safetensors", ".bin", ".h5", ".pdparams")):
-                continue
-            if filename.startswith("."):
-                continue
+        # Download detection model (prefer v3 for broad compatibility)
+        det_candidates = [f for f in repo_files if f.endswith("/det.onnx")]
+        det_file = next((f for f in det_candidates if "/v3/" in f), None) or (det_candidates[0] if det_candidates else None)
+        if det_file is None:
+            # Flat structure: det.onnx at root
+            det_file = next((f for f in repo_files if f == "det.onnx"), None)
+        if det_file:
+            logger.info(f"  Downloading detection: {det_file}")
+            local_path = hf_hub_download(self.model_id, det_file)
+            shutil.copy2(local_path, self.output_dir / "det.onnx")
 
-            logger.info(f"  Downloading: {filename}")
-            hf_hub_download(self.model_id, filename, local_dir=self.output_dir)
+        # Download English recognition model and dictionary
+        lang = "english"
+        rec_candidates = [f for f in repo_files if f.endswith("/rec.onnx")]
+        rec_file = next((f for f in rec_candidates if f"/{lang}/" in f), None) or (rec_candidates[0] if rec_candidates else None)
+        if rec_file is None:
+            rec_file = next((f for f in repo_files if f == "rec.onnx"), None)
+        if rec_file:
+            logger.info(f"  Downloading recognition: {rec_file}")
+            local_path = hf_hub_download(self.model_id, rec_file)
+            shutil.copy2(local_path, self.output_dir / "rec.onnx")
+
+        # Download character dictionary
+        dict_candidates = [f for f in repo_files if f.endswith("/dict.txt")]
+        dict_file = next((f for f in dict_candidates if f"/{lang}/" in f), None) or (dict_candidates[0] if dict_candidates else None)
+        if dict_file is None:
+            dict_file = next((f for f in repo_files if f == "ppocr_keys_v1.txt"), None)
+        if dict_file:
+            logger.info(f"  Downloading dictionary: {dict_file}")
+            local_path = hf_hub_download(self.model_id, dict_file)
+            shutil.copy2(local_path, self.output_dir / "ppocr_keys_v1.txt")
+
+        if not (self.output_dir / "det.onnx").exists() or not (self.output_dir / "rec.onnx").exists():
+            logger.warning("Could not find detection and recognition ONNX files")
+            return False
 
         self._create_metadata("preexported")
         return True

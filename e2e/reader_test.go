@@ -698,6 +698,14 @@ func assertValidRegions(t *testing.T, regions []reading.RecognizedRegion, imgBou
 	}
 }
 
+// truncateString truncates a string to maxLen, appending "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // =============================================================================
 // Character Mapping Utilities (for corrupted PDF text)
 // =============================================================================

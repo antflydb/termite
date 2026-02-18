@@ -127,6 +127,8 @@ type ReaderRegistryInterface interface {
 	Release(modelName string)
 	// List returns all available model names
 	List() []string
+	// ListWithCapabilities returns a map of model name to capabilities
+	ListWithCapabilities() map[string][]string
 	// Close shuts down the registry and releases resources
 	Close() error
 }

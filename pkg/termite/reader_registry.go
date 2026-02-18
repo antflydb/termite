@@ -30,11 +30,13 @@ import (
 	"go.uber.org/zap"
 )
 
-// ReaderModelInfo holds metadata about a discovered reader model (not loaded yet)
-type ReaderModelInfo struct {
-	Name     string
-	Path     string
-	PoolSize int
+// ReaderModelEntry holds metadata about a discovered reader model (not loaded yet).
+// Distinct from the OpenAPI-generated ReaderModelEntry used in API responses.
+type ReaderModelEntry struct {
+	Name         string
+	Path         string
+	PoolSize     int
+	Capabilities []string
 }
 
 // ReaderRegistry manages reader models with lazy loading and TTL-based unloading
@@ -44,7 +46,7 @@ type ReaderRegistry struct {
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
-	discovered map[string]*ReaderModelInfo
+	discovered map[string]*ReaderModelEntry
 	mu         sync.RWMutex
 
 	// Loaded models with TTL cache
@@ -92,7 +94,7 @@ func NewReaderRegistry(
 		modelsDir:       config.ModelsDir,
 		sessionManager:  sessionManager,
 		logger:          logger,
-		discovered:      make(map[string]*ReaderModelInfo),
+		discovered:      make(map[string]*ReaderModelEntry),
 		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
@@ -230,10 +232,17 @@ func (r *ReaderRegistry) discoverModels() error {
 				registryName = registryFullName + "-" + variantID
 			}
 
-			r.discovered[registryName] = &ReaderModelInfo{
-				Name:     registryName,
-				Path:     modelPath,
-				PoolSize: poolSize,
+			// Extract capabilities from manifest if available
+			var caps []string
+			if dm.Manifest != nil {
+				caps = dm.Manifest.Capabilities
+			}
+
+			r.discovered[registryName] = &ReaderModelEntry{
+				Name:         registryName,
+				Path:         modelPath,
+				PoolSize:     poolSize,
+				Capabilities: caps,
 			}
 		}
 	}
@@ -309,7 +318,7 @@ func (r *ReaderRegistry) Release(modelName string) {
 // loadModel loads a reader model from disk.
 // Multi-stage OCR models (Surya, PaddleOCR) are dispatched to MultiStageReader,
 // while Vision2Seq models (TrOCR, Donut, Florence-2, Nougat, Pix2Struct) use PooledReader.
-func (r *ReaderRegistry) loadModel(info *ReaderModelInfo) (reading.Reader, error) {
+func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, error) {
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -364,6 +373,18 @@ func (r *ReaderRegistry) List() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ListWithCapabilities returns a map of model name to capabilities for all discovered models.
+func (r *ReaderRegistry) ListWithCapabilities() map[string][]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string][]string, len(r.discovered))
+	for name, info := range r.discovered {
+		result[name] = info.Capabilities
+	}
+	return result
 }
 
 // ListLoaded returns only the currently loaded reader model names

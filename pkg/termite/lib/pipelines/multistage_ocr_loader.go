@@ -46,6 +46,8 @@ type StageMetadata struct {
 	PostProcessor string `json:"post_processor,omitempty"`
 	// CharDictFile is the character dictionary filename (for CTC recognition).
 	CharDictFile string `json:"char_dict_file,omitempty"`
+	// ProcessorDir is the subdirectory containing preprocessor_config.json for this stage.
+	ProcessorDir string `json:"processor_dir,omitempty"`
 }
 
 // IsMultiStageModel checks if a model directory contains a multi-stage OCR model
@@ -123,52 +125,85 @@ func LoadMultiStageOCRPipeline(
 		return nil, "", fmt.Errorf("unknown post-processor: %s", detStage.PostProcessor)
 	}
 
-	// Create detection image processor with defaults
-	detImgProc := NewImageProcessor(backends.DefaultImageConfig())
-
-	// Load recognition stage (required)
-	recStage, ok := meta.Stages["recognition"]
-	if !ok {
-		detSession.Close()
-		return nil, "", fmt.Errorf("no recognition stage in metadata")
+	// Load detection image processor config from preprocessor_config.json,
+	// falling back to the model's actual input shape.
+	detImgConfig := loadStageImageConfig(modelPath, detStage.ProcessorDir)
+	if detStage.ProcessorDir == "" {
+		// No preprocessor config — infer dimensions from model input shape
+		// and set normalization based on model type.
+		if info := detSession.InputInfo(); len(info) > 0 && len(info[0].Shape) == 4 {
+			h := int(info[0].Shape[2])
+			w := int(info[0].Shape[3])
+			if h > 0 {
+				detImgConfig.Height = h
+			} else {
+				detImgConfig.Height = 960
+			}
+			if w > 0 {
+				detImgConfig.Width = w
+			} else {
+				detImgConfig.Width = 960
+			}
+		}
+		applyModelTypeNormalization(meta.ModelType, detImgConfig)
 	}
+	detImgProc := NewImageProcessor(detImgConfig)
 
+	// Load recognition stage (optional — detection-only models are valid)
 	var recognizer Recognizer
 
-	switch recStage.Type {
-	case "vision2seq":
-		// Surya recognition: reuse existing Vision2SeqPipeline
-		recPipeline, _, err := LoadVision2SeqPipeline(modelPath, sessionManager, modelBackends)
-		if err != nil {
+	if recStage, ok := meta.Stages["recognition"]; ok {
+		switch recStage.Type {
+		case "vision2seq":
+			// Surya recognition: reuse existing Vision2SeqPipeline
+			recPipeline, _, err := LoadVision2SeqPipeline(modelPath, sessionManager, modelBackends)
+			if err != nil {
+				detSession.Close()
+				return nil, "", fmt.Errorf("loading Vision2Seq recognizer: %w", err)
+			}
+			recognizer = NewVision2SeqRecognizer(recPipeline)
+
+		case "ctc":
+			// PaddleOCR recognition: CTC decoder
+			recPath := filepath.Join(modelPath, recStage.ModelFile)
+			recSession, err := factory.CreateSession(recPath)
+			if err != nil {
+				detSession.Close()
+				return nil, "", fmt.Errorf("creating CTC recognition session: %w", err)
+			}
+
+			// Load character dictionary
+			dictPath := filepath.Join(modelPath, recStage.CharDictFile)
+			charDict, err := loadCharDictFile(dictPath)
+			if err != nil {
+				detSession.Close()
+				recSession.Close()
+				return nil, "", fmt.Errorf("loading char dict: %w", err)
+			}
+
+			// Derive image config from the model's actual input shape.
+			// PaddleOCR rec expects [batch, 3, 48, width]; width may be dynamic (-1).
+			recImgConfig := backends.DefaultImageConfig()
+			if info := recSession.InputInfo(); len(info) > 0 && len(info[0].Shape) == 4 {
+				h := int(info[0].Shape[2])
+				w := int(info[0].Shape[3])
+				if h > 0 {
+					recImgConfig.Height = h
+				}
+				if w > 0 {
+					recImgConfig.Width = w
+				} else {
+					recImgConfig.Width = 320
+				}
+			}
+			applyModelTypeNormalization(meta.ModelType, recImgConfig)
+			recImgProc := NewImageProcessor(recImgConfig)
+			recognizer = NewCTCRecognizer(recSession, charDict, recImgProc)
+
+		default:
 			detSession.Close()
-			return nil, "", fmt.Errorf("loading Vision2Seq recognizer: %w", err)
+			return nil, "", fmt.Errorf("unknown recognition type: %s", recStage.Type)
 		}
-		recognizer = NewVision2SeqRecognizer(recPipeline)
-
-	case "ctc":
-		// PaddleOCR recognition: CTC decoder
-		recPath := filepath.Join(modelPath, recStage.ModelFile)
-		recSession, err := factory.CreateSession(recPath)
-		if err != nil {
-			detSession.Close()
-			return nil, "", fmt.Errorf("creating CTC recognition session: %w", err)
-		}
-
-		// Load character dictionary
-		dictPath := filepath.Join(modelPath, recStage.CharDictFile)
-		charDict, err := loadCharDictFile(dictPath)
-		if err != nil {
-			detSession.Close()
-			recSession.Close()
-			return nil, "", fmt.Errorf("loading char dict: %w", err)
-		}
-
-		recImgProc := NewImageProcessor(backends.DefaultImageConfig())
-		recognizer = NewCTCRecognizer(recSession, charDict, recImgProc)
-
-	default:
-		detSession.Close()
-		return nil, "", fmt.Errorf("unknown recognition type: %s", recStage.Type)
 	}
 
 	// Build pipeline config
@@ -212,6 +247,77 @@ func LoadMultiStageOCRPipeline(
 	}
 
 	return pipeline, backendType, nil
+}
+
+// loadStageImageConfig loads an ImageConfig from a stage's preprocessor directory.
+// It reads preprocessor_config.json and converts it to an ImageConfig.
+// Falls back to DefaultImageConfig if the file is missing or unparseable.
+func loadStageImageConfig(modelPath, processorDir string) *backends.ImageConfig {
+	if processorDir == "" {
+		return backends.DefaultImageConfig()
+	}
+
+	procPath := filepath.Join(modelPath, processorDir)
+	preproc := loadPreprocessorConfig(procPath)
+	if preproc == nil {
+		return backends.DefaultImageConfig()
+	}
+
+	// Build ImageConfig from preprocessor config
+	config := backends.DefaultImageConfig()
+
+	// Extract size (may be {height: N, width: N}, int, or [w, h])
+	w, h := extractImageDimensions(preproc.Size)
+	if w > 0 && h > 0 {
+		config.Width = w
+		config.Height = h
+	} else if size := extractImageSize(preproc.Size); size > 0 {
+		config.Width = size
+		config.Height = size
+	}
+
+	// Apply normalization values
+	if len(preproc.ImageMean) == 3 {
+		copy(config.Mean[:], preproc.ImageMean)
+	}
+	if len(preproc.ImageStd) == 3 {
+		copy(config.Std[:], preproc.ImageStd)
+	}
+
+	if preproc.RescaleFactor > 0 {
+		config.RescaleFactor = preproc.RescaleFactor
+	}
+
+	config.DoCenterCrop = preproc.DoCenterCrop
+
+	return config
+}
+
+// extractImageDimensions extracts separate width and height from a size field.
+// Returns (0, 0) if the format doesn't contain both dimensions.
+func extractImageDimensions(v any) (width, height int) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return 0, 0
+	}
+	h, hOk := m["height"].(float64)
+	w, wOk := m["width"].(float64)
+	if hOk && wOk {
+		return int(w), int(h)
+	}
+	return 0, 0
+}
+
+// applyModelTypeNormalization sets appropriate normalization values for known model types
+// when no preprocessor_config.json is available.
+func applyModelTypeNormalization(modelType string, config *backends.ImageConfig) {
+	switch modelType {
+	case "paddleocr":
+		// PaddleOCR uses ImageNet normalization
+		config.Mean = [3]float32{0.485, 0.456, 0.406}
+		config.Std = [3]float32{0.229, 0.224, 0.225}
+		config.RescaleFactor = 1.0 / 255.0
+	}
 }
 
 // loadCharDictFile reads a character dictionary from a text file (one char per line).

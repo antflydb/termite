@@ -75,6 +75,17 @@ const (
 	// CapabilityClassification indicates the model supports text classification
 	// (e.g., GLiNER2 models)
 	CapabilityClassification Capability = "classification"
+
+	// Reader capabilities - describe what differentiates reader models at the API level.
+	// All readers perform OCR (text extraction from images) as a baseline.
+
+	// CapabilityDocumentQA indicates the model supports visual document question answering,
+	// answering questions about the content of a document image (e.g., Donut, Pix2Struct).
+	CapabilityDocumentQA Capability = "document_qa"
+
+	// CapabilityRegions indicates the model returns spatial text regions with bounding boxes,
+	// not just plain text output (e.g., PaddleOCR, Surya multi-stage pipelines).
+	CapabilityRegions Capability = "regions"
 )
 
 // ParseModelType parses a string into a ModelType

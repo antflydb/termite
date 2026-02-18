@@ -68,11 +68,14 @@ func CTCDecode(logits []float32, timeSteps, vocabSize int, charDict []string) (s
 		return "", 0
 	}
 
-	// Map indices to characters
+	// Map indices to characters.
+	// CTC convention: index 0 is blank (already skipped above),
+	// so model index N maps to charDict[N-1].
 	var text strings.Builder
 	for _, idx := range indices {
-		if idx < len(charDict) {
-			text.WriteString(charDict[idx])
+		dictIdx := idx - 1
+		if dictIdx >= 0 && dictIdx < len(charDict) {
+			text.WriteString(charDict[dictIdx])
 		}
 	}
 

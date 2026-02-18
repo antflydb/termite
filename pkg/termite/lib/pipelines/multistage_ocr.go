@@ -166,10 +166,15 @@ func (r *CTCRecognizer) RecognizeImage(ctx context.Context, img image.Image) (st
 	cfg := r.imageProcessor.Config
 	batchSize := 1
 
-	// Run recognition
+	// Query actual input tensor name from the model.
+	inputName := "x"
+	if info := r.session.InputInfo(); len(info) > 0 {
+		inputName = info[0].Name
+	}
+
 	inputs := []backends.NamedTensor{
 		{
-			Name:  "x",
+			Name:  inputName,
 			Shape: []int64{int64(batchSize), int64(cfg.Channels), int64(cfg.Height), int64(cfg.Width)},
 			Data:  pixels,
 		},
@@ -280,26 +285,36 @@ func (p *MultiStageOCRPipeline) Run(ctx context.Context, img image.Image) (*Mult
 		SortRegionsByReadingOrder(regions)
 	}
 
-	// Step 4: Crop and recognize each region
+	// Step 4: Crop and recognize each region (or return detection-only results)
 	recognized := make([]RecognizedRegion, 0, len(regions))
 	var textParts []string
 
-	for _, region := range regions {
-		cropped := CropBBox(img, region.BBox)
+	if p.recognizer != nil {
+		for _, region := range regions {
+			cropped := CropBBox(img, region.BBox)
 
-		text, conf, err := p.recognizer.RecognizeImage(ctx, cropped)
-		if err != nil {
-			// Log but continue with other regions
-			continue
+			text, conf, err := p.recognizer.RecognizeImage(ctx, cropped)
+			if err != nil {
+				// Log but continue with other regions
+				continue
+			}
+
+			if text != "" {
+				recognized = append(recognized, RecognizedRegion{
+					TextRegion:    region,
+					Text:          text,
+					RecConfidence: conf,
+				})
+				textParts = append(textParts, text)
+			}
 		}
-
-		if text != "" {
+	} else {
+		// Detection-only mode: return regions without recognized text
+		for _, region := range regions {
 			recognized = append(recognized, RecognizedRegion{
 				TextRegion:    region,
-				Text:          text,
-				RecConfidence: conf,
+				RecConfidence: region.Confidence,
 			})
-			textParts = append(textParts, text)
 		}
 	}
 
@@ -321,9 +336,16 @@ func (p *MultiStageOCRPipeline) detect(ctx context.Context, img image.Image) ([]
 	cfg := p.detImgProc.Config
 	batchSize := 1
 
+	// Query actual input tensor name from the model (PaddleOCR uses "x",
+	// Surya uses "pixel_values"). Follows the speech2seq.go pattern.
+	inputName := "pixel_values"
+	if info := p.detector.InputInfo(); len(info) > 0 {
+		inputName = info[0].Name
+	}
+
 	inputs := []backends.NamedTensor{
 		{
-			Name:  "pixel_values",
+			Name:  inputName,
 			Shape: []int64{int64(batchSize), int64(cfg.Channels), int64(cfg.Height), int64(cfg.Width)},
 			Data:  pixels,
 		},
@@ -343,7 +365,40 @@ func (p *MultiStageOCRPipeline) detect(ctx context.Context, img image.Image) ([]
 		return nil, fmt.Errorf("detection output is not float32")
 	}
 
-	regions := p.detProcessor.Process(outputData, cfg.Width, cfg.Height, img.Bounds())
+	// Determine output spatial dimensions from shape.
+	// Segmentation models output [batch, num_classes, outH, outW].
+	// For single-channel heatmaps the shape is [batch, 1, outH, outW] or [batch, outH, outW].
+	shape := outputs[0].Shape
+	var outW, outH int
+	var heatmap []float32
+
+	switch len(shape) {
+	case 4:
+		// [batch, num_classes, H, W]
+		numClasses := int(shape[1])
+		outH = int(shape[2])
+		outW = int(shape[3])
+		planeSize := outH * outW
+
+		if numClasses >= 2 {
+			// Extract the text/foreground channel (class 1)
+			heatmap = outputData[planeSize : 2*planeSize]
+		} else {
+			heatmap = outputData[:planeSize]
+		}
+	case 3:
+		// [batch, H, W]
+		outH = int(shape[1])
+		outW = int(shape[2])
+		heatmap = outputData[:outH*outW]
+	default:
+		// Flat output — assume same spatial dims as input
+		outW = cfg.Width
+		outH = cfg.Height
+		heatmap = outputData
+	}
+
+	regions := p.detProcessor.Process(heatmap, outW, outH, img.Bounds())
 	return regions, nil
 }
 
@@ -357,9 +412,14 @@ func (p *MultiStageOCRPipeline) analyzeLayout(ctx context.Context, img image.Ima
 	cfg := p.detImgProc.Config
 	batchSize := 1
 
+	inputName := "pixel_values"
+	if info := p.layout.InputInfo(); len(info) > 0 {
+		inputName = info[0].Name
+	}
+
 	inputs := []backends.NamedTensor{
 		{
-			Name:  "pixel_values",
+			Name:  inputName,
 			Shape: []int64{int64(batchSize), int64(cfg.Channels), int64(cfg.Height), int64(cfg.Width)},
 			Data:  pixels,
 		},
@@ -453,9 +513,14 @@ func (p *MultiStageOCRPipeline) determineOrder(ctx context.Context, regions []Te
 		bboxData[i*4+3] = float32(r.BBox[3])
 	}
 
+	inputName := "boxes"
+	if info := p.order.InputInfo(); len(info) > 0 {
+		inputName = info[0].Name
+	}
+
 	inputs := []backends.NamedTensor{
 		{
-			Name:  "boxes",
+			Name:  inputName,
 			Shape: []int64{1, int64(numRegions), 4},
 			Data:  bboxData,
 		},
