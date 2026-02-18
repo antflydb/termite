@@ -85,33 +85,6 @@ builds:
     main: ./cmd
     binary: termite
 
-  # macOS AMD64 with ONNX (Zig cross-compilation)
-  - id: termite-onnx-darwin-amd64
-    dir: pkg/termite
-    env:
-      - CGO_ENABLED=1
-      - CC=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CXX=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/lib -L{{ .Env.SDK_PATH }}/usr/lib -lonnxruntime -ltokenizers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -framework CoreFoundation -framework Security
-      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/include -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -Wno-nullability-completeness
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -extldflags "-Wl,-rpath,@executable_path/lib"
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
-    tags:
-      - onnx
-      - ORT
-    goos:
-      - darwin
-    goarch:
-      - amd64
-    main: ./cmd
-    binary: termite
-
   # macOS ARM64 with ONNX (Zig cross-compilation)
   - id: termite-onnx-darwin-arm64
     dir: pkg/termite
@@ -197,35 +170,6 @@ builds:
     main: ./cmd
     binary: termite
 
-  # macOS AMD64 Omni (ONNX + XLA) (Zig cross-compilation)
-  - id: termite-omni-darwin-amd64
-    dir: pkg/termite
-    env:
-      - CGO_ENABLED=1
-      - CC=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CXX=zig c++ -target x86_64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/lib -L{{ .Env.SDK_PATH }}/usr/lib -lonnxruntime -ltokenizers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -framework CoreFoundation -framework Security
-      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/darwin-amd64/include -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -Wno-nullability-completeness
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -extldflags "-Wl,-rpath,@executable_path/lib"
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
-    tags:
-      - onnx
-      - ORT
-      - xla
-      - XLA
-    goos:
-      - darwin
-    goarch:
-      - amd64
-    main: ./cmd
-    binary: termite
-
   # macOS ARM64 Omni (ONNX + XLA) (Zig cross-compilation)
   - id: termite-omni-darwin-arm64
     dir: pkg/termite
@@ -284,7 +228,6 @@ archives:
     builds:
       - termite-onnx-linux-amd64
       - termite-onnx-linux-arm64
-      - termite-onnx-darwin-amd64
       - termite-onnx-darwin-arm64
     files:
       - README.md
@@ -312,7 +255,6 @@ archives:
     builds:
       - termite-omni-linux-amd64
       - termite-omni-linux-arm64
-      - termite-omni-darwin-amd64
       - termite-omni-darwin-arm64
     files:
       - README.md

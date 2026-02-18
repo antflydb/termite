@@ -37,14 +37,13 @@ TOKENIZERS_BASE_URL="https://github.com/daulet/tokenizers/releases/download/v${T
 OUTPUT_DIR="${ONNXRUNTIME_ROOT:-./onnxruntime}"
 
 # List of platforms we support
-PLATFORMS="linux-amd64 linux-arm64 darwin-amd64 darwin-arm64"
+PLATFORMS="linux-amd64 linux-arm64 darwin-arm64"
 
 # Platform mappings: our naming -> ONNX Runtime naming
 get_onnx_platform() {
     case "$1" in
         linux-amd64) echo "linux-x64" ;;
         linux-arm64) echo "linux-aarch64" ;;
-        darwin-amd64) echo "osx-x86_64" ;;
         darwin-arm64) echo "osx-arm64" ;;
         *) echo "" ;;
     esac
@@ -55,7 +54,6 @@ get_tokenizers_platform() {
     case "$1" in
         linux-amd64) echo "linux-amd64" ;;
         linux-arm64) echo "linux-arm64" ;;
-        darwin-amd64) echo "darwin-x86_64" ;;
         darwin-arm64) echo "darwin-arm64" ;;
         *) echo "" ;;
     esac
@@ -66,7 +64,6 @@ get_genai_platform() {
     case "$1" in
         linux-amd64) echo "linux-x64" ;;
         linux-arm64) echo "linux-arm64" ;;
-        darwin-amd64) echo "osx-x64" ;;
         darwin-arm64) echo "osx-arm64" ;;
         *) echo "" ;;
     esac

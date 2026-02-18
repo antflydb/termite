@@ -35,14 +35,13 @@ OUTPUT_DIR="${PJRT_ROOT:-./pjrt}"
 
 # List of platforms we support
 # Note: PJRT CPU binaries are only available for linux and darwin, x86_64 and arm64
-PLATFORMS="linux-amd64 linux-arm64 darwin-amd64 darwin-arm64"
+PLATFORMS="linux-amd64 linux-arm64 darwin-arm64"
 
 # Platform mappings: our naming -> PJRT naming
 get_pjrt_platform() {
     case "$1" in
         linux-amd64) echo "linux_amd64" ;;
         linux-arm64) echo "linux_arm64" ;;
-        darwin-amd64) echo "darwin_amd64" ;;
         darwin-arm64) echo "darwin_arm64" ;;
         *) echo "" ;;
     esac
@@ -53,7 +52,6 @@ get_tokenizers_platform() {
     case "$1" in
         linux-amd64) echo "linux-amd64" ;;
         linux-arm64) echo "linux-arm64" ;;
-        darwin-amd64) echo "darwin-x86_64" ;;
         darwin-arm64) echo "darwin-arm64" ;;
         *) echo "" ;;
     esac
