@@ -618,6 +618,28 @@ components:
           default: 256
           example: 256
 
+    TextRegion:
+      type: object
+      required:
+        - text
+        - bbox
+      properties:
+        text:
+          type: string
+          description: Recognized text within the region
+        bbox:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: "Bounding box [x1, y1, x2, y2] in pixel coordinates"
+        confidence:
+          type: number
+          description: Recognition confidence score (0-1)
+        label:
+          type: string
+          description: Semantic label from layout analysis (e.g., text, title, table)
     ReadResult:
       type: object
       required:
@@ -639,6 +661,13 @@ components:
             menu.nm: "Coffee"
             menu.price: "$3.50"
             total: "$123.45"
+        regions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TextRegion"
+          description: |
+            Individual text regions with bounding boxes and recognized text.
+            Populated by multi-stage OCR models (Surya, PaddleOCR).
 
     ReadResponse:
       type: object
@@ -759,7 +788,20 @@ components:
           items:
             type: string
           description: Available reader/OCR models from models_dir/readers/
-          example: ["microsoft/trocr-base-printed", "naver-clova-ix/donut-base-finetuned-cord-v2"]
+          example: ["microsoft/trocr-base-printed", "monkt/paddleocr-onnx"]
+        reader_info:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ReaderModelInfo'
+          description: |
+            Detailed information about reader models including capabilities.
+            Map of model name to model info. Use this to determine what capabilities
+            each reader supports (document_qa, regions).
+          example:
+            monkt/paddleocr-onnx:
+              capabilities: ["regions"]
+            naver-clova-ix/donut-base-finetuned-docvqa:
+              capabilities: ["document_qa"]
         transcribers:
           type: array
           items:
@@ -806,6 +848,27 @@ components:
             $ref: '#/components/schemas/RecognizerCapability'
           description: List of capabilities this recognizer model supports
           example: ["labels", "zeroshot"]
+
+    ReaderCapability:
+      type: string
+      enum:
+        - document_qa
+        - regions
+      description: |
+        Capability that a reader model supports (all readers perform OCR as a baseline):
+        - document_qa: Visual document question answering (Donut, Pix2Struct)
+        - regions: Returns spatial text regions with bounding boxes (PaddleOCR)
+
+    ReaderModelInfo:
+      type: object
+      description: Detailed information about a reader model
+      properties:
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCapability'
+          description: List of capabilities this reader model supports
+          example: ["regions"]
 
     # Tool Calling Types (OpenAI-compatible)
     Tool:

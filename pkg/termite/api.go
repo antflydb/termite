@@ -181,6 +181,20 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.readerRegistry != nil {
 		resp.Readers = t.node.readerRegistry.List()
+
+		capsMap := t.node.readerRegistry.ListWithCapabilities()
+		if len(capsMap) > 0 {
+			resp.ReaderInfo = make(map[string]ReaderModelInfo, len(capsMap))
+			for name, caps := range capsMap {
+				enumCaps := make([]ReaderCapability, len(caps))
+				for i, c := range caps {
+					enumCaps[i] = ReaderCapability(c)
+				}
+				resp.ReaderInfo[name] = ReaderModelInfo{
+					Capabilities: enumCaps,
+				}
+			}
+		}
 	}
 
 	if t.node.transcriberRegistry != nil {
@@ -1760,6 +1774,20 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 		apiResults[i] = ReadResult{
 			Text:   r.Text,
 			Fields: r.Fields,
+		}
+
+		// Populate regions from multi-stage OCR models
+		if len(r.Regions) > 0 {
+			apiRegions := make([]TextRegion, len(r.Regions))
+			for j, region := range r.Regions {
+				apiRegions[j] = TextRegion{
+					Text:       region.Text,
+					Bbox:       []float32{float32(region.BBox[0]), float32(region.BBox[1]), float32(region.BBox[2]), float32(region.BBox[3])},
+					Confidence: float32(region.Confidence),
+					Label:      region.Label,
+				}
+			}
+			apiResults[i].Regions = apiRegions
 		}
 	}
 
