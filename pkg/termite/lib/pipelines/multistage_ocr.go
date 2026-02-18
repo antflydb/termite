@@ -24,6 +24,43 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
 
+// assembleFullText joins recognized regions into a single string, using spaces
+// for regions on the same line and newlines between different lines. Same-line
+// detection reuses the tolerance logic from SortRegionsByReadingOrder.
+func assembleFullText(regions []RecognizedRegion) string {
+	if len(regions) == 0 {
+		return ""
+	}
+	if len(regions) == 1 {
+		return regions[0].Text
+	}
+
+	// Compute average line height for same-line tolerance.
+	avgHeight := 0.0
+	for _, r := range regions {
+		avgHeight += r.BBox[3] - r.BBox[1]
+	}
+	avgHeight /= float64(len(regions))
+	tolerance := avgHeight * 0.5
+
+	var sb strings.Builder
+	sb.WriteString(regions[0].Text)
+
+	for i := 1; i < len(regions); i++ {
+		prevY := (regions[i-1].BBox[1] + regions[i-1].BBox[3]) / 2
+		curY := (regions[i].BBox[1] + regions[i].BBox[3]) / 2
+
+		if abs(curY-prevY) < tolerance {
+			sb.WriteByte(' ')
+		} else {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(regions[i].Text)
+	}
+
+	return sb.String()
+}
+
 // MultiStageOCRConfig configures a multi-stage OCR pipeline.
 type MultiStageOCRConfig struct {
 	// DetConfig configures the detection stage.
@@ -287,7 +324,6 @@ func (p *MultiStageOCRPipeline) Run(ctx context.Context, img image.Image) (*Mult
 
 	// Step 4: Crop and recognize each region (or return detection-only results)
 	recognized := make([]RecognizedRegion, 0, len(regions))
-	var textParts []string
 
 	if p.recognizer != nil {
 		for _, region := range regions {
@@ -305,7 +341,6 @@ func (p *MultiStageOCRPipeline) Run(ctx context.Context, img image.Image) (*Mult
 					Text:          text,
 					RecConfidence: conf,
 				})
-				textParts = append(textParts, text)
 			}
 		}
 	} else {
@@ -321,7 +356,7 @@ func (p *MultiStageOCRPipeline) Run(ctx context.Context, img image.Image) (*Mult
 	return &MultiStageOCRResult{
 		Regions:  recognized,
 		Layout:   layoutRegions,
-		FullText: strings.Join(textParts, "\n"),
+		FullText: assembleFullText(recognized),
 	}, nil
 }
 

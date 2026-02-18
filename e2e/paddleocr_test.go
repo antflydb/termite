@@ -184,8 +184,10 @@ func TestPaddleOCRFullPipeline(t *testing.T) {
 	t.Logf("PaddleOCR full text output (%d chars): %q", len(results[0].Text), truncateString(results[0].Text, 500))
 	t.Logf("PaddleOCR detected %d regions", len(results[0].Regions))
 
-	// Validate against expected phrases
+	// Validate against expected phrases (multi-word to verify correct spacing)
 	expectedPhrases := []string{
+		"This is a heading",
+		"content in the table",
 		"heading",
 		"content",
 		"table",
