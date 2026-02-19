@@ -204,15 +204,16 @@ func (r *ReaderRegistry) discoverModels() error {
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
-		// Skip if no model files exist (but allow multistage OCR models like PaddleOCR
-		// which use det.onnx/rec.onnx instead of model.onnx, and Florence-2 which uses
-		// vision_encoder.onnx/encoder_model.onnx/decoder_model.onnx/embed_tokens.onnx)
-		if len(variants) == 0 && !pipelines.IsMultiStageModel(modelPath) && !pipelines.IsFlorence2Model(modelPath) {
+		// Skip if no model files exist. Models without standard model.onnx
+		// variants (e.g. PaddleOCR, Florence-2) are still valid as long as
+		// they contain at least one .onnx file; the pipeline loader handles
+		// architecture-specific file layouts at load time.
+		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) {
 			continue
 		}
 
-		// Models without model.onnx variants (PaddleOCR, Surya, Florence-2);
-		// register them under the default (empty) variant key.
+		// Models without model.onnx variants; register under the default
+		// (empty) variant key so the pipeline loader can resolve files.
 		if len(variants) == 0 {
 			variants = map[string]string{"": ""}
 		}

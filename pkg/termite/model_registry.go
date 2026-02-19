@@ -198,14 +198,12 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 	// Try to load manifest first
 	manifest, err := modelregistry.LoadManifestFromDir(modelPath)
 	if err != nil {
-		// Manifest not found or invalid - discover from files
+		// Manifest not found or invalid - discover from files.
+		// Accept any directory that contains at least one .onnx file;
+		// architecture-specific file layouts are resolved at load time.
 		variants := discoverModelVariants(modelPath)
-		if len(variants) == 0 {
-			// Check for multimodal, seq2seq, or generator models
-			caps := detectMultimodalCapabilities(modelPath)
-			if !caps.isMultimodal() && !isSeq2SeqModelDir(modelPath) && !isGeneratorModelDir(modelPath) {
-				return nil // No model files found
-			}
+		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) {
+			return nil // No model files found
 		}
 
 		// Create a basic manifest from discovery
@@ -241,17 +239,15 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 	}
 }
 
-// isSeq2SeqModelDir checks if a directory contains a seq2seq model
-func isSeq2SeqModelDir(path string) bool {
-	return fileExistsRegistry(filepath.Join(path, "encoder.onnx")) &&
-		fileExistsRegistry(filepath.Join(path, "decoder.onnx"))
-}
-
-// isGeneratorModelDir checks if a directory contains a generator model
-func isGeneratorModelDir(path string) bool {
-	return fileExistsRegistry(filepath.Join(path, "genai_config.json")) ||
-		(fileExistsRegistry(filepath.Join(path, "config.json")) &&
-			fileExistsRegistry(filepath.Join(path, "model.onnx")))
+// hasAnyONNXFiles reports whether dir contains at least one .onnx file.
+func hasAnyONNXFiles(dir string) bool {
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.onnx"))
+	if len(matches) > 0 {
+		return true
+	}
+	// Also check onnx/ subdirectory (HuggingFace optimum layout)
+	matches, _ = filepath.Glob(filepath.Join(dir, "onnx", "*.onnx"))
+	return len(matches) > 0
 }
 
 // generateGenaiConfig creates a genai_config.json file from a HuggingFace config.json.
