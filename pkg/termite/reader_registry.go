@@ -205,12 +205,13 @@ func (r *ReaderRegistry) discoverModels() error {
 		variants := dm.Variants
 
 		// Skip if no model files exist (but allow multistage OCR models like PaddleOCR
-		// which use det.onnx/rec.onnx instead of model.onnx)
-		if len(variants) == 0 && !pipelines.IsMultiStageModel(modelPath) {
+		// which use det.onnx/rec.onnx instead of model.onnx, and Florence-2 which uses
+		// vision_encoder.onnx/encoder_model.onnx/decoder_model.onnx/embed_tokens.onnx)
+		if len(variants) == 0 && !pipelines.IsMultiStageModel(modelPath) && !pipelines.IsFlorence2Model(modelPath) {
 			continue
 		}
 
-		// Multistage models (PaddleOCR, Surya) don't have model.onnx variants;
+		// Models without model.onnx variants (PaddleOCR, Surya, Florence-2);
 		// register them under the default (empty) variant key.
 		if len(variants) == 0 {
 			variants = map[string]string{"": ""}
