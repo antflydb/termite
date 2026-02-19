@@ -175,11 +175,11 @@ func TestParseManifest(t *testing.T) {
 		}
 	})
 
-	t.Run("missing model.onnx", func(t *testing.T) {
+	t.Run("no onnx files", func(t *testing.T) {
 		data := `{"schemaVersion": 1, "name": "test", "type": "embedder", "files": [{"name": "tokenizer.json", "digest": "sha256:abc", "size": 1}]}`
 		_, err := ParseManifest([]byte(data))
 		if err == nil {
-			t.Error("Expected error for missing model.onnx")
+			t.Error("Expected error for missing .onnx files")
 		}
 	})
 
@@ -341,6 +341,26 @@ func TestManifestValidate(t *testing.T) {
 			name: "file missing digest",
 			modify: func(m *ModelManifest) {
 				m.Files[0].Digest = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "non-standard onnx filenames valid",
+			modify: func(m *ModelManifest) {
+				m.Type = ModelTypeRecognizer
+				m.Files = []ModelFile{
+					{Name: "det.onnx", Digest: "sha256:def456", Size: 5000},
+					{Name: "rec.onnx", Digest: "sha256:ghi789", Size: 8000},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "no onnx files",
+			modify: func(m *ModelManifest) {
+				m.Files = []ModelFile{
+					{Name: "tokenizer.json", Digest: "sha256:abc123", Size: 500},
+				}
 			},
 			wantErr: true,
 		},

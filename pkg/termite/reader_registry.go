@@ -204,9 +204,16 @@ func (r *ReaderRegistry) discoverModels() error {
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
-		// Skip if no model files exist
-		if len(variants) == 0 {
+		// Skip if no model files exist (but allow multistage OCR models like PaddleOCR
+		// which use det.onnx/rec.onnx instead of model.onnx)
+		if len(variants) == 0 && !pipelines.IsMultiStageModel(modelPath) {
 			continue
+		}
+
+		// Multistage models (PaddleOCR, Surya) don't have model.onnx variants;
+		// register them under the default (empty) variant key.
+		if len(variants) == 0 {
+			variants = map[string]string{"": ""}
 		}
 
 		// Log discovered variants

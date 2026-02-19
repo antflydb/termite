@@ -336,25 +336,14 @@ func (m *ModelManifest) Validate() error {
 		return fmt.Errorf("manifest must have at least one file")
 	}
 
-	// Validate file entries
-	hasModelOnnx := false
+	// Validate file entries and track which ONNX files are present
+	hasAnyOnnx := false
 	hasVisualOnnx := false
 	hasTextOnnx := false
+	hasAudioOnnx := false
 	hasEncoderOnnx := false
 	hasDecoderOnnx := false
 	for _, f := range m.Files {
-		switch f.Name {
-		case "model.onnx":
-			hasModelOnnx = true
-		case "visual_model.onnx":
-			hasVisualOnnx = true
-		case "text_model.onnx":
-			hasTextOnnx = true
-		case "encoder.onnx":
-			hasEncoderOnnx = true
-		case "decoder.onnx":
-			hasDecoderOnnx = true
-		}
 		if f.Name == "" {
 			return fmt.Errorf("file entry missing name")
 		}
@@ -364,17 +353,27 @@ func (m *ModelManifest) Validate() error {
 		if !strings.HasPrefix(f.Digest, "sha256:") {
 			return fmt.Errorf("file %s has invalid digest format (expected sha256:...)", f.Name)
 		}
-	}
-
-	// Check for required ONNX files based on model type and capability
-	hasAudioOnnx := false
-	for _, f := range m.Files {
-		if f.Name == "audio_model.onnx" {
+		if strings.HasSuffix(f.Name, ".onnx") {
+			hasAnyOnnx = true
+		}
+		switch f.Name {
+		case "visual_model.onnx":
+			hasVisualOnnx = true
+		case "text_model.onnx":
+			hasTextOnnx = true
+		case "audio_model.onnx":
 			hasAudioOnnx = true
-			break
+		case "encoder.onnx":
+			hasEncoderOnnx = true
+		case "decoder.onnx":
+			hasDecoderOnnx = true
 		}
 	}
 
+	// Check for required ONNX files based on model type and capability.
+	// Specific model types enforce exact filenames; the fallback just
+	// requires at least one .onnx file (covers multistage OCR pipelines
+	// like PaddleOCR which use det.onnx/rec.onnx instead of model.onnx).
 	if m.HasCapability(CapabilityImage) {
 		// Image embedders (CLIP) require visual_model.onnx + text_model.onnx
 		if !hasVisualOnnx || !hasTextOnnx {
@@ -401,11 +400,8 @@ func (m *ModelManifest) Validate() error {
 	} else if hasEncoderOnnx && hasDecoderOnnx {
 		// Seq2seq recognizers (REBEL) have encoder/decoder instead of model.onnx
 		// This is valid for recognizers with 'relations' capability
-	} else {
-		// Standard models require model.onnx
-		if !hasModelOnnx {
-			return fmt.Errorf("manifest must include model.onnx file")
-		}
+	} else if !hasAnyOnnx {
+		return fmt.Errorf("manifest must include at least one .onnx model file")
 	}
 
 	// Validate variant files if present
