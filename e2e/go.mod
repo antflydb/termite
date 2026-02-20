@@ -10,16 +10,16 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260215003431-8c8c80510b4f
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260218224627-c73d100d82d1
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
-	github.com/gomlx/gomlx v0.26.1-0.20260215082710-429182c8560c
+	github.com/gomlx/gomlx v0.26.1-0.20260218225113-6b9d788f4519
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.9 // indirect
+	github.com/ajroetker/go-highway v0.0.10 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -34,8 +34,8 @@ require (
 	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-coreml v0.0.0-20260213001558-7e30eb33f307 // indirect
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260213001558-7e30eb33f307 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260218230850-b757a40d32e7 // indirect
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260218230850-b757a40d32e7 // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260107152240-2890a4924d88 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
@@ -73,7 +73,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/exp v0.0.0-20260212183809-81e46e3db34a // indirect
+	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/image v0.36.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
