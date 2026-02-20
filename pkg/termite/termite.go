@@ -55,6 +55,9 @@ type TermiteNode struct {
 	rerankingCache *RerankingCache
 	nerCache       *NERCache
 	readingCache   *ReadingCache
+
+	// allowDownloads controls whether the dashboard shows model download commands
+	allowDownloads bool
 }
 
 // corsMiddleware adds permissive CORS headers for the Termite API
@@ -513,6 +516,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,
+		allowDownloads:        config.AllowDownloads,
 
 		client: client,
 	}
@@ -535,6 +539,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// OpenAI-compatible API at /openai/v1/* for standard SDK compatibility
 	node.RegisterOpenAIRoutes(rootMux)
+
+	// Registry proxy so the dashboard can fetch the model index
+	addRegistryProxy(rootMux, defaultRegistryURL())
 
 	// Serve the embedded dashboard at root (SPA with fallback to index.html)
 	addDashboardRoutes(rootMux)

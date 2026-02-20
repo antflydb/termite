@@ -1387,6 +1387,13 @@ components:
           example:
             BAAI/bge-small-en-v1.5: eager
             mirth/chonky-mmbert-small-multilingual-1: lazy
+        allow_downloads:
+          type: boolean
+          description: |
+            Whether the dashboard should show model download commands.
+            Defaults to true for standalone/swarm mode. Set to false in managed
+            deployments (e.g., Kubernetes operator) where models are managed externally.
+          default: true
         log:
           $ref: "../../../antfly-go/libaf/logging/openapi.yaml#/components/schemas/Config"
 
@@ -1414,6 +1421,10 @@ components:
           type: string
           description: Go runtime version
           example: "go1.25.0"
+        allow_downloads:
+          type: boolean
+          description: Whether model downloads are allowed in this deployment
+          example: true
 
 paths:
   /embed:

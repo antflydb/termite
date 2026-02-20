@@ -212,10 +212,11 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 // GetVersion implements ServerInterface
 func (t *TermiteAPI) GetVersion(w http.ResponseWriter, r *http.Request) {
 	resp := VersionResponse{
-		Version:   Version,
-		GitCommit: GitCommit,
-		BuildTime: BuildTime,
-		GoVersion: runtime.Version(),
+		Version:        Version,
+		GitCommit:      GitCommit,
+		BuildTime:      BuildTime,
+		GoVersion:      runtime.Version(),
+		AllowDownloads: t.node.allowDownloads,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

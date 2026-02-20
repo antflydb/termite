@@ -18,7 +18,14 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 )
 
 //go:embed dashboard
@@ -49,4 +56,39 @@ func addDashboardRoutes(mux *http.ServeMux) {
 
 	// Serve the static files for the dashboard application.
 	mux.Handle("/", http.FileServer(spaFileSystem{http.FS(subFS)}))
+}
+
+// addRegistryProxy adds a reverse proxy that forwards /registry/* requests
+// to the model registry, stripping the /registry prefix.
+func addRegistryProxy(mux *http.ServeMux, registryBaseURL string) {
+	target, err := url.Parse(registryBaseURL)
+	if err != nil {
+		return
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			stripped := strings.TrimPrefix(r.In.URL.Path, "/registry")
+			if stripped == "" {
+				stripped = "/"
+			}
+			r.Out.URL.Path = path.Join(target.Path, stripped)
+			r.Out.URL.RawPath = ""
+			r.Out.Host = target.Host
+			r.Out.Header.Del("Authorization")
+			r.Out.Header.Del("Cookie")
+			r.Out.Header.Del("Accept-Encoding")
+		},
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: 10 * time.Second,
+		},
+	}
+
+	mux.Handle("/registry/", proxy)
+}
+
+// DefaultRegistryURL returns the default model registry base URL.
+func defaultRegistryURL() string {
+	return modelregistry.DefaultRegistryURL
 }
