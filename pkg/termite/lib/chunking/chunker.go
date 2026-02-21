@@ -171,7 +171,7 @@ func (p *PooledChunker) BackendType() backends.BackendType {
 
 // Chunk splits text using neural token classification.
 // Thread-safe: uses semaphore to limit concurrent pipeline access.
-// Note: per-request options (opts) are currently ignored; pipeline uses config from creation time.
+// Per-request options (threshold, target_tokens) override pipeline defaults when non-zero.
 func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	if text == "" {
 		p.logger.Debug("Chunk called with empty text")
@@ -199,8 +199,14 @@ func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.Ch
 		zap.Int("text_length", textLen),
 		zap.String("text_preview", textPreview))
 
-	// Delegate to ChunkingPipeline.Chunk
-	pipelineChunks, err := pipeline.Chunk(ctx, text)
+	// Build per-request overrides from ChunkOptions
+	reqOpts := pipelines.ChunkRequestOptions{
+		Threshold:    opts.Threshold,
+		TargetTokens: opts.TargetTokens,
+	}
+
+	// Delegate to ChunkingPipeline with per-request options
+	pipelineChunks, err := pipeline.ChunkWithOptions(ctx, text, reqOpts)
 	if err != nil {
 		p.logger.Error("Chunking failed",
 			zap.Int("pipelineIndex", idx),

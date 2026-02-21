@@ -181,11 +181,24 @@ func (p *Pipeline) Encode(texts []string) (*EncodedBatch, error) {
 		return &EncodedBatch{}, nil
 	}
 
+	// Check if the tokenizer is a pure Go tokenizer (TokenizerWithSpans)
+	// which does not apply post-processing (BOS/EOS special tokens).
+	_, needsSpecialTokens := p.Tokenizer.(tokenizers.TokenizerWithSpans)
+	needsSpecialTokens = needsSpecialTokens && p.Config.AddSpecialTokens
+
 	// Tokenize all texts
 	var allTokens [][]int
 	maxLen := 0
 	for _, text := range texts {
 		tokens := p.Tokenizer.Encode(text)
+		if needsSpecialTokens {
+			if bosID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokBeginningOfSentence); err == nil {
+				tokens = append([]int{bosID}, tokens...)
+			}
+			if eosID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokEndOfSentence); err == nil {
+				tokens = append(tokens, eosID)
+			}
+		}
 		allTokens = append(allTokens, tokens)
 		if len(tokens) > maxLen {
 			maxLen = len(tokens)
@@ -275,6 +288,20 @@ func (p *Pipeline) EncodeWithSpans(texts []string) (*EncodedBatch, error) {
 			encoded := tokWithSpans.EncodeWithSpans(text)
 			result.ids = encoded.IDs
 			result.spans = encoded.Spans
+
+			// The pure Go tokenizer (hftokenizer) does not apply
+			// post-processing (BOS/EOS), so we add them here when
+			// AddSpecialTokens is enabled.
+			if p.Config.AddSpecialTokens {
+				if bosID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokBeginningOfSentence); err == nil {
+					result.ids = append([]int{bosID}, result.ids...)
+					result.spans = append([]TokenSpan{{}}, result.spans...)
+				}
+				if eosID, err := p.Tokenizer.SpecialTokenID(tokenizers.TokEndOfSentence); err == nil {
+					result.ids = append(result.ids, eosID)
+					result.spans = append(result.spans, TokenSpan{})
+				}
+			}
 		} else {
 			result.ids = p.Tokenizer.Encode(text)
 			// No spans available - leave nil

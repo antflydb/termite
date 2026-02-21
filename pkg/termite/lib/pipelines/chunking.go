@@ -306,9 +306,21 @@ func NewChunkingPipeline(
 	}
 }
 
+// ChunkRequestOptions holds per-request overrides for chunking parameters.
+// Zero values mean "use pipeline defaults".
+type ChunkRequestOptions struct {
+	Threshold    float32
+	TargetTokens int
+}
+
 // Chunk splits a single text into semantic chunks.
 func (p *ChunkingPipeline) Chunk(ctx context.Context, text string) ([]Chunk, error) {
-	results, err := p.ChunkBatch(ctx, []string{text})
+	return p.ChunkWithOptions(ctx, text, ChunkRequestOptions{})
+}
+
+// ChunkWithOptions splits a single text into semantic chunks with per-request overrides.
+func (p *ChunkingPipeline) ChunkWithOptions(ctx context.Context, text string, opts ChunkRequestOptions) ([]Chunk, error) {
+	results, err := p.ChunkBatchWithOptions(ctx, []string{text}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +332,23 @@ func (p *ChunkingPipeline) Chunk(ctx context.Context, text string) ([]Chunk, err
 
 // ChunkBatch splits multiple texts into semantic chunks.
 func (p *ChunkingPipeline) ChunkBatch(ctx context.Context, texts []string) ([][]Chunk, error) {
+	return p.ChunkBatchWithOptions(ctx, texts, ChunkRequestOptions{})
+}
+
+// ChunkBatchWithOptions splits multiple texts into semantic chunks with per-request overrides.
+func (p *ChunkingPipeline) ChunkBatchWithOptions(ctx context.Context, texts []string, opts ChunkRequestOptions) ([][]Chunk, error) {
 	if len(texts) == 0 {
 		return nil, nil
+	}
+
+	// Resolve effective config: per-request overrides take precedence over pipeline defaults.
+	threshold := p.Config.Threshold
+	if opts.Threshold > 0 {
+		threshold = opts.Threshold
+	}
+	targetTokens := p.Config.TargetTokens
+	if opts.TargetTokens > 0 {
+		targetTokens = opts.TargetTokens
 	}
 
 	// Encode texts with character offsets
@@ -363,7 +390,7 @@ func (p *ChunkingPipeline) ChunkBatch(ctx context.Context, texts []string) ([][]
 			offsets = encoded.Spans[i]
 		}
 
-		chunks := p.parseChunks(text, logits[i], offsets)
+		chunks := p.parseChunksWithConfig(text, logits[i], offsets, threshold, targetTokens)
 		results[i] = chunks
 	}
 
@@ -393,8 +420,13 @@ func (p *ChunkingPipeline) ClassifyTokens(ctx context.Context, inputs *backends.
 	return output.LastHiddenState, nil
 }
 
-// parseChunks converts token classification results into chunks.
+// parseChunks converts token classification results into chunks using pipeline defaults.
 func (p *ChunkingPipeline) parseChunks(text string, logits [][]float32, offsets []TokenSpan) []Chunk {
+	return p.parseChunksWithConfig(text, logits, offsets, p.Config.Threshold, p.Config.TargetTokens)
+}
+
+// parseChunksWithConfig converts token classification results into chunks with explicit threshold and targetTokens.
+func (p *ChunkingPipeline) parseChunksWithConfig(text string, logits [][]float32, offsets []TokenSpan, threshold float32, targetTokens int) []Chunk {
 	if len(logits) == 0 || len(text) == 0 {
 		return []Chunk{{
 			Text:  text,
@@ -405,7 +437,7 @@ func (p *ChunkingPipeline) parseChunks(text string, logits [][]float32, offsets 
 	}
 
 	// Find separator positions based on predicted labels
-	separatorPositions := p.findSeparatorPositions(logits, offsets, len(text))
+	separatorPositions := p.findSeparatorPositionsWithThreshold(logits, offsets, len(text), threshold)
 
 	// If no separators found, return whole text as single chunk
 	if len(separatorPositions) == 0 {
@@ -471,15 +503,20 @@ func (p *ChunkingPipeline) parseChunks(text string, logits [][]float32, offsets 
 	}
 
 	// Apply target tokens aggregation if configured
-	if p.Config.TargetTokens > 0 && len(chunks) > 1 {
-		chunks = p.aggregateByTargetTokens(text, chunks)
+	if targetTokens > 0 && len(chunks) > 1 {
+		chunks = p.aggregateByTargetTokensN(text, chunks, targetTokens)
 	}
 
 	return chunks
 }
 
-// findSeparatorPositions identifies character positions where separators occur.
+// findSeparatorPositions identifies character positions where separators occur using pipeline defaults.
 func (p *ChunkingPipeline) findSeparatorPositions(logits [][]float32, offsets []TokenSpan, textLen int) []int {
+	return p.findSeparatorPositionsWithThreshold(logits, offsets, textLen, p.Config.Threshold)
+}
+
+// findSeparatorPositionsWithThreshold identifies character positions where separators occur with an explicit threshold.
+func (p *ChunkingPipeline) findSeparatorPositionsWithThreshold(logits [][]float32, offsets []TokenSpan, textLen int, threshold float32) []int {
 	var positions []int
 
 	for tokenIdx, tokenLogits := range logits {
@@ -499,7 +536,7 @@ func (p *ChunkingPipeline) findSeparatorPositions(logits [][]float32, offsets []
 
 		// Apply confidence threshold using softmax probability
 		prob := softmaxProb(tokenLogits, labelIdx)
-		if prob < p.Config.Threshold {
+		if prob < threshold {
 			continue
 		}
 
@@ -531,8 +568,13 @@ func (p *ChunkingPipeline) isSeparatorLabel(label string) bool {
 		strings.HasPrefix(labelLower, "i-") // BIO format: I-SEP (continuation)
 }
 
-// aggregateByTargetTokens combines chunks until they reach the target token count.
+// aggregateByTargetTokens combines chunks until they reach the target token count using pipeline defaults.
 func (p *ChunkingPipeline) aggregateByTargetTokens(originalText string, chunks []Chunk) []Chunk {
+	return p.aggregateByTargetTokensN(originalText, chunks, p.Config.TargetTokens)
+}
+
+// aggregateByTargetTokensN combines chunks until they reach the given target token count.
+func (p *ChunkingPipeline) aggregateByTargetTokensN(originalText string, chunks []Chunk, targetTokens int) []Chunk {
 	if len(chunks) == 0 {
 		return chunks
 	}
@@ -548,7 +590,7 @@ func (p *ChunkingPipeline) aggregateByTargetTokens(originalText string, chunks [
 		lastEndPos = chunk.End
 
 		// If adding this chunk exceeds target, finalize current
-		if currentTokens > 0 && currentTokens+chunkTokens > p.Config.TargetTokens {
+		if currentTokens > 0 && currentTokens+chunkTokens > targetTokens {
 			combinedText := strings.Join(currentTexts, "\n\n")
 			aggregated = append(aggregated, Chunk{
 				Text:  combinedText,

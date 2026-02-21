@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 2,
+  "name": "chonky-modernbert-base-1",
+  "type": "chunker",
+  "description": "",
+  "source": "mirth/chonky_modernbert_base_1",
+  "files": [
+    {
+      "name": "config.json",
+      "digest": "sha256:3ce1327d6e384227a65bb71bfb8318b00a548a08ababaa15ab9fb1ce39224c37",
+      "size": 1333
+    },
+    {
+      "name": "model.onnx",
+      "digest": "sha256:a4add1ffd0bffeeedd653204eb32d1ef70d37450d59708f47f3e3a129b6502d3",
+      "size": 598999802
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049",
+      "size": 694
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:c7a995f78d60cc3c253902f4b5becfe2f9d0b44f78e6e2f81a343a0cb71789e6",
+      "size": 3583327
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:30be14db339ea143e64398869142116d0c0ba37db0b21bd0503f4b77e7a1309a",
+      "size": 20949
+    }
+  ],
+  "owner": "mirth",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/mirth/chonky_modernbert_base_1",
+    "downloadedAt": "2026-02-21T19:06:17.718823+00:00"
+  }
+}
