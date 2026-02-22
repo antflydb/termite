@@ -582,7 +582,7 @@ components:
             Array of classification results (one per input text).
             Each result is an array of ClassifyResult sorted by score descending.
 
-    # JSON Extraction Types (GLiNER2)
+    # Extraction Types (GLiNER2)
     ExtractRequest:
       type: object
       required:
@@ -592,7 +592,7 @@ components:
       properties:
         model:
           type: string
-          description: Name of recognizer model with json_extraction capability
+          description: Name of recognizer model with 'extraction' capability
           example: "fastino/gliner2-base-v1"
         texts:
           type: array
@@ -930,14 +930,14 @@ components:
         - zeroshot
         - relations
         - answers
-        - json_extraction
+        - extraction
       description: |
         Capability that a recognizer model supports:
         - labels: Entity extraction (NER) - extracts labeled spans like PER, ORG, LOC
         - zeroshot: Supports arbitrary labels at inference time (GLiNER models)
         - relations: Relation extraction between entities (GLiNER multitask, REBEL)
         - answers: Extractive question answering (GLiNER multitask)
-        - json_extraction: Structured JSON extraction from text (GLiNER2)
+        - extraction: Structured schema-based extraction from text (GLiNER2)
 
     RecognizerModelInfo:
       type: object
@@ -2102,9 +2102,9 @@ paths:
 
   /extract:
     post:
-      summary: Extract structured JSON from text
+      summary: Extract structured data from text
       description: |
-        Extracts structured JSON data from text using GLiNER2 models.
+        Extracts structured data from text using GLiNER2 models.
         Field names in the schema are treated as NER labels, and the model's
         span extraction pipeline populates field values.
 

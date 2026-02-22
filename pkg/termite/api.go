@@ -157,7 +157,13 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		for name := range capsMap {
 			resp.Recognizers = append(resp.Recognizers, name)
 		}
-		resp.Extractors = t.node.nerRegistry.ListJSONExtractionCapable()
+		extractors := make([]string, 0)
+		for name := range capsMap {
+			if t.node.nerRegistry.HasCapability(name, modelregistry.CapabilityExtraction) {
+				extractors = append(extractors, name)
+			}
+		}
+		resp.Extractors = extractors
 		if len(capsMap) > 0 {
 			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
 			for name, caps := range capsMap {
@@ -992,22 +998,28 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 	config.IncludeConfidence = req.IncludeConfidence
 	config.IncludeSpans = req.IncludeSpans
 
-	// Get JSON extractor from NER registry
-	extractor, err := ln.nerRegistry.GetJSONExtractor(req.Model)
+	// Acquire model and check extraction support
+	model, err := ln.nerRegistry.Acquire(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found or does not support JSON extraction: %s", req.Model), http.StatusNotFound)
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		return
 	}
 	defer ln.nerRegistry.Release(req.Model)
 
+	extractor, ok := model.(ner.Extractor)
+	if !ok || !extractor.SupportsExtraction() {
+		http.Error(w, fmt.Sprintf("model %s does not support extraction", req.Model), http.StatusBadRequest)
+		return
+	}
+
 	// Perform extraction
-	results, err := extractor.ExtractJSON(r.Context(), req.Texts, schemas, config)
+	results, err := extractor.Extract(r.Context(), req.Texts, schemas, config)
 	if err != nil {
-		ln.logger.Error("JSON extraction failed",
+		ln.logger.Error("extraction failed",
 			zap.String("model", req.Model),
 			zap.Int("num_texts", len(req.Texts)),
 			zap.Error(err))
-		http.Error(w, fmt.Sprintf("JSON extraction failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("extraction failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -1023,7 +1035,7 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 	}
 	RecordExtractionFields(req.Model, totalFields)
 
-	ln.logger.Info("JSON extraction request completed",
+	ln.logger.Info("extraction request completed",
 		zap.String("model", req.Model),
 		zap.Int("num_texts", len(req.Texts)),
 		zap.Int("total_fields", totalFields))

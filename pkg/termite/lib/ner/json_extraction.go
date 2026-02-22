@@ -94,13 +94,13 @@ type ExtractedInstance map[string]any
 // Keys are structure names, values are slices of ExtractedInstance.
 type ExtractionResult map[string][]ExtractedInstance
 
-// JSONExtractor defines the interface for models that support structured JSON extraction.
-type JSONExtractor interface {
-	// ExtractJSON extracts structured JSON from text based on the given schemas.
-	ExtractJSON(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error)
+// Extractor defines the interface for models that support structured schema-based extraction.
+type Extractor interface {
+	// Extract extracts structured data from text based on the given schemas.
+	Extract(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error)
 
-	// SupportsJSONExtraction returns true if the model supports JSON extraction.
-	SupportsJSONExtraction() bool
+	// SupportsExtraction returns true if the model supports schema-based extraction.
+	SupportsExtraction() bool
 }
 
 // ParseSchemaString parses a schema map (e.g., {"person": ["name::str", "age::str", "skills::list"]})

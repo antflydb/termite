@@ -69,16 +69,10 @@ type NERRegistryInterface interface {
 	Acquire(modelName string) (ner.Model, error)
 	// Release decrements reference count, allowing the model to be evicted.
 	Release(modelName string)
-	// GetJSONExtractor retrieves a model that supports structured JSON extraction
-	GetJSONExtractor(modelName string) (ner.JSONExtractor, error)
 	// List returns a map of model names to their capabilities
 	List() map[string][]string
-	// ListJSONExtractionCapable returns names of models that support JSON extraction
-	ListJSONExtractionCapable() []string
 	// HasCapability checks if a model has a specific capability
 	HasCapability(modelName string, capability modelregistry.Capability) bool
-	// SupportsJSONExtraction returns true if the model supports structured JSON extraction
-	SupportsJSONExtraction(modelName string) bool
 	// Close shuts down the registry and releases resources
 	Close() error
 }

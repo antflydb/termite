@@ -23,8 +23,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// extractJSONFromText processes a single text against all schemas using the pipeline.
-func extractJSONFromText(
+// extractFromText processes a single text against all schemas using the pipeline.
+func extractFromText(
 	ctx context.Context,
 	pipeline *pipelines.GLiNERPipeline,
 	text string,

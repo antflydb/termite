@@ -437,17 +437,7 @@ func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
 	return m.Acquire(modelName)
 }
 
-func (m *MockNERRegistry) GetJSONExtractor(modelName string) (ner.JSONExtractor, error) {
-	return nil, fmt.Errorf("json extractor not found: %s", modelName)
-}
 
-func (m *MockNERRegistry) SupportsJSONExtraction(modelName string) bool {
-	return false
-}
-
-func (m *MockNERRegistry) ListJSONExtractionCapable() []string {
-	return nil
-}
 
 
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {

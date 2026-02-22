@@ -518,8 +518,8 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		if model.SupportsClassification() && !slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
 			caps = append(caps, string(modelregistry.CapabilityClassification))
 		}
-		if model.SupportsJSONExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityJSONExtraction)) {
-			caps = append(caps, string(modelregistry.CapabilityJSONExtraction))
+		if model.SupportsExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
+			caps = append(caps, string(modelregistry.CapabilityExtraction))
 		}
 		r.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
@@ -612,57 +612,6 @@ func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.C
 	return slices.Contains(caps, string(capability))
 }
 
-
-// GetJSONExtractor returns a model that supports structured JSON extraction.
-// Returns nil and an error if the model doesn't exist or doesn't support JSON extraction.
-// The caller MUST call Release() when done to allow the model to be evicted.
-func (r *NERRegistry) GetJSONExtractor(modelName string) (ner.JSONExtractor, error) {
-	loaded, err := r.getLoaded(modelName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if the model implements the JSONExtractor interface
-	extractor, ok := loaded.recognizer.(ner.JSONExtractor)
-	if !ok {
-		return nil, fmt.Errorf("model %s does not implement JSONExtractor interface", modelName)
-	}
-
-	if !extractor.SupportsJSONExtraction() {
-		return nil, fmt.Errorf("model %s does not support JSON extraction", modelName)
-	}
-
-	// Increment reference count to prevent eviction during use
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
-	r.logger.Debug("Acquired JSON extractor",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
-
-	return extractor, nil
-}
-
-// SupportsJSONExtraction returns true if the model supports structured JSON extraction.
-func (r *NERRegistry) SupportsJSONExtraction(modelName string) bool {
-	return r.HasCapability(modelName, modelregistry.CapabilityJSONExtraction)
-}
-
-// ListJSONExtractionCapable returns all NER models that support JSON extraction.
-func (r *NERRegistry) ListJSONExtractionCapable() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0)
-	for name, info := range r.discovered {
-		if slices.Contains(info.Capabilities, string(modelregistry.CapabilityJSONExtraction)) {
-			names = append(names, name)
-		}
-	}
-	return names
-}
 
 // Preload loads specified models at startup to avoid first-request latency
 func (r *NERRegistry) Preload(modelNames []string) error {

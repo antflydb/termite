@@ -51,7 +51,7 @@
     "zeroshot",
     "classification",
     "relations",
-    "json_extraction"
+    "extraction"
   ],
   "variants": {
     "f16": {
