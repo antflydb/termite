@@ -93,27 +93,6 @@ paths:
         Supports multiple content types via Accept header:
         - `application/octet-stream`: Binary serialization (default, most efficient)
         - `application/json`: JSON response with model name and embeddings
-
-        ## Examples
-
-        Text embedding (Ollama-compatible):
-        ```json
-        {
-          "model": "BAAI/bge-small-en-v1.5",
-          "input": ["hello world", "machine learning"]
-        }
-        ```
-
-        Multimodal embedding (OpenAI-compatible):
-        ```json
-        {
-          "model": "openai/clip-vit-base-patch32",
-          "input": [
-            {"type": "text", "text": "a photo of a cat"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0..."}}
-          ]
-        }
-        ```
       operationId: generateEmbeddings
       requestBody:
         required: true
@@ -172,20 +151,6 @@ paths:
         ## Caching
 
         Results are cached in memory for 2 minutes. Cache key includes both config and text content.
-
-        ## Example
-
-        ```json
-        {
-          "text": "This is a long document...",
-          "config": {
-            "model": "fixed",
-            "target_tokens": 500,
-            "overlap_tokens": 50,
-            "separator": "\n\n"
-          }
-        }
-        ```
       operationId: chunkText
       requestBody:
         required: true
@@ -232,19 +197,6 @@ paths:
         - Models are auto-discovered from `models_dir/rerankers/`
         - Supports quantized models (`model_quantized.onnx`)
         - Automatically prefers quantized variants if available
-
-        ## Example
-
-        ```json
-        {
-          "model": "BAAI/bge-reranker-v2-m3",
-          "query": "machine learning applications",
-          "prompts": [
-            "Introduction to Machine Learning: This guide covers...",
-            "Deep Learning Fundamentals: Neural networks are..."
-          ]
-        }
-        ```
 
         For document-based reranking with field extraction, use the client-side
         `lib/reranking` package which handles rendering before calling this endpoint.
@@ -306,42 +258,8 @@ paths:
 
         ## Input Format
 
-        Uses OpenAI-compatible chat format with messages array:
-        ```json
-        {
-          "model": "google/gemma-3-1b-it",
-          "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "Hello!"}
-          ],
-          "max_tokens": 256,
-          "stream": false
-        }
-        ```
-
-        ## Example (Non-streaming)
-
-        ```bash
-        curl -X POST http://localhost:8080/api/generate \
-          -H "Content-Type: application/json" \
-          -d '{
-            "model": "google/gemma-3-1b-it",
-            "messages": [{"role": "user", "content": "What is machine learning?"}],
-            "max_tokens": 100
-          }'
-        ```
-
-        ## Example (Streaming)
-
-        ```bash
-        curl -X POST http://localhost:8080/api/generate \
-          -H "Content-Type: application/json" \
-          -d '{
-            "model": "google/gemma-3-1b-it",
-            "messages": [{"role": "user", "content": "Hello!"}],
-            "stream": true
-          }'
-        ```
+        Uses OpenAI-compatible chat format with messages array containing role
+        (system, user, assistant) and content. Set `stream: true` for streaming responses.
       operationId: generateContent
       requestBody:
         required: true
@@ -405,15 +323,6 @@ paths:
         - Supports quantized variants (model_i8.onnx)
         - Compatible with HuggingFace BERT-based recognition models
         - GLiNER models support custom entity labels via the `labels` parameter
-
-        ## Example
-
-        ```json
-        {
-          "model": "dslim/bert-base-NER",
-          "texts": ["John Smith works at Google.", "Apple Inc. is in Cupertino."]
-        }
-        ```
       operationId: recognizeEntities
       requestBody:
         required: true
@@ -477,28 +386,10 @@ paths:
         - **Intent Detection**: Identify user intents from text
         - **Content Moderation**: Detect inappropriate content types
 
-        ## Example
-
-        ```json
-        {
-          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
-          "texts": ["I love this product!", "The service was terrible."],
-          "labels": ["positive", "negative", "neutral"]
-        }
-        ```
-
         ## Multilingual Support
 
         The mDeBERTa-mnli-xnli model supports 100+ languages. You can classify text
-        in any supported language using labels in that language:
-
-        ```json
-        {
-          "model": "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli",
-          "texts": ["J'adore ce produit!"],
-          "labels": ["positif", "négatif", "neutre"]
-        }
-        ```
+        in any supported language using labels in that language.
       operationId: classifyText
       requestBody:
         required: true
@@ -555,16 +446,6 @@ paths:
         - **Query Generation**: Generate search queries from documents
         - **Paraphrasing**: Rewrite text in different words
         - **Translation**: Translate text between languages
-
-        ## Example
-
-        For question generation with LMQG models:
-        ```json
-        {
-          "model": "lmqg/flan-t5-small-squad-qg",
-          "inputs": ["generate question: <hl> Beyonce <hl> Beyonce starred as Etta James in Cadillac Records."]
-        }
-        ```
       operationId: rewriteText
       requestBody:
         required: true
@@ -626,27 +507,6 @@ paths:
         - **Donut DocVQA**: `<s_docvqa><s_question>...</s_question><s_answer>` for visual QA
         - **Florence-2 OCR**: `<OCR>` for text extraction
         - **Florence-2 Caption**: `<CAPTION>` for image description
-
-        ## Example
-
-        ```json
-        {
-          "model": "microsoft/trocr-base-printed",
-          "images": [
-            {"url": "data:image/png;base64,iVBORw0KGgo..."}
-          ],
-          "max_tokens": 256
-        }
-        ```
-
-        With Donut for receipt parsing:
-        ```json
-        {
-          "model": "naver-clova-ix/donut-base-finetuned-cord-v2",
-          "images": [{"url": "data:image/png;base64,..."}],
-          "prompt": "<s_cord-v2>"
-        }
-        ```
       operationId: readImages
       requestBody:
         required: true
@@ -895,11 +755,31 @@ components:
             - image_url
         image_url:
           $ref: '#/components/schemas/ImageURL'
+    MediaContentPart:
+      type: object
+      description: Inline binary media content (audio, image, etc.)
+      required:
+        - type
+        - data
+        - mime_type
+      properties:
+        type:
+          type: string
+          enum:
+            - media
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded binary data
+        mime_type:
+          type: string
+          description: MIME type (audio/wav, image/gif, image/png, etc.)
     ContentPart:
-      description: A content part for multimodal embedding (text or image)
+      description: A content part for multimodal input (text, image URL, or inline media)
       oneOf:
         - $ref: '#/components/schemas/TextContentPart'
         - $ref: '#/components/schemas/ImageURLContentPart'
+        - $ref: '#/components/schemas/MediaContentPart'
     EmbedRequest:
       type: object
       required:
@@ -962,27 +842,23 @@ components:
               format: float
           description: Array of embedding vectors (one per input string)
     Chunk:
-      type: object
-      description: A chunk of text with position information.
-      required:
-        - id
-        - text
-        - start_char
-        - end_char
-      properties:
-        id:
-          type: integer
-          description: Sequence number of the chunk (0, 1, 2, ...)
-          x-go-type: uint32
-        text:
-          type: string
-          description: The chunk content
-        start_char:
-          type: integer
-          description: Character position in original text where chunk starts
-        end_char:
-          type: integer
-          description: Character position in original text where chunk ends (exclusive)
+      description: A chunk of content. Text chunks have mime_type text/plain.
+      allOf:
+        - oneOf:
+            - $ref: '#/components/schemas/TextContent'
+            - $ref: '#/components/schemas/BinaryContent'
+        - type: object
+          required:
+            - id
+            - mime_type
+          properties:
+            id:
+              type: integer
+              x-go-type: uint32
+              description: Sequence number of the chunk (0, 1, 2, ...)
+            mime_type:
+              type: string
+              description: 'MIME type: text/plain, audio/wav, image/png, etc.'
     ChunkConfig:
       type: object
       description: |
@@ -1025,14 +901,32 @@ components:
           description: Confidence threshold for ONNX models (0.0-1.0)
           example: 0.5
           default: 0.5
+        window_duration_ms:
+          type: integer
+          description: 'Window duration in ms for audio chunking (default: 30000)'
+          default: 30000
+        overlap_duration_ms:
+          type: integer
+          description: 'Overlap duration in ms between audio chunks (default: 0)'
+          default: 0
     ChunkRequest:
       type: object
-      required:
-        - text
       properties:
+        input:
+          description: |
+            Input content to chunk. Supports two formats:
+            - Text string: `"This is a long document..."` (backward compatible)
+            - ContentPart: `{"type": "media", "data": "<base64>", "mime_type": "audio/wav"}`
+            - ContentPart: `{"type": "text", "text": "..."}`
+          oneOf:
+            - type: string
+              description: Text to chunk (backward compatible)
+            - $ref: '#/components/schemas/ContentPart'
+              description: Content part (text or media)
         text:
           type: string
-          description: Text to chunk
+          deprecated: true
+          description: 'DEPRECATED: Use ''input'' instead. Text to chunk.'
           example: This is a long document that needs to be split into smaller chunks...
         config:
           $ref: '#/components/schemas/ChunkConfig'
@@ -1387,7 +1281,7 @@ components:
             type: number
           minItems: 4
           maxItems: 4
-          description: 'Bounding box [x1, y1, x2, y2] in pixel coordinates'
+          description: Bounding box [x1, y1, x2, y2] in pixel coordinates
         confidence:
           type: number
           description: Recognition confidence score (0-1)
@@ -1553,7 +1447,22 @@ components:
           description: Available reader/OCR models from models_dir/readers/
           example:
             - microsoft/trocr-base-printed
-            - naver-clova-ix/donut-base-finetuned-cord-v2
+            - monkt/paddleocr-onnx
+        reader_info:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ReaderModelInfo'
+          description: |
+            Detailed information about reader models including capabilities.
+            Map of model name to model info. Use this to determine what capabilities
+            each reader supports (document_qa, regions).
+          example:
+            monkt/paddleocr-onnx:
+              capabilities:
+                - regions
+            naver-clova-ix/donut-base-finetuned-docvqa:
+              capabilities:
+                - document_qa
         transcribers:
           type: array
           items:
@@ -1609,6 +1518,26 @@ components:
           example:
             - labels
             - zeroshot
+    ReaderCapability:
+      type: string
+      enum:
+        - document_qa
+        - regions
+      description: |
+        Capability that a reader model supports (all readers perform OCR as a baseline):
+        - document_qa: Visual document question answering (Donut, Pix2Struct)
+        - regions: Returns spatial text regions with bounding boxes (PaddleOCR)
+    ReaderModelInfo:
+      type: object
+      description: Detailed information about a reader model
+      properties:
+        capabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReaderCapability'
+          description: List of capabilities this reader model supports
+          example:
+            - regions
     Tool:
       type: object
       description: A tool (function) that the model can call
@@ -2134,6 +2063,13 @@ components:
           example:
             BAAI/bge-small-en-v1.5: eager
             mirth/chonky-mmbert-small-multilingual-1: lazy
+        allow_downloads:
+          type: boolean
+          description: |
+            Whether the dashboard should show model download commands.
+            Defaults to true for standalone/swarm mode. Set to false in managed
+            deployments (e.g., Kubernetes operator) where models are managed externally.
+          default: true
         log:
           $ref: '#/components/schemas/schemas-Config'
     VersionResponse:
@@ -2160,6 +2096,49 @@ components:
           type: string
           description: Go runtime version
           example: go1.25.0
+        allow_downloads:
+          type: boolean
+          description: Whether model downloads are allowed in this deployment
+          example: true
+    TextContent:
+      type: object
+      description: Text content with character offsets.
+      required:
+        - text
+        - start_char
+        - end_char
+      properties:
+        text:
+          type: string
+          description: The chunk text content
+        start_char:
+          type: integer
+          description: Character position in original text where chunk starts
+        end_char:
+          type: integer
+          description: Character position in original text where chunk ends (exclusive)
+    BinaryContent:
+      type: object
+      description: Binary media content with format-specific metadata.
+      properties:
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded binary data (valid WAV, PNG, etc.)
+        start_time_ms:
+          type: number
+          format: float
+          description: 'Audio: window start time in milliseconds'
+        end_time_ms:
+          type: number
+          format: float
+          description: 'Audio: window end time in milliseconds'
+        frame_index:
+          type: integer
+          description: 'Animation: frame number'
+        frame_delay_ms:
+          type: integer
+          description: 'Animation: display delay in milliseconds'
     ContentSecurityConfig:
       type: object
       properties:

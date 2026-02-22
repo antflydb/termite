@@ -26,6 +26,9 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
     main: ./cmd
     binary: termite
     ldflags:
@@ -33,84 +36,6 @@ builds:
       - -X main.version={{.Version}}
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
-
-  # ONNX-enabled builds with CGO (requires ONNX Runtime libraries)
-  # Linux AMD64 with ONNX (native compiler)
-  - id: termite-onnx-linux-amd64
-    dir: pkg/termite
-    env:
-      - CGO_ENABLED=1
-      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/linux-amd64/lib -lonnxruntime -ltokenizers -lstdc++
-      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/linux-amd64/include
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
-    tags:
-      - onnx
-      - ORT
-    goos:
-      - linux
-    goarch:
-      - amd64
-    main: ./cmd
-    binary: termite
-
-  # Linux ARM64 with ONNX (cross-compile)
-  - id: termite-onnx-linux-arm64
-    dir: pkg/termite
-    env:
-      - CGO_ENABLED=1
-      - CC=aarch64-linux-gnu-gcc
-      - CXX=aarch64-linux-gnu-g++
-      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/linux-arm64/lib -lonnxruntime -ltokenizers -lstdc++
-      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/linux-arm64/include
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
-    tags:
-      - onnx
-      - ORT
-    goos:
-      - linux
-    goarch:
-      - arm64
-    main: ./cmd
-    binary: termite
-
-  # macOS ARM64 with ONNX (Zig cross-compilation)
-  - id: termite-onnx-darwin-arm64
-    dir: pkg/termite
-    env:
-      - CGO_ENABLED=1
-      - CC=zig c++ -target aarch64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CXX=zig c++ -target aarch64-macos -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -Wno-nullability-completeness
-      - CGO_LDFLAGS=-L{{ .Env.ONNXRUNTIME_ROOT }}/darwin-arm64/lib -L{{ .Env.SDK_PATH }}/usr/lib -lonnxruntime -ltokenizers -F{{ .Env.SDK_PATH }}/System/Library/Frameworks -framework CoreFoundation -framework Security
-      - CGO_CFLAGS=-I{{ .Env.ONNXRUNTIME_ROOT }}/darwin-arm64/include -isysroot {{ .Env.SDK_PATH }} -I{{ .Env.SDK_PATH }}/usr/include -I{{ .Env.SDK_PATH }}/System/Library/Frameworks/Kernel.framework/Versions/A/Headers -Wno-nullability-completeness
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w
-      - -extldflags "-Wl,-rpath,@executable_path/lib"
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
-    tags:
-      - onnx
-      - ORT
-    goos:
-      - darwin
-    goarch:
-      - arm64
-    main: ./cmd
-    binary: termite
 
   # ============================================
   # OMNI builds (ONNX + XLA) for runtime backend selection
@@ -215,33 +140,6 @@ archives:
       - README.md
       - LICENSE
 
-  # ONNX-enabled builds (separate archives with -onnx suffix)
-  # Includes bundled ONNX Runtime libraries for self-contained distribution
-  - id: onnx
-    formats: [tar.gz]
-    name_template: >-
-      {{ .ProjectName }}-onnx_
-      {{- .Version }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else }}{{ .Arch }}{{ end }}
-    builds:
-      - termite-onnx-linux-amd64
-      - termite-onnx-linux-arm64
-      - termite-onnx-darwin-arm64
-    files:
-      - README.md
-      - LICENSE
-      # Bundle ONNX Runtime libraries for each platform
-      - src: "onnxruntime/{{ .Os }}-{{ .Arch }}/lib/libonnxruntime*"
-        dst: lib/
-        strip_parent: true
-      # Bundle ONNX Runtime GenAI libraries (for LLM generation)
-      # Note: Not available for linux-arm64, glob silently skips if no match
-      - src: "onnxruntime/{{ .Os }}-{{ .Arch }}/lib/libonnxruntime-genai*"
-        dst: lib/
-        strip_parent: true
-
   # OMNI builds (ONNX + XLA) with runtime backend selection
   # Includes bundled ONNX Runtime and PJRT libraries
   - id: omni
@@ -272,11 +170,6 @@ archives:
       - src: "pjrt/{{ .Os }}-{{ .Arch }}/lib/pjrt_c_api_cpu*"
         dst: lib/
         strip_parent: true
-
-universal_binaries:
-  - id: termite
-    replace: true
-    name_template: termite
 
 changelog:
   sort: asc
@@ -319,12 +212,6 @@ release:
     # Base image (pure Go, multi-arch)
     docker pull ghcr.io/antflydb/termite:{{.Tag}}
 
-    # ONNX Runtime (GPU/CPU acceleration)
-    docker pull ghcr.io/antflydb/termite:onnx-{{.Tag}}
-
-    # XLA/TPU (Google Cloud TPU)
-    docker pull ghcr.io/antflydb/termite:xla-tpu-{{.Tag}}
-
     # Omni (ONNX + XLA, runtime backend selection)
     docker pull ghcr.io/antflydb/termite:omni-{{.Tag}}
     ```
@@ -346,42 +233,12 @@ homebrew_casks:
       template: "https://github.com/antflydb/termite/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     binary: "termite"
     conflicts:
-      - cask: termite-onnx
+      - cask: termite-omni
     hooks:
       post:
         install: |
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite"]
-          end
-
-  # ONNX-enabled version with bundled ML runtime libraries
-  - name: termite-onnx
-    ids:
-      - onnx
-    repository:
-      owner: antflydb
-      name: homebrew-antfly
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://docs.antfly.io/docs/guides/termite"
-    description: "Termite with ONNX Runtime - includes ML inference acceleration"
-    url:
-      template: "https://github.com/antflydb/termite/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-    binary: "termite"
-    conflicts:
-      - cask: termite
-    caveats: |
-      termite-onnx includes bundled ONNX Runtime libraries for ML inference.
-      The libraries are installed in the lib/ directory alongside the binary.
-
-      For the standard version without ML dependencies, use:
-        brew install --cask termite
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite"]
-            # Also clear quarantine on bundled libraries
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lib"]
           end
 
   # OMNI version with both ONNX Runtime and XLA backends
@@ -399,7 +256,6 @@ homebrew_casks:
     binary: "termite"
     conflicts:
       - cask: termite
-      - cask: termite-onnx
     caveats: |
       termite-omni includes both ONNX Runtime and XLA backends for ML inference.
       Bundled libraries are auto-discovered from lib/ next to the binary.
@@ -407,9 +263,8 @@ homebrew_casks:
       Backend priority can be configured in termite.yaml:
         backend_priority: ["onnx:coreml", "xla:cpu", "go"]
 
-      For single-backend versions:
-        brew install --cask termite      # Pure Go (no acceleration)
-        brew install --cask termite-onnx # ONNX Runtime only
+      For the standard version without ML dependencies, use:
+        brew install --cask termite
     hooks:
       post:
         install: |

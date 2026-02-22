@@ -199,6 +199,7 @@ func (r *ReaderRegistry) discoverModels() error {
 	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -218,27 +219,16 @@ func (r *ReaderRegistry) discoverModels() error {
 			variants = map[string]string{"": ""}
 		}
 
-		// Log discovered variants
-		variantIDs := make([]string, 0, len(variants))
-		for v := range variants {
-			if v == "" {
-				variantIDs = append(variantIDs, "default")
-			} else {
-				variantIDs = append(variantIDs, v)
-			}
-		}
-		r.logger.Info("Discovered reader model (not loaded)",
-			zap.String("name", registryFullName),
-			zap.String("path", modelPath),
-			zap.Strings("variants", variantIDs))
-
-		// Store each variant for lazy loading
-		// For Vision2Seq models, we use the model path directly (not ONNX filename)
+		// Store each variant for lazy loading (skip already-discovered entries)
+		anyNew := false
 		for variantID := range variants {
-			// Determine registry name
 			registryName := registryFullName
 			if variantID != "" {
 				registryName = registryFullName + "-" + variantID
+			}
+
+			if _, exists := r.discovered[registryName]; exists {
+				continue
 			}
 
 			// Extract capabilities from manifest if available
@@ -253,11 +243,29 @@ func (r *ReaderRegistry) discoverModels() error {
 				PoolSize:     poolSize,
 				Capabilities: caps,
 			}
+			anyNew = true
+		}
+
+		if anyNew {
+			variantIDs := make([]string, 0, len(variants))
+			for v := range variants {
+				if v == "" {
+					variantIDs = append(variantIDs, "default")
+				} else {
+					variantIDs = append(variantIDs, v)
+				}
+			}
+			r.logger.Info("Discovered reader model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath),
+				zap.Strings("variants", variantIDs))
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Reader model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -281,7 +289,16 @@ func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("reader model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Reader re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("reader model not found: %s", modelName)
+		}
 	}
 
 	// Load the model
@@ -372,8 +389,11 @@ func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, erro
 	return model, nil
 }
 
-// List returns all available reader model names (discovered, not necessarily loaded)
+// List returns all available reader model names (discovered, not necessarily loaded).
+// Re-scans the models directory to pick up newly pulled models.
 func (r *ReaderRegistry) List() []string {
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
