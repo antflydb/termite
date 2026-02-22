@@ -86,6 +86,10 @@ const (
 	// CapabilityRegions indicates the model returns spatial text regions with bounding boxes,
 	// not just plain text output (e.g., PaddleOCR, Surya multi-stage pipelines).
 	CapabilityRegions Capability = "regions"
+
+	// CapabilityExtraction indicates the model supports structured extraction
+	// (e.g., GLiNER2 models)
+	CapabilityExtraction Capability = "extraction"
 )
 
 // ParseModelType parses a string into a ModelType

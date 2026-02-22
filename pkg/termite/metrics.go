@@ -111,6 +111,25 @@ var (
 		[]string{"model"},
 	)
 
+	extractionRequestOps = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "antfly",
+			Subsystem: "termite",
+			Name:      "extraction_request_ops_total",
+			Help:      "The total number of JSON extraction requests.",
+		},
+		[]string{"model"},
+	)
+	extractionFieldsOps = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "antfly",
+			Subsystem: "termite",
+			Name:      "extraction_fields_total",
+			Help:      "The total number of fields extracted.",
+		},
+		[]string{"model"},
+	)
+
 	readerRequestOps = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "antfly",
@@ -232,6 +251,8 @@ func init() {
 	prometheus.MustRegister(tokenGenerationOps)
 	prometheus.MustRegister(nerRequestOps)
 	prometheus.MustRegister(nerCreationOps)
+	prometheus.MustRegister(extractionRequestOps)
+	prometheus.MustRegister(extractionFieldsOps)
 	prometheus.MustRegister(readerRequestOps)
 	prometheus.MustRegister(transcriberRequestOps)
 	prometheus.MustRegister(modelLoadDuration)
@@ -324,6 +345,16 @@ func RecordNERRequest(model string) {
 // RecordNERCreation records the number of entities extracted
 func RecordNERCreation(model string, count int) {
 	nerCreationOps.WithLabelValues(model).Add(float64(count))
+}
+
+// RecordExtractionRequest increments the extraction request counter
+func RecordExtractionRequest(model string) {
+	extractionRequestOps.WithLabelValues(model).Inc()
+}
+
+// RecordExtractionFields records the number of fields extracted
+func RecordExtractionFields(model string, count int) {
+	extractionFieldsOps.WithLabelValues(model).Add(float64(count))
 }
 
 // RecordReaderRequest increments the reader request counter

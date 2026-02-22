@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -600,6 +601,71 @@ func (c *TermiteClient) Transcribe(ctx context.Context, model string, audio []by
 	}
 
 	resp, err := c.client.TranscribeAudioWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON503 != nil {
+		return nil, fmt.Errorf("service unavailable: %s", resp.JSON503.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
+// ExtractJSONConfig contains configuration for JSON extraction.
+type ExtractJSONConfig struct {
+	Threshold         float32
+	FlatNER           *bool // Pointer so explicit false can be sent (server defaults to true)
+	IncludeConfidence bool
+	IncludeSpans      bool
+}
+
+// ExtractJSON extracts structured JSON from text using a GLiNER2 model.
+// The schema maps structure names to field definitions (e.g., {"person": ["name::str", "age::str"]}).
+func (c *TermiteClient) ExtractJSON(ctx context.Context, model string, texts []string, schema map[string][]string, config *ExtractJSONConfig) (*oapi.ExtractResponse, error) {
+	// Build request body manually instead of using the generated ExtractRequest type,
+	// because the generated type's omitzero tag on FlatNer (bool) silently drops false.
+	type extractReqBody struct {
+		Model             string              `json:"model"`
+		Texts             []string            `json:"texts"`
+		Schema            map[string][]string `json:"schema"`
+		Threshold         float32             `json:"threshold,omitempty"`
+		FlatNER           *bool               `json:"flat_ner,omitempty"`
+		IncludeConfidence bool                `json:"include_confidence,omitempty"`
+		IncludeSpans      bool                `json:"include_spans,omitempty"`
+	}
+
+	req := extractReqBody{
+		Model:  model,
+		Texts:  texts,
+		Schema: schema,
+	}
+
+	if config != nil {
+		req.Threshold = config.Threshold
+		req.FlatNER = config.FlatNER
+		req.IncludeConfidence = config.IncludeConfidence
+		req.IncludeSpans = config.IncludeSpans
+	}
+
+	buf, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	resp, err := c.client.ExtractJSONWithBodyWithResponse(ctx, "application/json", bytes.NewReader(buf))
 	if err != nil {
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
