@@ -191,9 +191,15 @@ func (r *GeneratorRegistry) discoverModels() error {
 	// Known variant subdirectory names for generators
 	knownVariants := []string{"i4", "i4-cuda", "i4-dml"}
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
+
+		// Skip if already discovered
+		if _, exists := r.discovered[registryFullName]; exists {
+			continue
+		}
 
 		// Check for genai_config.json (preferred) or model.onnx in root or onnx/ subdirectory
 		if !isValidGeneratorModel(modelPath) {
@@ -232,9 +238,11 @@ func (r *GeneratorRegistry) discoverModels() error {
 			Variants: variants,
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Generator model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -258,7 +266,16 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("generator model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
 	}
 
 	// Load the model
@@ -411,7 +428,16 @@ func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generatio
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("generator model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
 	}
 
 	// Determine path based on variant
@@ -446,8 +472,11 @@ func (r *GeneratorRegistry) ListVariants(modelName string) []string {
 	return variants
 }
 
-// List returns all available generator model names (discovered, not necessarily loaded)
+// List returns all available generator model names (discovered, not necessarily loaded).
+// Re-scans the models directory to pick up newly pulled models.
 func (r *GeneratorRegistry) List() []string {
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

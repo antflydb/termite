@@ -93,6 +93,26 @@ type SessionConfig struct {
 
 	// GraphOptimizationLevel for ONNX (0-3)
 	GraphOptimizationLevel int
+
+	// InputConstants maps input names to compile-time constant values.
+	// These inputs are baked into the computation graph as constants rather
+	// than passed as dynamic inputs at inference time. This enables static
+	// resolution of ONNX If node conditions, allowing the graph compiler
+	// to build only the taken branch.
+	//
+	// Only used by GoMLX-based backends (Go, XLA, CoreML). ONNX Runtime
+	// handles If nodes natively at runtime, so this field is ignored.
+	InputConstants map[string]any
+
+	// DynamicAxes overrides fixed input dimensions to be dynamic.
+	// Some ONNX models (notably HuggingFace optimum exports) bake specific
+	// integer values into input dimension specs during tracing, when those
+	// dimensions should actually be dynamic (e.g., sequence length exported
+	// as fixed 16 instead of symbolic "decoder_sequence_length").
+	//
+	// Only used by GoMLX-based backends. ONNX Runtime handles dynamic
+	// shapes natively, so this field is ignored.
+	DynamicAxes []DynamicAxisOverride
 }
 
 // DefaultSessionConfig returns sensible defaults.
@@ -115,6 +135,33 @@ func WithSessionThreads(n int) SessionOption {
 func WithSessionGPUMode(mode GPUMode) SessionOption {
 	return func(c *SessionConfig) {
 		c.GPUMode = mode
+	}
+}
+
+// WithInputConstants marks inputs as compile-time constants.
+// Constant inputs are baked into the computation graph and must not be
+// passed as dynamic inputs at inference time. This enables static resolution
+// of ONNX If node conditions on GoMLX-based backends.
+func WithInputConstants(constants map[string]any) SessionOption {
+	return func(c *SessionConfig) {
+		c.InputConstants = constants
+	}
+}
+
+// DynamicAxisOverride specifies that a fixed input dimension should be
+// treated as dynamic. This works around ONNX models where the exporter
+// baked a specific integer value into a dimension that should be symbolic.
+type DynamicAxisOverride struct {
+	InputName string // ONNX input name (e.g., "inputs_embeds")
+	Axis      int    // Dimension index to override (e.g., 1 for seq_len)
+	ParamName string // Symbolic name for the dynamic dim (e.g., "decoder_sequence_length")
+}
+
+// WithDynamicAxes overrides fixed input dimensions to be dynamic.
+// Only affects GoMLX-based backends; ONNX Runtime ignores this.
+func WithDynamicAxes(overrides []DynamicAxisOverride) SessionOption {
+	return func(c *SessionConfig) {
+		c.DynamicAxes = overrides
 	}
 }
 

@@ -51,12 +51,12 @@ From the `termite/` directory:
 # Build base image (used for model pulling)
 docker build -f Dockerfile.termite -t ghcr.io/antflydb/termite:latest .
 
-# Build XLA/TPU image (used for inference)
-docker build -f Dockerfile.termite-xla -t ghcr.io/antflydb/termite:xla-tpu .
+# Build omni image (ONNX + XLA, used for inference)
+docker build -f Dockerfile.termite-omni -t ghcr.io/antflydb/termite:omni .
 
 # Push to registry
 docker push ghcr.io/antflydb/termite:latest
-docker push ghcr.io/antflydb/termite:xla-tpu
+docker push ghcr.io/antflydb/termite:omni
 ```
 
 ### 3. Deploy Termite
@@ -231,7 +231,7 @@ kubectl -n termite set env statefulset/termite-tpu GOMLX_BACKEND=xla:cpu
 | Image | Dockerfile | Purpose |
 |-------|------------|---------|
 | `ghcr.io/antflydb/termite:latest` | `Dockerfile.termite` | Base image for model pulling |
-| `ghcr.io/antflydb/termite:xla-tpu` | `Dockerfile.termite-xla` | TPU inference |
+| `ghcr.io/antflydb/termite:omni` | `Dockerfile.termite-omni` | ONNX + XLA inference |
 
 ## See Also
 

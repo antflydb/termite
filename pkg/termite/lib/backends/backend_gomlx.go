@@ -534,6 +534,9 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 	if err != nil {
 		return nil, fmt.Errorf("loading ONNX model: %w", err)
 	}
+	// Many PyTorch-exported models have mixed-precision ops (e.g. Int64 constants
+	// with Float32 tensors), so enable automatic dtype promotion.
+	om.AllowDTypePromotion()
 
 	// Create GoMLX context and load variables
 	ctx := mlctx.New()
@@ -903,6 +906,28 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 	if err != nil {
 		return nil, fmt.Errorf("loading ONNX model: %w", err)
 	}
+	om.AllowDTypePromotion()
+
+	// Apply session options for input constants.
+	cfg := ApplySessionOptions(opts...)
+	if len(cfg.InputConstants) > 0 {
+		om.WithInputsAsConstants(cfg.InputConstants)
+	}
+
+	// Override fixed input dimensions to dynamic. Some ONNX exports bake
+	// specific integer values into dimensions that should be symbolic
+	// (e.g., seq_len=16 from the tracing pass).
+	for _, override := range cfg.DynamicAxes {
+		for i, name := range om.InputsNames {
+			if name == override.InputName {
+				if override.Axis < len(om.InputsShapes[i].Dimensions) {
+					om.InputsShapes[i].Dimensions[override.Axis] = -1
+					om.InputsShapes[i].Names[override.Axis] = override.ParamName
+				}
+				break
+			}
+		}
+	}
 
 	// Create context and load variables
 	ctx := mlctx.New()
@@ -910,17 +935,22 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 		return nil, fmt.Errorf("loading ONNX variables: %w", err)
 	}
 
-	// Get input/output info
-	inputNames, inputShapes := om.Inputs()
+	// Get input/output info, filtering out compile-time constants.
+	allInputNames, inputShapes := om.Inputs()
 	outputNames, outputShapes := om.Outputs()
 
-	inputInfo := make([]TensorInfo, len(inputNames))
-	for i, name := range inputNames {
-		inputInfo[i] = TensorInfo{
+	var inputNames []string
+	var inputInfo []TensorInfo
+	for i, name := range allInputNames {
+		if _, isConst := cfg.InputConstants[name]; isConst {
+			continue
+		}
+		inputNames = append(inputNames, name)
+		inputInfo = append(inputInfo, TensorInfo{
 			Name:     name,
 			Shape:    intsToInt64s(inputShapes[i].Dimensions),
 			DataType: gomlxDataType(inputShapes[i].DType),
-		}
+		})
 	}
 
 	outputInfo := make([]TensorInfo, len(outputNames))
@@ -943,7 +973,7 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 	}
 
 	// Pre-compile the session graph.
-	if err := sess.compile(f.backend.backendType); err != nil {
+	if err := sess.compile(); err != nil {
 		return nil, fmt.Errorf("compiling session graph: %w", err)
 	}
 
@@ -968,7 +998,7 @@ type gomlxSession struct {
 }
 
 // compile pre-compiles the session's ONNX graph for reuse across Run() calls.
-func (s *gomlxSession) compile(backendType BackendType) error {
+func (s *gomlxSession) compile() error {
 	graphFn := func(mlCtx *mlctx.Context, graphInputs []*graph.Node) []*graph.Node {
 		inputNodeMap := make(map[string]*graph.Node, len(s.inputNames))
 		for i, name := range s.inputNames {
@@ -982,10 +1012,11 @@ func (s *gomlxSession) compile(backendType BackendType) error {
 		return fmt.Errorf("creating exec: %w", err)
 	}
 
-	// Go backend: unlimited cache (no JIT cost). JIT backends: GoMLX default (32).
-	if backendType == BackendGo {
-		exec.SetMaxCache(-1)
-	}
+	// Unlimited cache for all backends. The default GoMLX cache of 32 is too
+	// small for KV-cached autoregressive decoding, where each step has a
+	// different past_key_values shape (1, 2, 3, ..., N). Compiled programs
+	// are small enough that caching all of them is fine.
+	exec.SetMaxCache(-1)
 
 	s.exec = exec
 	return nil

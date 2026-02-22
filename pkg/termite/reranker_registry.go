@@ -197,6 +197,7 @@ func (r *RerankerRegistry) discoverModels() error {
 	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -207,26 +208,17 @@ func (r *RerankerRegistry) discoverModels() error {
 			continue
 		}
 
-		// Log discovered variants
-		variantIDs := make([]string, 0, len(variants))
-		for v := range variants {
-			if v == "" {
-				variantIDs = append(variantIDs, "default")
-			} else {
-				variantIDs = append(variantIDs, v)
-			}
-		}
-		r.logger.Info("Discovered reranker model (not loaded)",
-			zap.String("name", registryFullName),
-			zap.String("path", modelPath),
-			zap.Strings("variants", variantIDs))
-
-		// Store each variant for lazy loading
+		// Store each variant for lazy loading (skip already-discovered entries)
+		anyNew := false
 		for variantID, onnxFilename := range variants {
 			// Determine registry name
 			registryName := registryFullName
 			if variantID != "" {
 				registryName = registryFullName + "-" + variantID
+			}
+
+			if _, exists := r.discovered[registryName]; exists {
+				continue
 			}
 
 			r.discovered[registryName] = &RerankerModelInfo{
@@ -235,11 +227,30 @@ func (r *RerankerRegistry) discoverModels() error {
 				OnnxFilename: onnxFilename,
 				PoolSize:     poolSize,
 			}
+			anyNew = true
+		}
+
+		if anyNew {
+			// Log discovered variants
+			variantIDs := make([]string, 0, len(variants))
+			for v := range variants {
+				if v == "" {
+					variantIDs = append(variantIDs, "default")
+				} else {
+					variantIDs = append(variantIDs, v)
+				}
+			}
+			r.logger.Info("Discovered reranker model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath),
+				zap.Strings("variants", variantIDs))
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Reranker model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -263,7 +274,16 @@ func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("reranker model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Reranker re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("reranker model not found: %s", modelName)
+		}
 	}
 
 	// Load the model
@@ -335,8 +355,12 @@ func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, 
 	return model, nil
 }
 
-// List returns all available reranker model names (discovered, not necessarily loaded)
+// List returns all available reranker model names (discovered, not necessarily loaded).
+// Re-scans the models directory to pick up newly pulled models.
 func (r *RerankerRegistry) List() []string {
+	// Refresh discovery to pick up newly pulled models
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gomlx/gomlx/pkg/core/tensors/bucketing"
+
 	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
@@ -57,7 +59,27 @@ type florence2Model struct {
 	visionEncoderSession backends.Session // vision_encoder.onnx
 	embedTokensSession   backends.Session // embed_tokens.onnx
 	encoderModelSession  backends.Session // encoder_model.onnx
-	decoderSession       backends.Session // decoder_model_merged.onnx
+	decoderSession       backends.Session // decoder_model_merged.onnx (ONNX Runtime fallback)
+
+	// Split decoder sessions for GoMLX backends (XLA, Go, CoreML).
+	// The merged decoder's ONNX If node cannot be evaluated at runtime by these
+	// backends. Instead we use separate ONNX files (decoder_model.onnx and
+	// decoder_with_past_model.onnx) that are purpose-built for each phase.
+	decoderFirstStepSession backends.Session // decoder_model.onnx (first step, no KV cache)
+	decoderWithPastSession  backends.Session // decoder_with_past_model.onnx (subsequent steps, with KV cache)
+	useSplitDecoders        bool
+
+	// kvBucketStrategy buckets past_key_values sequence lengths to reduce
+	// the number of unique shapes seen by JIT backends (XLA, CoreML).
+	// Without this, each autoregressive step produces a unique KV cache
+	// shape, triggering a separate compilation (~60s each on XLA CPU).
+	// With Pow2 bucketing, ~7 compilations cover 128 tokens.
+	//
+	// Trade-off: zero-padded KV positions dilute attention weights slightly
+	// (padded keys score 0, getting softmax weight 1/Z). LayerNorm and
+	// residual connections partially compensate. The padding is trimmed
+	// from present outputs after each step so it does not compound.
+	kvBucketStrategy bucketing.Strategy
 
 	backendType backends.BackendType
 }
@@ -136,22 +158,71 @@ func LoadFlorence2Model(modelPath string, factory backends.SessionFactory, opts 
 		return nil, fmt.Errorf("creating encoder_model session: %w", err)
 	}
 
-	decoderSession, err := factory.CreateSession(decoderPath, opts...)
-	if err != nil {
-		visionEncoderSession.Close()
-		embedTokensSession.Close()
-		encoderModelSession.Close()
-		return nil, fmt.Errorf("creating decoder session: %w", err)
-	}
-
-	return &florence2Model{
+	model := &florence2Model{
 		config:               config,
 		visionEncoderSession: visionEncoderSession,
 		embedTokensSession:   embedTokensSession,
 		encoderModelSession:  encoderModelSession,
-		decoderSession:       decoderSession,
 		backendType:          factory.Backend(),
-	}, nil
+	}
+
+	closeOnError := func() {
+		visionEncoderSession.Close()
+		embedTokensSession.Close()
+		encoderModelSession.Close()
+	}
+
+	// Create the main decoder session
+	decoderSession, err := factory.CreateSession(decoderPath, opts...)
+	if err != nil {
+		closeOnError()
+		return nil, fmt.Errorf("creating decoder session: %w", err)
+	}
+	model.decoderSession = decoderSession
+
+	// Try to load split decoders for GoMLX backends (XLA, Go, CoreML).
+	// These backends cannot evaluate ONNX If nodes at runtime, so the merged
+	// decoder (with use_cache_branch=false baked in) disables KV caching.
+	// The separate decoder_model.onnx and decoder_with_past_model.onnx files
+	// are purpose-built for each phase and don't contain If nodes.
+	// ONNX Runtime handles If nodes natively, so it uses the merged decoder.
+	isGoMLXBackend := false
+	switch factory.Backend() {
+	case backends.BackendGo, backends.BackendXLA, backends.BackendCoreML:
+		isGoMLXBackend = true
+	}
+	if isGoMLXBackend && config.DecoderFirstStepPath != "" && config.DecoderWithPastPath != "" {
+		firstStepSession, err := factory.CreateSession(config.DecoderFirstStepPath, opts...)
+		if err == nil {
+			// The with-past decoder may have been exported with fixed sequence
+			// length dimensions (e.g., inputs_embeds dim[1]=16 from HuggingFace
+			// optimum tracing). Override to dynamic so it accepts seq_len=1
+			// during KV-cached decoding.
+			withPastOpts := append(opts, backends.WithDynamicAxes([]backends.DynamicAxisOverride{
+				{InputName: "inputs_embeds", Axis: 1, ParamName: "decoder_sequence_length"},
+				{InputName: "input_ids", Axis: 1, ParamName: "decoder_sequence_length"},
+			}))
+			withPastSession, err := factory.CreateSession(config.DecoderWithPastPath, withPastOpts...)
+			if err == nil {
+				model.decoderFirstStepSession = firstStepSession
+				model.decoderWithPastSession = withPastSession
+				model.useSplitDecoders = true
+
+				// Enable KV cache shape bucketing for JIT backends.
+				// XLA and CoreML compile a separate program per unique
+				// input shape; without bucketing, each autoregressive
+				// step triggers a new compilation (~60s on XLA CPU).
+				switch factory.Backend() {
+				case backends.BackendXLA, backends.BackendCoreML:
+					model.kvBucketStrategy = bucketing.Pow2()
+				}
+			} else {
+				firstStepSession.Close()
+			}
+		}
+	}
+
+	return model, nil
 }
 
 // Forward runs the Florence-2 model.
@@ -321,7 +392,7 @@ func (m *florence2Model) runFlorence2Encoder(ctx context.Context, inputs *backen
 	}, nil
 }
 
-// runDecoder performs one step of autoregressive decoding (same as vision2SeqModel).
+// runDecoder performs one step of autoregressive decoding.
 func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	inputIDs := inputs.InputIDs
 	encoderOutput := inputs.EncoderOutput
@@ -342,20 +413,58 @@ func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelI
 		}
 	}
 
-	// Build decoder inputs
-	tensorInputs, err := m.buildDecoderInputs(flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
+	// Choose the appropriate decoder session:
+	// - Use split decoders if available (GoMLX backends)
+	// - Use first-step session if no past KV cache
+	// - Use with-past session for subsequent steps
+	var decoderSession backends.Session
+	isFirstStep := pastKeyValues == nil || pastKeyValues.SeqLen == 0
+
+	if m.useSplitDecoders {
+		if isFirstStep {
+			decoderSession = m.decoderFirstStepSession
+		} else {
+			decoderSession = m.decoderWithPastSession
+		}
+	} else {
+		decoderSession = m.decoderSession
+	}
+
+	// Build decoder inputs using the selected session's input info
+	tensorInputs, err := m.buildDecoderInputsForSession(decoderSession, flatInputIDs, batchSize, seqLen, encoderOutput, pastKeyValues)
 	if err != nil {
 		return nil, fmt.Errorf("building decoder inputs: %w", err)
 	}
 
+	// Pad decoder KV cache tensors to bucketed shapes so JIT backends
+	// see fewer unique input shapes and reuse compiled programs.
+	var realPastSeqLen int
+	if m.kvBucketStrategy != nil && !isFirstStep {
+		realPastSeqLen = pastKeyValues.SeqLen
+		bucketedSeqLen := m.kvBucketStrategy.Bucket(realPastSeqLen)
+		if bucketedSeqLen > realPastSeqLen {
+			tensorInputs = padDecoderKVInputs(tensorInputs, realPastSeqLen, bucketedSeqLen)
+		}
+	}
+
 	// Run decoder
-	outputs, err := m.decoderSession.Run(tensorInputs)
+	outputs, err := decoderSession.Run(tensorInputs)
 	if err != nil {
 		return nil, fmt.Errorf("running decoder: %w", err)
 	}
 
 	if len(outputs) == 0 {
 		return nil, fmt.Errorf("no decoder output")
+	}
+
+	// Trim padded positions from present.*.decoder.* outputs so the
+	// stored KV cache contains only real token data. Without this the
+	// padding would compound across steps.
+	if m.kvBucketStrategy != nil && !isFirstStep && realPastSeqLen > 0 {
+		bucketedSeqLen := m.kvBucketStrategy.Bucket(realPastSeqLen)
+		if bucketedSeqLen > realPastSeqLen {
+			outputs = trimPresentDecoderKV(outputs, realPastSeqLen, bucketedSeqLen)
+		}
 	}
 
 	// Extract logits (first output)
@@ -376,19 +485,29 @@ func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelI
 		copy(logits[i], logitsData[startIdx:startIdx+vocabSize])
 	}
 
+	// Extract KV cache from decoder outputs.
+	// Only extract when using split decoders (GoMLX backends). For ONNX Runtime
+	// the merged decoder handles KV caching internally via the If node, and
+	// returning cached values here would cause shape mismatches on step 2.
+	var newKVCache *backends.KVCache
+	if m.useSplitDecoders {
+		newKVCache = m.extractKVCache(outputs, batchSize, pastKeyValues)
+	}
+
 	return &backends.ModelOutput{
 		Logits:        logits,
-		PastKeyValues: nil, // KV-cache not implemented for simplicity
+		PastKeyValues: newKVCache,
 	}, nil
 }
 
-// buildDecoderInputs creates the input tensors for the decoder.
+// buildDecoderInputsForSession creates the input tensors for the specified decoder session.
+// This allows using different sessions for the first step (no KV cache) and subsequent steps.
 // Florence-2 decoder expects inputs_embeds instead of input_ids.
-func (m *florence2Model) buildDecoderInputs(inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+func (m *florence2Model) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
-	// Get decoder input names from session
-	inputInfo := m.decoderSession.InputInfo()
+	// Get decoder input names from the specified session
+	inputInfo := session.InputInfo()
 	inputNames := make(map[string]bool)
 	for _, info := range inputInfo {
 		inputNames[info.Name] = true
@@ -505,7 +624,25 @@ func (m *florence2Model) buildDecoderInputs(inputIDs []int64, batchSize, seqLen 
 }
 
 // createPastKVTensor creates a tensor for past key/value cache.
+// Maps input names like "past_key_values.0.decoder.key" to stored output names
+// like "present.0.decoder.key" to retrieve cached values from previous steps.
 func (m *florence2Model) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
+	// Check if we have cached tensor data from a previous step
+	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
+		outputName := mapPastToPresent(name)
+		if tensor, ok := pastKV.Tensors[outputName]; ok {
+			return backends.NamedTensor{
+				Name:  name,
+				Shape: tensor.Shape,
+				Data:  tensor.Data,
+			}
+		}
+	}
+
+	// No cached data -- create appropriately-shaped zero tensors.
+	// Encoder KV (cross-attention) uses the full encoder sequence length
+	// because the decoder always needs cross-attention over encoder outputs.
+	// Decoder KV (self-attention) uses 0-length for the first step.
 	numHeads := m.config.NumHeads
 	headDim := m.config.HeadDim
 
@@ -516,24 +653,185 @@ func (m *florence2Model) createPastKVTensor(name string, pastKV *backends.KVCach
 		headDim = 64
 	}
 
-	var seqLen int
-	if pastKV != nil && pastKV.SeqLen > 0 {
-		if isEncoderKVTensor(name) {
-			seqLen = encoderSeqLen
-		} else {
-			seqLen = pastKV.SeqLen
+	if isEncoderKVTensor(name) {
+		tensorSize := batchSize * numHeads * encoderSeqLen * headDim
+		return backends.NamedTensor{
+			Name:  name,
+			Shape: []int64{int64(batchSize), int64(numHeads), int64(encoderSeqLen), int64(headDim)},
+			Data:  make([]float32, tensorSize),
 		}
-	} else {
-		seqLen = 0
 	}
 
-	size := batchSize * numHeads * seqLen * headDim
-	data := make([]float32, size)
 	return backends.NamedTensor{
 		Name:  name,
-		Shape: []int64{int64(batchSize), int64(numHeads), int64(seqLen), int64(headDim)},
-		Data:  data,
+		Shape: []int64{int64(batchSize), int64(numHeads), 0, int64(headDim)},
+		Data:  []float32{},
 	}
+}
+
+// extractKVCache extracts the KV cache from decoder outputs.
+// Collects all present.* output tensors and stores them for the next step.
+func (m *florence2Model) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
+	tensors := make(map[string]backends.NamedTensor)
+	hasKVOutputs := false
+
+	for _, output := range outputs {
+		if IsPresentKeyValueOutput(output.Name) {
+			hasKVOutputs = true
+			data, ok := output.Data.([]float32)
+			if ok {
+				dataCopy := make([]float32, len(data))
+				copy(dataCopy, data)
+				shapeCopy := make([]int64, len(output.Shape))
+				copy(shapeCopy, output.Shape)
+				tensors[output.Name] = backends.NamedTensor{
+					Name:  output.Name,
+					Shape: shapeCopy,
+					Data:  dataCopy,
+				}
+			}
+		}
+	}
+
+	if hasKVOutputs {
+		seqLen := 1
+		if pastKV != nil {
+			seqLen = pastKV.SeqLen + 1
+		}
+		return &backends.KVCache{
+			SeqLen:    seqLen,
+			NumLayers: m.config.NumLayers,
+			NumHeads:  m.config.NumHeads,
+			HeadDim:   m.config.HeadDim,
+			BatchSize: batchSize,
+			Tensors:   tensors,
+		}
+	}
+
+	return nil
+}
+
+// padDecoderKVInputs pads past_key_values.*.decoder.* tensors from
+// realSeqLen to bucketedSeqLen on axis 2 (the sequence dimension).
+// Encoder KV tensors are left unchanged since their shape is constant.
+//
+// Input tensor layout: [batch, heads, seqLen, headDim] stored as flat float32.
+// Padding inserts zeros after the real data on the sequence axis.
+//
+// Caveat: zero-padded KV positions produce attention score 0, receiving
+// softmax weight 1/Z. Since padded V=0, their output contribution is
+// zero, but they dilute real attention weights by the factor
+// sum(exp(real_scores)) / (sum(exp(real_scores)) + num_padded).
+// LayerNorm and residual connections partially compensate. The padding
+// is trimmed from present outputs after each step (trimPresentDecoderKV)
+// so the dilution does not compound across steps.
+func padDecoderKVInputs(inputs []backends.NamedTensor, realSeqLen, bucketedSeqLen int) []backends.NamedTensor {
+	result := make([]backends.NamedTensor, len(inputs))
+	for i, t := range inputs {
+		if !isDecoderKVTensor(t.Name) {
+			result[i] = t
+			continue
+		}
+
+		data, ok := t.Data.([]float32)
+		if !ok || len(t.Shape) != 4 {
+			result[i] = t
+			continue
+		}
+
+		batch := int(t.Shape[0])
+		heads := int(t.Shape[1])
+		// t.Shape[2] == realSeqLen
+		headDim := int(t.Shape[3])
+
+		paddedSize := batch * heads * bucketedSeqLen * headDim
+		padded := make([]float32, paddedSize)
+
+		// Copy each [batch, head] slice, leaving zero gaps for padding.
+		for b := range batch {
+			for h := range heads {
+				srcOff := (b*heads + h) * realSeqLen * headDim
+				dstOff := (b*heads + h) * bucketedSeqLen * headDim
+				copy(padded[dstOff:dstOff+realSeqLen*headDim], data[srcOff:srcOff+realSeqLen*headDim])
+			}
+		}
+
+		result[i] = backends.NamedTensor{
+			Name:  t.Name,
+			Shape: []int64{t.Shape[0], t.Shape[1], int64(bucketedSeqLen), t.Shape[3]},
+			Data:  padded,
+		}
+	}
+	return result
+}
+
+// trimPresentDecoderKV removes zero-padding from present.*.decoder.*
+// output tensors so the stored KV cache contains only real token data.
+//
+// After a padded forward pass the present tensor has shape
+// [batch, heads, bucketedSeqLen+1, headDim] laid out as:
+//
+//	[real_0 … real_N | pad_0 … pad_M | new_token]
+//
+// We keep positions [0:realSeqLen] and [bucketedSeqLen:bucketedSeqLen+1],
+// producing shape [batch, heads, realSeqLen+1, headDim].
+func trimPresentDecoderKV(outputs []backends.NamedTensor, realSeqLen, bucketedSeqLen int) []backends.NamedTensor {
+	result := make([]backends.NamedTensor, len(outputs))
+	for i, t := range outputs {
+		if !IsPresentKeyValueOutput(t.Name) || !isDecoderKVPresent(t.Name) {
+			result[i] = t
+			continue
+		}
+
+		data, ok := t.Data.([]float32)
+		if !ok || len(t.Shape) != 4 {
+			result[i] = t
+			continue
+		}
+
+		batch := int(t.Shape[0])
+		heads := int(t.Shape[1])
+		srcSeqLen := int(t.Shape[2]) // bucketedSeqLen + 1
+		headDim := int(t.Shape[3])
+		trimmedSeqLen := realSeqLen + 1
+
+		trimmedSize := batch * heads * trimmedSeqLen * headDim
+		trimmed := make([]float32, trimmedSize)
+
+		for b := range batch {
+			for h := range heads {
+				srcBase := (b*heads + h) * srcSeqLen * headDim
+				dstBase := (b*heads + h) * trimmedSeqLen * headDim
+
+				// Copy the real past positions [0:realSeqLen].
+				copy(trimmed[dstBase:dstBase+realSeqLen*headDim],
+					data[srcBase:srcBase+realSeqLen*headDim])
+
+				// Copy the new token position [bucketedSeqLen].
+				newTokSrc := srcBase + bucketedSeqLen*headDim
+				newTokDst := dstBase + realSeqLen*headDim
+				copy(trimmed[newTokDst:newTokDst+headDim],
+					data[newTokSrc:newTokSrc+headDim])
+			}
+		}
+
+		result[i] = backends.NamedTensor{
+			Name:  t.Name,
+			Shape: []int64{t.Shape[0], t.Shape[1], int64(trimmedSeqLen), t.Shape[3]},
+			Data:  trimmed,
+		}
+	}
+	return result
+}
+
+// isDecoderKVTensor returns true for past_key_values.*.decoder.* tensors.
+func isDecoderKVTensor(name string) bool {
+	return IsPastKeyValueInput(name) && !isEncoderKVTensor(name)
+}
+
+// isDecoderKVPresent returns true for present.*.decoder.* tensors.
+func isDecoderKVPresent(name string) bool {
+	return strings.Contains(name, ".decoder.")
 }
 
 // DecoderConfig returns configuration needed for generation.
@@ -576,6 +874,20 @@ func (m *florence2Model) Close() error {
 			errs = append(errs, fmt.Errorf("closing decoder: %w", err))
 		}
 		m.decoderSession = nil
+	}
+
+	if m.decoderFirstStepSession != nil {
+		if err := m.decoderFirstStepSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing first-step decoder: %w", err))
+		}
+		m.decoderFirstStepSession = nil
+	}
+
+	if m.decoderWithPastSession != nil {
+		if err := m.decoderWithPastSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing with-past decoder: %w", err))
+		}
+		m.decoderWithPastSession = nil
 	}
 
 	if len(errs) > 0 {

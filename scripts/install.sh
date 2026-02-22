@@ -43,9 +43,9 @@ detect_platform() {
         *) error "Unsupported architecture: $ARCH" ;;
     esac
 
-    # Darwin uses universal binaries
-    if [ "$OS" = "Darwin" ]; then
-        ARCH="all"
+    # Darwin only supports arm64 (Apple Silicon)
+    if [ "$OS" = "Darwin" ] && [ "$ARCH" = "x86_64" ]; then
+        error "macOS x86_64 is not supported. Apple Silicon (arm64) is required."
     fi
 
     echo "$OS $ARCH"
@@ -84,11 +84,16 @@ EOF
         *)  TAG="termite-v$VERSION"; VERSION_NUM="$VERSION" ;;
     esac
 
-    status "Installing Termite version $TAG..."
+    status "Installing Termite $EDITION version $TAG..."
 
     # Construct download URL
-    # Format: https://releases.antfly.io/termite/termite-v0.1.0/termite_0.1.0_Darwin_all.tar.gz
-    ARCHIVE_NAME="termite_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
+    # Default: termite_VERSION_OS_ARCH.tar.gz
+    # Omni:   termite-omni_VERSION_OS_ARCH.tar.gz
+    if [ "$EDITION" = "omni" ]; then
+        ARCHIVE_NAME="termite-omni_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
+    else
+        ARCHIVE_NAME="termite_${VERSION_NUM}_${OS}_${ARCH}.tar.gz"
+    fi
     DOWNLOAD_URL="https://releases.antfly.io/termite/${TAG}/${ARCHIVE_NAME}"
 
     status "Downloading from $DOWNLOAD_URL..."
@@ -103,9 +108,11 @@ EOF
     if [ "$(id -u)" -eq 0 ]; then
         # Running as root
         INSTALL_DIR="/usr/local/bin"
+        LIB_DIR="/usr/local/lib/termite"
     else
         # Running as regular user
         INSTALL_DIR="$HOME/.local/bin"
+        LIB_DIR="$HOME/.local/lib/termite"
         mkdir -p "$INSTALL_DIR"
     fi
 
@@ -113,23 +120,33 @@ EOF
 
     # Install termite
     if [ -f "$TEMP_DIR/termite" ]; then
-        if [ -w "$INSTALL_DIR" ] || [ "$(id -u)" -eq 0 ]; then
-            mv "$TEMP_DIR/termite" "$INSTALL_DIR/termite"
-            chmod +x "$INSTALL_DIR/termite"
-            status "Installed termite to $INSTALL_DIR/termite"
-        else
-            status "Need sudo permission to install to $INSTALL_DIR"
-            sudo mv "$TEMP_DIR/termite" "$INSTALL_DIR/termite"
-            sudo chmod +x "$INSTALL_DIR/termite"
-            status "Installed termite to $INSTALL_DIR/termite"
-        fi
+        install_binary "$TEMP_DIR/termite" "$INSTALL_DIR/termite"
     else
         error "termite binary not found in archive"
+    fi
+
+    # Install bundled libraries (omni edition)
+    if [ -d "$TEMP_DIR/lib" ]; then
+        status "Installing bundled libraries to $LIB_DIR..."
+        if [ -w "$(dirname "$LIB_DIR")" ] || [ "$(id -u)" -eq 0 ]; then
+            mkdir -p "$LIB_DIR"
+            cp -r "$TEMP_DIR/lib/"* "$LIB_DIR/"
+        else
+            sudo mkdir -p "$LIB_DIR"
+            sudo cp -r "$TEMP_DIR/lib/"* "$LIB_DIR/"
+        fi
+        status "Installed bundled libraries to $LIB_DIR"
     fi
 
     status "Termite installation complete!"
     status ""
     status "Run 'termite --help' to get started"
+
+    if [ "$EDITION" = "omni" ]; then
+        status ""
+        status "Omni edition includes ONNX Runtime and XLA backends."
+        status "Libraries installed to $LIB_DIR"
+    fi
 
     # Check if install dir is in PATH
     case ":$PATH:" in
@@ -142,18 +159,40 @@ EOF
     esac
 }
 
+# Install a single binary to the target path
+install_binary() {
+    SRC="$1"
+    DST="$2"
+    if [ -w "$(dirname "$DST")" ] || [ "$(id -u)" -eq 0 ]; then
+        mv "$SRC" "$DST"
+        chmod +x "$DST"
+    else
+        status "Need sudo permission to install to $(dirname "$DST")"
+        sudo mv "$SRC" "$DST"
+        sudo chmod +x "$DST"
+    fi
+    status "Installed $(basename "$DST") to $DST"
+}
+
 # Main execution
 main() {
-    if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-        cat <<EOF
+    EDITION="default"
+    VERSION=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
 Termite Installer
 
 Usage:
   curl -fsSL https://releases.antfly.io/termite/latest/install.sh | sh
-  curl -fsSL https://releases.antfly.io/termite/latest/install.sh | sh -s -- termite-v0.1.0
+  curl -fsSL https://releases.antfly.io/termite/latest/install.sh | sh -s -- --omni
+  curl -fsSL https://releases.antfly.io/termite/latest/install.sh | sh -s -- --omni termite-v0.1.0
 
 Options:
   -h, --help    Show this help message
+  --omni        Install the omni edition (includes ONNX Runtime + XLA backends)
   [version]     Install a specific version (e.g., termite-v0.1.0, v0.1.0, or 0.1.0)
 
 Environment:
@@ -168,10 +207,21 @@ Termite is a standalone ML inference service for embeddings, chunking, and reran
 
 For more information, visit: https://docs.antfly.io/docs/guides/termite
 EOF
-        exit 0
-    fi
+                exit 0
+                ;;
+            --omni)
+                EDITION="omni"
+                shift
+                ;;
+            *)
+                VERSION="$1"
+                shift
+                ;;
+        esac
+    done
 
-    install_termite "$@"
+    export EDITION
+    install_termite "${VERSION:-latest}"
 }
 
 main "$@"

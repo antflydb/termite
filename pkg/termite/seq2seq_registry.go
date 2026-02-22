@@ -183,6 +183,7 @@ func (r *Seq2SeqRegistry) discoverModels() error {
 		return fmt.Errorf("discovering Seq2Seq models: %w", err)
 	}
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -191,6 +192,10 @@ func (r *Seq2SeqRegistry) discoverModels() error {
 		if !seq2seq.IsSeq2SeqModel(modelPath) {
 			r.logger.Debug("Skipping directory - not a Seq2Seq model",
 				zap.String("dir", registryFullName))
+			continue
+		}
+
+		if _, exists := r.discovered[registryFullName]; exists {
 			continue
 		}
 
@@ -203,9 +208,11 @@ func (r *Seq2SeqRegistry) discoverModels() error {
 			Path: modelPath,
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Seq2Seq model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -229,7 +236,16 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Seq2Seq re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+		}
 	}
 
 	// Load the model
@@ -320,8 +336,11 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 	return model, nil
 }
 
-// List returns all available Seq2Seq model names (discovered, not necessarily loaded)
+// List returns all available Seq2Seq model names (discovered, not necessarily loaded).
+// Re-scans the models directory to pick up newly pulled models.
 func (r *Seq2SeqRegistry) List() []string {
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

@@ -511,7 +511,12 @@ const defaultPhiTemplate = `{% for message in messages %}{% if message['role'] =
 {% endif %}{% endfor %}{% if add_generation_prompt %}<|assistant|>
 {% endif %}`
 
-// getGenAILibraryPath returns the path to libonnxruntime-genai.
+// getGenAILibraryPath returns the full path to libonnxruntime-genai.
+// Discovery order:
+//  1. ORTGENAI_DYLIB_PATH environment variable (explicit path)
+//  2. ONNXRUNTIME_ROOT environment variable
+//  3. lib/ directory next to the running binary (omni install layout)
+//  4. LD_LIBRARY_PATH or DYLD_LIBRARY_PATH
 func getGenAILibraryPath() string {
 	libName := getGenAILibraryName()
 
@@ -531,6 +536,11 @@ func getGenAILibraryPath() string {
 		if _, err := os.Stat(directPath); err == nil {
 			return directPath
 		}
+	}
+
+	// Check lib/ relative to the binary (omni install layout)
+	if dir := findLibRelativeToBinary(libName); dir != "" {
+		return filepath.Join(dir, libName)
 	}
 
 	// Check LD_LIBRARY_PATH / DYLD_LIBRARY_PATH
