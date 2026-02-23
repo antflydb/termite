@@ -261,7 +261,7 @@ homebrew_casks:
       Bundled libraries are auto-discovered from lib/ next to the binary.
 
       Backend priority can be configured in termite.yaml:
-        backend_priority: ["onnx:coreml", "xla:cpu", "go"]
+        backend_priority: ['onnx:coreml', 'xla:cpu', 'go']
 
       For the standard version without ML dependencies, use:
         brew install --cask termite
