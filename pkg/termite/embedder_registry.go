@@ -35,8 +35,8 @@ import (
 // Default keep-alive duration (matches Ollama's 5-minute default)
 const DefaultKeepAlive = 5 * time.Minute
 
-// ModelInfo holds metadata about a discovered model (not loaded yet)
-type ModelInfo struct {
+// EmbedderModelInfo holds metadata about a discovered model (not loaded yet)
+type EmbedderModelInfo struct {
 	Name             string
 	Path             string
 	OnnxFilename     string // e.g., "model.onnx", "model_f16.onnx", "model_i8.onnx"
@@ -79,7 +79,7 @@ type EmbedderRegistry struct {
 	logger         *zap.Logger
 
 	// Model discovery (paths only, not loaded)
-	discovered map[string]*ModelInfo
+	discovered map[string]*EmbedderModelInfo
 	mu         sync.RWMutex
 
 	// Loaded models with TTL cache (for lazy models)
@@ -126,7 +126,7 @@ func NewEmbedderRegistry(
 		modelsDir:       config.ModelsDir,
 		sessionManager:  sessionManager,
 		logger:          logger,
-		discovered:      make(map[string]*ModelInfo),
+		discovered:      make(map[string]*EmbedderModelInfo),
 		refCounts:       make(map[string]int),
 		pinned:          make(map[string]embeddings.Embedder),
 		keepAlive:       keepAlive,
@@ -295,7 +295,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 				zap.Bool("has_quantized", hasQuantized))
 
 			if hasStandard {
-				r.discovered[registryFullName] = &ModelInfo{
+				r.discovered[registryFullName] = &EmbedderModelInfo{
 					Name:             registryFullName,
 					Path:             modelPath,
 					PoolSize:         1, // Multimodal models use single instance
@@ -309,7 +309,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 			if hasQuantized {
 				quantizedName := registryFullName + "-i8-qt"
 				if _, exists := r.discovered[quantizedName]; !exists {
-					r.discovered[quantizedName] = &ModelInfo{
+					r.discovered[quantizedName] = &EmbedderModelInfo{
 						Name:             quantizedName,
 						Path:             modelPath,
 						PoolSize:         1, // Multimodal models use single instance
@@ -350,7 +350,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 				continue
 			}
 
-			r.discovered[registryName] = &ModelInfo{
+			r.discovered[registryName] = &EmbedderModelInfo{
 				Name:             registryName,
 				Path:             modelPath,
 				OnnxFilename:     onnxFilename,
@@ -461,7 +461,7 @@ func (r *EmbedderRegistry) Release(modelName string) {
 }
 
 // loadModel loads a model on demand
-func (r *EmbedderRegistry) loadModel(info *ModelInfo) (embeddings.Embedder, error) {
+func (r *EmbedderRegistry) loadModel(info *EmbedderModelInfo) (embeddings.Embedder, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -516,19 +516,51 @@ func (r *EmbedderRegistry) Touch(modelName string) {
 	}
 }
 
-// List returns all available (discovered) model names.
+// List returns all available model names (discovered + pinned built-ins).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) List() []string {
 	r.discoverModels()
 
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	names := make([]string, 0, len(r.discovered))
 	for name := range r.discovered {
 		names = append(names, name)
 	}
+	r.mu.RUnlock()
+
+	// Include pinned (built-in) models
+	r.pinnedMu.RLock()
+	for name := range r.pinned {
+		names = append(names, name)
+	}
+	r.pinnedMu.RUnlock()
+
 	return names
+}
+
+// ListWithCapabilities returns a map of model names to their capabilities.
+// Re-scans the models directory to pick up newly pulled models.
+func (r *EmbedderRegistry) ListWithCapabilities() map[string][]string {
+	r.discoverModels()
+
+	result := make(map[string][]string)
+
+	r.mu.RLock()
+	for name, info := range r.discovered {
+		result[name] = info.Capabilities
+	}
+	r.mu.RUnlock()
+
+	// Include pinned (built-in) models with no capabilities
+	r.pinnedMu.RLock()
+	for name := range r.pinned {
+		if _, exists := result[name]; !exists {
+			result[name] = nil
+		}
+	}
+	r.pinnedMu.RUnlock()
+
+	return result
 }
 
 // ListLoaded returns currently loaded model names (from cache and pinned)

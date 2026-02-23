@@ -119,94 +119,72 @@ func (t *TermiteAPI) ExtractJSON(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiExtract(w, r)
 }
 
+// stringsToModelInfoMap converts a flat list of model names to a map with empty ModelInfo.
+func stringsToModelInfoMap(names []string) map[string]ModelInfo {
+	m := make(map[string]ModelInfo, len(names))
+	for _, name := range names {
+		m[name] = ModelInfo{}
+	}
+	return m
+}
+
+// capsMapToModelInfoMap converts a map of model name to capabilities to a ModelInfo map.
+func capsMapToModelInfoMap(caps map[string][]string) map[string]ModelInfo {
+	m := make(map[string]ModelInfo, len(caps))
+	for name, c := range caps {
+		m[name] = ModelInfo{Capabilities: c}
+	}
+	return m
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
-		Chunkers:     []string{},
-		Rerankers:    []string{},
-		Embedders:    []string{},
-		Generators:   []string{},
-		Recognizers:  []string{},
-		Extractors:   []string{},
-		Rewriters:    []string{},
-		Classifiers:  []string{},
-		Readers:      []string{},
-		Transcribers: []string{},
+		Chunkers:     map[string]ModelInfo{},
+		Rerankers:    map[string]ModelInfo{},
+		Embedders:    map[string]ModelInfo{},
+		Generators:   map[string]ModelInfo{},
+		Recognizers:  map[string]ModelInfo{},
+		Rewriters:    map[string]ModelInfo{},
+		Classifiers:  map[string]ModelInfo{},
+		Readers:      map[string]ModelInfo{},
+		Transcribers: map[string]ModelInfo{},
 	}
 
 	if t.node.chunker != nil {
-		resp.Chunkers = t.node.chunker.ListModels()
+		resp.Chunkers = stringsToModelInfoMap(t.node.chunker.ListModels())
 	}
 
 	if t.node.embedderRegistry != nil {
-		resp.Embedders = t.node.embedderRegistry.List()
+		resp.Embedders = capsMapToModelInfoMap(t.node.embedderRegistry.ListWithCapabilities())
 	}
 
 	if t.node.rerankerRegistry != nil {
-		resp.Rerankers = t.node.rerankerRegistry.List()
+		resp.Rerankers = stringsToModelInfoMap(t.node.rerankerRegistry.List())
 	}
 
 	if t.node.generatorRegistry != nil {
-		resp.Generators = t.node.generatorRegistry.List()
+		resp.Generators = stringsToModelInfoMap(t.node.generatorRegistry.List())
 	}
 
 	if t.node.nerRegistry != nil {
-		capsMap := t.node.nerRegistry.List()
-		// Extract model names from capabilities map
-		resp.Recognizers = make([]string, 0, len(capsMap))
-		for name := range capsMap {
-			resp.Recognizers = append(resp.Recognizers, name)
-		}
-		extractors := make([]string, 0)
-		for name := range capsMap {
-			if t.node.nerRegistry.HasCapability(name, modelregistry.CapabilityExtraction) {
-				extractors = append(extractors, name)
-			}
-		}
-		resp.Extractors = extractors
-		if len(capsMap) > 0 {
-			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
-			for name, caps := range capsMap {
-				// Convert string capabilities to RecognizerCapability enum
-				enumCaps := make([]RecognizerCapability, len(caps))
-				for i, c := range caps {
-					enumCaps[i] = RecognizerCapability(c)
-				}
-				resp.RecognizerInfo[name] = RecognizerModelInfo{
-					Capabilities: enumCaps,
-				}
-			}
-		}
+		resp.Recognizers = capsMapToModelInfoMap(t.node.nerRegistry.List())
 	}
 
 	if t.node.seq2seqRegistry != nil {
-		resp.Rewriters = t.node.seq2seqRegistry.List()
+		resp.Rewriters = stringsToModelInfoMap(t.node.seq2seqRegistry.List())
 	}
 
 	if t.node.classifierRegistry != nil {
-		resp.Classifiers = t.node.classifierRegistry.List()
+		resp.Classifiers = stringsToModelInfoMap(t.node.classifierRegistry.List())
 	}
 
 	if t.node.readerRegistry != nil {
-		resp.Readers = t.node.readerRegistry.List()
-
-		capsMap := t.node.readerRegistry.ListWithCapabilities()
-		if len(capsMap) > 0 {
-			resp.ReaderInfo = make(map[string]ReaderModelInfo, len(capsMap))
-			for name, caps := range capsMap {
-				enumCaps := make([]ReaderCapability, len(caps))
-				for i, c := range caps {
-					enumCaps[i] = ReaderCapability(c)
-				}
-				resp.ReaderInfo[name] = ReaderModelInfo{
-					Capabilities: enumCaps,
-				}
-			}
-		}
+		resp.Readers = capsMapToModelInfoMap(t.node.readerRegistry.ListWithCapabilities())
 	}
 
 	if t.node.transcriberRegistry != nil {
-		resp.Transcribers = t.node.transcriberRegistry.List()
+		resp.Transcribers = stringsToModelInfoMap(t.node.transcriberRegistry.List())
 	}
 
 	w.Header().Set("Content-Type", "application/json")

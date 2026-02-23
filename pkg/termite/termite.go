@@ -241,28 +241,26 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// Initialize reranker registry with lazy loading
 	// Models are discovered at startup but only loaded on first request
-	var rerankerRegistry *RerankerRegistry
-	if rerankerModelsDir != "" {
-		rerankerRegistry, err = NewRerankerRegistry(
-			RerankerConfig{
-				ModelsDir:       rerankerModelsDir,
-				KeepAlive:       keepAlive,
-				MaxLoadedModels: uint64(config.MaxLoadedModels),
-				PoolSize:        config.PoolSize,
-			},
-			sessionManager,
-			zl.Named("reranker"),
-		)
-		if err != nil {
-			zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
-		}
-		defer func() { _ = rerankerRegistry.Close() }()
+	// Always create the registry so built-in rerankers are available
+	rerankerRegistry, err := NewRerankerRegistry(
+		RerankerConfig{
+			ModelsDir:       rerankerModelsDir,
+			KeepAlive:       keepAlive,
+			MaxLoadedModels: uint64(config.MaxLoadedModels),
+			PoolSize:        config.PoolSize,
+		},
+		sessionManager,
+		zl.Named("reranker"),
+	)
+	if err != nil {
+		zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
+	}
+	defer func() { _ = rerankerRegistry.Close() }()
 
-		// If eager loading is requested, preload all models
-		if keepAlive == 0 {
-			if err := rerankerRegistry.PreloadAll(); err != nil {
-				zl.Warn("Failed to preload some reranker models", zap.Error(err))
-			}
+	// If eager loading is requested, preload all models
+	if keepAlive == 0 {
+		if err := rerankerRegistry.PreloadAll(); err != nil {
+			zl.Warn("Failed to preload some reranker models", zap.Error(err))
 		}
 	}
 

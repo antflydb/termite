@@ -383,19 +383,26 @@ func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, 
 	return model, nil
 }
 
-// List returns all available reranker model names (discovered, not necessarily loaded).
+// List returns all available reranker model names (discovered + pinned built-ins).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *RerankerRegistry) List() []string {
 	// Refresh discovery to pick up newly pulled models
 	r.discoverModels()
 
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	names := make([]string, 0, len(r.discovered))
 	for name := range r.discovered {
 		names = append(names, name)
 	}
+	r.mu.RUnlock()
+
+	// Include pinned (built-in) models
+	r.pinnedMu.RLock()
+	for name := range r.pinned {
+		names = append(names, name)
+	}
+	r.pinnedMu.RUnlock()
+
 	return names
 }
 
