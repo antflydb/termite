@@ -56,6 +56,9 @@ type ClassificationModelConfig struct {
 
 	// ProblemType indicates the classification task type (single_label, multi_label, zero_shot_nli)
 	ProblemType string
+
+	// MaxTextLength is the maximum text sequence length from max_position_embeddings
+	MaxTextLength int
 }
 
 // LoadClassificationModelConfig loads and parses configuration for a classification model.
@@ -96,6 +99,9 @@ func LoadClassificationModelConfig(modelPath string) (*ClassificationModelConfig
 	// Extract label mappings
 	config.ID2Label = rawConfig.ID2Label
 	config.Label2ID = rawConfig.Label2ID
+
+	// Extract max text sequence length
+	config.MaxTextLength = rawConfig.MaxPositionEmbeddings
 
 	// Determine problem type
 	config.ProblemType = rawConfig.ProblemType
@@ -139,12 +145,13 @@ func IsClassificationModel(path string) bool {
 
 // rawClassificationConfig represents config.json for classification models.
 type rawClassificationConfig struct {
-	ModelType   string         `json:"model_type"`
-	NumLabels   int            `json:"num_labels"`
-	HiddenSize  int            `json:"hidden_size"`
-	ID2Label    map[int]string `json:"id2label"`
-	Label2ID    map[string]int `json:"label2id"`
-	ProblemType string         `json:"problem_type"`
+	ModelType             string         `json:"model_type"`
+	NumLabels             int            `json:"num_labels"`
+	HiddenSize            int            `json:"hidden_size"`
+	MaxPositionEmbeddings int            `json:"max_position_embeddings"`
+	ID2Label              map[int]string `json:"id2label"`
+	Label2ID              map[string]int `json:"label2id"`
+	ProblemType           string         `json:"problem_type"`
 }
 
 // loadRawClassificationConfig loads config.json for classification models.
@@ -690,7 +697,7 @@ func LoadClassificationPipeline(
 
 	// Build pipeline config
 	pipelineConfig := &ClassificationPipelineConfig{
-		MaxLength:          FirstNonZero(loaderCfg.maxLength, 512),
+		MaxLength:          FirstNonZero(loaderCfg.maxLength, modelConfig.MaxTextLength, 512),
 		AddSpecialTokens:   true,
 		MultiLabel:         loaderCfg.multiLabel,
 		HypothesisTemplate: loaderCfg.hypothesisTemplate,

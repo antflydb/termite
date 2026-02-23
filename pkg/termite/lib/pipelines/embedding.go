@@ -173,7 +173,7 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 	)
 
 	// Extract max text sequence length from config (e.g., CLIP uses 77)
-	config.MaxTextLength = rawConfig.TextConfig.MaxPositionEmbeddings
+	config.MaxTextLength = FirstNonZero(rawConfig.MaxPositionEmbeddings, rawConfig.TextConfig.MaxPositionEmbeddings)
 
 	// Build image config if we have a visual encoder
 	if config.VisualEncoderFile != "" {
@@ -217,9 +217,10 @@ func IsEmbeddingModel(path string) bool {
 
 // rawEmbeddingConfig represents config.json for embedding models.
 type rawEmbeddingConfig struct {
-	ModelType     string `json:"model_type"`
-	HiddenSize    int    `json:"hidden_size"`
-	ProjectionDim int    `json:"projection_dim"`
+	ModelType             string `json:"model_type"`
+	HiddenSize            int    `json:"hidden_size"`
+	ProjectionDim         int    `json:"projection_dim"`
+	MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 
 	// Vision config (CLIP, SigLIP, etc.)
 	VisionConfig struct {
