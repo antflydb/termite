@@ -78,6 +78,36 @@ func TestBatch(t *testing.T) {
 	}
 }
 
+func TestLongTextTruncation(t *testing.T) {
+	r := getReranker(t)
+	ctx := context.Background()
+
+	// Build documents that tokenize to well over MaxSequenceLength tokens.
+	var longDoc string
+	for i := 0; i < 200; i++ {
+		longDoc += "The quick brown fox jumps over the lazy dog. "
+	}
+
+	// Verify it actually exceeds the limit.
+	tokens := r.tok.Encode(longDoc)
+	if len(tokens) <= MaxSequenceLength {
+		t.Fatalf("expected >%d tokens, got %d — test text is too short", MaxSequenceLength, len(tokens))
+	}
+	t.Logf("Long document tokenizes to %d tokens (limit %d)", len(tokens), MaxSequenceLength)
+
+	// Should succeed without ONNX shape errors.
+	scores, err := r.RerankTexts(ctx, "What is machine learning?", []string{longDoc, "short text", longDoc})
+	if err != nil {
+		t.Fatalf("RerankTexts with long text: %v", err)
+	}
+	if len(scores) != 3 {
+		t.Fatalf("expected 3 scores, got %d", len(scores))
+	}
+	for i, s := range scores {
+		t.Logf("  [%d] score=%.4f", i, s)
+	}
+}
+
 func TestEmptyInput(t *testing.T) {
 	r := getReranker(t)
 	ctx := context.Background()

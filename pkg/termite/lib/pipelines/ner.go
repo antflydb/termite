@@ -52,6 +52,9 @@ type NERModelConfig struct {
 
 	// ModelType is the model architecture type (bert, roberta, etc.)
 	ModelType string
+
+	// MaxTextLength is the maximum text sequence length from max_position_embeddings
+	MaxTextLength int
 }
 
 // LoadNERModelConfig loads and parses configuration for an NER model.
@@ -111,6 +114,9 @@ func LoadNERModelConfig(modelPath string) (*NERModelConfig, error) {
 		config.ModelType = detectNERModelType(modelPath)
 	}
 
+	// Extract max text sequence length
+	config.MaxTextLength = rawConfig.MaxPositionEmbeddings
+
 	return config, nil
 }
 
@@ -142,9 +148,10 @@ func IsNERModel(path string) bool {
 
 // rawNERConfig represents config.json for NER models.
 type rawNERConfig struct {
-	ModelType string            `json:"model_type"`
-	ID2Label  map[string]string `json:"id2label"`
-	Label2ID  map[string]int    `json:"label2id"`
+	ModelType             string            `json:"model_type"`
+	MaxPositionEmbeddings int               `json:"max_position_embeddings"`
+	ID2Label              map[string]string `json:"id2label"`
+	Label2ID              map[string]int    `json:"label2id"`
 }
 
 // loadRawNERConfig loads config.json for NER models.
@@ -644,7 +651,7 @@ func LoadNERPipeline(
 
 	// Build pipeline config
 	pipelineConfig := &NERPipelineConfig{
-		MaxLength:           FirstNonZero(loaderCfg.maxLength, 512),
+		MaxLength:           FirstNonZero(loaderCfg.maxLength, modelConfig.MaxTextLength, 512),
 		AddSpecialTokens:    true,
 		AggregationStrategy: loaderCfg.aggregationStrategy,
 		IgnoreLabels:        make(map[string]bool),

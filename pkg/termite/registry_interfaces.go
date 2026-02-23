@@ -39,6 +39,8 @@ type EmbedderRegistryInterface interface {
 	Release(modelName string)
 	// List returns all available model names
 	List() []string
+	// ListWithCapabilities returns a map of model name to capabilities
+	ListWithCapabilities() map[string][]string
 	// HasCapability checks if a model has a specific capability (e.g., image, audio)
 	HasCapability(modelName string, capability modelregistry.Capability) bool
 	// Close shuts down the registry and releases resources

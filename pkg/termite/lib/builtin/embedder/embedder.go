@@ -26,6 +26,10 @@ var embeddedTokenizerJSON []byte
 // Dimension is the output embedding dimension of the built-in model (all-MiniLM-L6-v2).
 const Dimension = 384
 
+// MaxSequenceLength is the maximum number of tokens the model supports.
+// all-MiniLM-L6-v2 uses BERT positional embeddings fixed at 512.
+const MaxSequenceLength = 512
+
 // ModelName is the canonical name for the built-in embedder.
 const ModelName = "antfly-builtin-embedder"
 
@@ -105,6 +109,9 @@ func (e *BuiltinEmbedder) EmbedTexts(_ context.Context, texts []string) ([][]flo
 	tokenized := make([][]int, batchSize)
 	for i, text := range texts {
 		tokenized[i] = e.tok.Encode(text)
+		if len(tokenized[i]) > MaxSequenceLength {
+			tokenized[i] = tokenized[i][:MaxSequenceLength]
+		}
 		if len(tokenized[i]) > maxLen {
 			maxLen = len(tokenized[i])
 		}

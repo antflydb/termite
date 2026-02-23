@@ -45,6 +45,9 @@ type RerankingModelConfig struct {
 
 	// ModelType is the model architecture type (bert, roberta, deberta, etc.)
 	ModelType string
+
+	// MaxTextLength is the maximum text sequence length from max_position_embeddings
+	MaxTextLength int
 }
 
 // LoadRerankingModelConfig loads and parses configuration for a reranking model.
@@ -83,6 +86,9 @@ func LoadRerankingModelConfig(modelPath string) (*RerankingModelConfig, error) {
 	// Extract number of labels
 	config.NumLabels = FirstNonZero(rawConfig.NumLabels, 1)
 
+	// Extract max text sequence length
+	config.MaxTextLength = rawConfig.MaxPositionEmbeddings
+
 	return config, nil
 }
 
@@ -114,9 +120,10 @@ func IsRerankingModel(path string) bool {
 
 // rawRerankingConfig represents config.json for reranking models.
 type rawRerankingConfig struct {
-	ModelType  string `json:"model_type"`
-	NumLabels  int    `json:"num_labels"`
-	HiddenSize int    `json:"hidden_size"`
+	ModelType             string `json:"model_type"`
+	NumLabels             int    `json:"num_labels"`
+	HiddenSize            int    `json:"hidden_size"`
+	MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 }
 
 // loadRawRerankingConfig loads config.json for reranking models.
@@ -453,7 +460,7 @@ func LoadRerankingPipeline(
 
 	// Build pipeline config
 	pipelineConfig := &RerankingPipelineConfig{
-		MaxLength:        FirstNonZero(loaderCfg.maxLength, 512),
+		MaxLength:        FirstNonZero(loaderCfg.maxLength, config.MaxTextLength, 512),
 		AddSpecialTokens: true,
 		NumLabels:        FirstNonZero(loaderCfg.numLabels, config.NumLabels, 1),
 	}
