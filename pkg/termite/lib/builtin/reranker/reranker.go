@@ -24,6 +24,10 @@ var rerankerModelONNX []byte
 //go:embed builtin_model/tokenizer.json
 var rerankerTokenizerJSON []byte
 
+// MaxSequenceLength is the maximum number of tokens the model supports.
+// cross-encoder/ms-marco-MiniLM-L-6-v2 uses BERT positional embeddings fixed at 512.
+const MaxSequenceLength = 512
+
 // ModelName is the canonical name for the built-in reranker.
 const ModelName = "antfly-builtin-reranker"
 
@@ -125,8 +129,17 @@ func (r *BuiltinReranker) RerankTexts(_ context.Context, query string, prompts [
 	var maxLen int
 	pairs := make([]pairTokens, batchSize)
 
+	// Budget for document tokens: total limit minus special tokens ([CLS], 2x[SEP]) and query.
+	docBudget := MaxSequenceLength - 3 - len(queryIDs)
+	if docBudget < 1 {
+		docBudget = 1
+	}
+
 	for i, doc := range prompts {
 		docIDs := r.tok.Encode(doc)
+		if len(docIDs) > docBudget {
+			docIDs = docIDs[:docBudget]
+		}
 
 		ids := make([]int, 0, 3+len(queryIDs)+len(docIDs))
 		ids = append(ids, r.clsID)
