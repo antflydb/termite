@@ -518,6 +518,9 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		if model.SupportsClassification() && !slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
 			caps = append(caps, string(modelregistry.CapabilityClassification))
 		}
+		if model.SupportsExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
+			caps = append(caps, string(modelregistry.CapabilityExtraction))
+		}
 		r.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
 			zap.Bool("quantized", info.Quantized),

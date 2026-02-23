@@ -114,6 +114,11 @@ func (t *TermiteAPI) TranscribeAudio(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiTranscribe(w, r)
 }
 
+// ExtractJSON implements ServerInterface
+func (t *TermiteAPI) ExtractJSON(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiExtract(w, r)
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
@@ -147,15 +152,18 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.nerRegistry != nil {
 		capsMap := t.node.nerRegistry.List()
-		// Extract model names and capabilities
+		// Extract model names from capabilities map
 		resp.Recognizers = make([]string, 0, len(capsMap))
-		for name, caps := range capsMap {
+		for name := range capsMap {
 			resp.Recognizers = append(resp.Recognizers, name)
-			// Extract zero-shot capable models for Extractors field
-			if slices.Contains(caps, string(modelregistry.CapabilityZeroshot)) {
-				resp.Extractors = append(resp.Extractors, name)
+		}
+		extractors := make([]string, 0)
+		for name := range capsMap {
+			if t.node.nerRegistry.HasCapability(name, modelregistry.CapabilityExtraction) {
+				extractors = append(extractors, name)
 			}
 		}
+		resp.Extractors = extractors
 		if len(capsMap) > 0 {
 			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
 			for name, caps := range capsMap {
@@ -907,6 +915,191 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		ln.logger.Error("encoding response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+}
+
+// handleApiExtract handles structured JSON extraction requests
+func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	// Check if NER is available
+	if ln.nerRegistry == nil || len(ln.nerRegistry.List()) == 0 {
+		http.Error(w, "JSON extraction not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	// Update queue metrics
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	// Decode request manually instead of using the generated ExtractRequest type because
+	// the generated type uses `bool` with `omitzero`, making it impossible to distinguish
+	// an unset flat_ner (should default to true) from an explicitly set false value.
+	// Using *bool here lets us detect the difference.
+	var req struct {
+		Model             string              `json:"model"`
+		Texts             []string            `json:"texts"`
+		Schema            map[string][]string `json:"schema"`
+		Threshold         float32             `json:"threshold"`
+		FlatNER           *bool               `json:"flat_ner"`
+		IncludeConfidence bool                `json:"include_confidence"`
+		IncludeSpans      bool                `json:"include_spans"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Texts) == 0 {
+		http.Error(w, "texts are required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Schema) == 0 {
+		http.Error(w, "schema is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse schema
+	schemas, err := ner.ParseSchemaString(req.Schema)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid schema: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Build extraction config
+	config := ner.DefaultExtractionConfig()
+	if req.Threshold > 0 {
+		config.Threshold = req.Threshold
+	}
+	if req.FlatNER != nil {
+		config.FlatNER = *req.FlatNER
+	}
+	config.IncludeConfidence = req.IncludeConfidence
+	config.IncludeSpans = req.IncludeSpans
+
+	// Acquire model and check extraction support
+	model, err := ln.nerRegistry.Acquire(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.nerRegistry.Release(req.Model)
+
+	extractor, ok := model.(ner.Extractor)
+	if !ok || !extractor.SupportsExtraction() {
+		http.Error(w, fmt.Sprintf("model %s does not support extraction", req.Model), http.StatusBadRequest)
+		return
+	}
+
+	// Perform extraction
+	results, err := extractor.Extract(r.Context(), req.Texts, schemas, config)
+	if err != nil {
+		ln.logger.Error("extraction failed",
+			zap.String("model", req.Model),
+			zap.Int("num_texts", len(req.Texts)),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("extraction failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Record metrics
+	RecordExtractionRequest(req.Model)
+	totalFields := 0
+	for _, result := range results {
+		for _, instances := range result {
+			for _, instance := range instances {
+				totalFields += len(instance)
+			}
+		}
+	}
+	RecordExtractionFields(req.Model, totalFields)
+
+	ln.logger.Info("extraction request completed",
+		zap.String("model", req.Model),
+		zap.Int("num_texts", len(req.Texts)),
+		zap.Int("total_fields", totalFields))
+
+	// Convert internal ExtractionResult to API response format
+	apiResults := make([]map[string][]map[string]interface{}, len(results))
+	for i, result := range results {
+		apiResult := make(map[string][]map[string]interface{})
+		for structName, instances := range result {
+			apiInstances := make([]map[string]interface{}, len(instances))
+			for j, instance := range instances {
+				apiInstance := make(map[string]interface{})
+				for fieldName, fieldValue := range instance {
+					switch v := fieldValue.(type) {
+					case ner.ExtractedFieldValue:
+						apiInstance[fieldName] = convertFieldValue(v)
+					case []ner.ExtractedFieldValue:
+						apiValues := make([]extractFieldValueJSON, len(v))
+						for k, fv := range v {
+							apiValues[k] = convertFieldValue(fv)
+						}
+						apiInstance[fieldName] = apiValues
+					default:
+						apiInstance[fieldName] = fieldValue
+					}
+				}
+				apiInstances[j] = apiInstance
+			}
+			apiResult[structName] = apiInstances
+		}
+		apiResults[i] = apiResult
+	}
+
+	resp := ExtractResponse{
+		Model:   req.Model,
+		Results: apiResults,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// extractFieldValueJSON is a response-only type for JSON serialization.
+// We cannot use the generated ExtractFieldValue because it declares Start/End as
+// `int` with `omitzero`, which silently drops offset 0 during marshalling.
+// Using *int pointers here ensures offset 0 is serialized correctly.
+type extractFieldValueJSON struct {
+	Value string   `json:"value"`
+	Score float32  `json:"score,omitempty"`
+	Start *int     `json:"start,omitempty"`
+	End   *int     `json:"end,omitempty"`
+}
+
+// convertFieldValue converts an internal ExtractedFieldValue to the response type.
+func convertFieldValue(v ner.ExtractedFieldValue) extractFieldValueJSON {
+	return extractFieldValueJSON{
+		Value: v.Value,
+		Score: v.Score,
+		Start: v.Start,
+		End:   v.End,
 	}
 }
 

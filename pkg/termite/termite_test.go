@@ -433,6 +433,13 @@ func (m *MockNERRegistry) Close() error {
 	return nil
 }
 
+func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
+	return m.Acquire(modelName)
+}
+
+
+
+
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 

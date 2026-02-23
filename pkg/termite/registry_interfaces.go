@@ -62,6 +62,8 @@ type RerankerRegistryInterface interface {
 // NERRegistryInterface defines the interface for NER model registries.
 // This enables testing with mock implementations.
 type NERRegistryInterface interface {
+	// Get retrieves a NER model by name, loading it if necessary
+	Get(modelName string) (ner.Model, error)
 	// Acquire retrieves a NER model and increments reference count to prevent eviction.
 	// Caller MUST call Release when done.
 	Acquire(modelName string) (ner.Model, error)
