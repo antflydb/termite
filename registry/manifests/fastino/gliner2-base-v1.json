@@ -22,8 +22,8 @@
     },
     {
       "name": "model.onnx",
-      "digest": "sha256:cbcdc4bb5eeca10b93637a132424fcb0cbaee9f73f4b0c1e65de682578997902",
-      "size": 806806486
+      "digest": "sha256:cf127670cd93f1b4360e79166cddb411cf1ef7e02f777879dcd861384af40205",
+      "size": 806806487
     },
     {
       "name": "special_tokens_map.json",
@@ -49,23 +49,26 @@
   "owner": "fastino",
   "provenance": {
     "downloadedFrom": "https://huggingface.co/fastino/gliner2-base-v1",
-    "downloadedAt": "2026-02-22T22:02:24.988565+00:00"
+    "downloadedAt": "2026-02-23T00:58:35.680315+00:00"
   },
   "capabilities": [
     "labels",
     "zeroshot",
     "classification",
-    "relations",
-    "extraction"
+    "relations"
   ],
   "variants": {
-    "f16": {
-      "name": "model_f16.onnx",
-      "digest": "sha256:0844737d799279619e3825f0e57d0875e679b1c972fca90f779dc400c1187930",
-      "size": 404207362
-    }
-  },
-  "backends": [
-    "onnx"
-  ]
+    "f16": [
+      {
+        "name": "model_f16.onnx",
+        "digest": "sha256:f73cbc6fdfc97be98aa47481be97264e8385d6b7651e4d09ac534e4efe34f2bb",
+        "size": 930867
+      },
+      {
+        "name": "model_f16.onnx_data",
+        "digest": "sha256:d18ba2e13fc9963d0b8158ffdfce748e9d90a32d4a7bdbe910989b6e6fe30bc1",
+        "size": 402945024
+      }
+    ]
+  }
 }

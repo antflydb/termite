@@ -15,12 +15,12 @@
     },
     {
       "name": "rebel-large",
-      "owner": "Babelscape",
       "type": "recognizer",
       "description": "",
       "source": "Babelscape/rebel-large",
-      "size": 3163580492,
+      "size": 4388200024,
       "variants": [],
+      "owner": "Babelscape",
       "capabilities": [
         "relations"
       ]

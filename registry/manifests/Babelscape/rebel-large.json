@@ -1,40 +1,54 @@
 {
   "schemaVersion": 2,
   "name": "rebel-large",
-  "owner": "Babelscape",
   "type": "recognizer",
   "description": "",
   "source": "Babelscape/rebel-large",
   "files": [
     {
-      "name": "encoder.onnx",
-      "digest": "sha256:b9739134d13346126910b18d03ca6cf3c3994324faef228f35b4358b04bf2052",
-      "size": 814936666
-    },
-    {
-      "name": "decoder-init.onnx",
-      "digest": "sha256:438fd71dfb76ebb6942db6d81537f21e7a7972721c54a5b3550d2d36f1359c1e",
-      "size": 1222942091
-    },
-    {
-      "name": "decoder.onnx",
-      "digest": "sha256:08f8f2e051c6023a727661fa2b3f12b7844e313eef2f77606163e354c39e19a0",
-      "size": 1122136474
-    },
-    {
-      "name": "tokenizer.json",
-      "digest": "sha256:b6d9fced7ae9cd728465cff3a09294a0ca2f4e8179d9fa130c59147b2fd85150",
-      "size": 3559925
+      "name": "added_tokens.json",
+      "digest": "sha256:2bb030577ba1b79eb849330790577cc3c60220e31635084b73f09f8c3088bbc4",
+      "size": 140
     },
     {
       "name": "config.json",
-      "digest": "sha256:3fd371902d91e96b3e24ffb638dde95a4a925be2036e912e8c7bde6a0d3711f6",
-      "size": 1386
+      "digest": "sha256:02b38a95faa435667272887ed57a2005e96a30e856f806d6bbd5fe2736e495df",
+      "size": 1380
     },
     {
-      "name": "tokenizer_config.json",
-      "digest": "sha256:6a0c01683a4947508f9065beacb35a2cbce6b83a8cccf31f5eacd28bf4064455",
-      "size": 2595
+      "name": "decoder-init.onnx",
+      "digest": "sha256:b8ee41f78c3b07082d5ff22e6f94cb4a8ec724b96c73b4accae57e01b94870bb",
+      "size": 1222942092
+    },
+    {
+      "name": "decoder.onnx",
+      "digest": "sha256:45bbc5a75f614085351872f49c3e0bb815228a6bf4c639c9b6b981b6538725ef",
+      "size": 1122136475
+    },
+    {
+      "name": "decoder_model_merged.onnx",
+      "digest": "sha256:cf0666371c48f77f463efbe66c6f5693c1e0b8ba9c6450504ba1e87a89feaaf3",
+      "size": 1223364554
+    },
+    {
+      "name": "encoder.onnx",
+      "digest": "sha256:c73564fd36db210546361fdd7017cae728c25e1a4537641f8b9ea870519c5202",
+      "size": 814936667
+    },
+    {
+      "name": "generation_config.json",
+      "digest": "sha256:a6a5b1b77803665b5abc921a88fccf55e0571ca8cf63d61c01d41db61d870f92",
+      "size": 230
+    },
+    {
+      "name": "merges.txt",
+      "digest": "sha256:1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
+      "size": 456318
+    },
+    {
+      "name": "rebel_config.json",
+      "digest": "sha256:0cfddb65d8b808c25e516446081adc5bb464ca87f6461e3f1a6c8c1ddb97c2f1",
+      "size": 252
     },
     {
       "name": "special_tokens_map.json",
@@ -42,11 +56,26 @@
       "size": 1103
     },
     {
-      "name": "rebel_config.json",
-      "digest": "sha256:0cfddb65d8b808c25e516446081adc5bb464ca87f6461e3f1a6c8c1ddb97c2f1",
-      "size": 252
+      "name": "tokenizer.json",
+      "digest": "sha256:b6d9fced7ae9cd728465cff3a09294a0ca2f4e8179d9fa130c59147b2fd85150",
+      "size": 3559925
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:6a0c01683a4947508f9065beacb35a2cbce6b83a8cccf31f5eacd28bf4064455",
+      "size": 2595
+    },
+    {
+      "name": "vocab.json",
+      "digest": "sha256:ed19656ea1707df69134c4af35c8ceda2cc9860bf2c3495026153a133670ab5e",
+      "size": 798293
     }
   ],
+  "owner": "Babelscape",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/Babelscape/rebel-large",
+    "downloadedAt": "2026-02-23T02:18:11.019904+00:00"
+  },
   "capabilities": [
     "relations"
   ]
