@@ -208,6 +208,20 @@ func NewEmbedderRegistry(
 		return nil, err
 	}
 
+	// Register any built-in embedders that were registered via init()
+	for _, factory := range getBuiltinEmbedderFactories() {
+		name, embedder, err := factory()
+		if err != nil {
+			logger.Warn("Failed to initialize built-in embedder", zap.Error(err))
+			continue
+		}
+		registry.pinnedMu.Lock()
+		registry.pinned[name] = embedder
+		registry.pinnedMu.Unlock()
+		logger.Info("Registered built-in embedder as pinned model",
+			zap.String("model", name))
+	}
+
 	return registry, nil
 }
 

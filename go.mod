@@ -10,13 +10,13 @@ replace (
 
 require (
 	github.com/ajroetker/go-highway v0.0.11-0.20260222004508-f75ca9f315f3
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260220060207-2d60adf8dc3f
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260221204932-21e849b84acb
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/goccy/go-json v0.10.5
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260218230850-b757a40d32e7
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260222014031-24c2326d28c6
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
