@@ -94,26 +94,26 @@ func resolveModelName(ctx context.Context, client *modelregistry.Client, name st
 	}
 
 	var matches []string
-	var legacyMatch bool
+	var fullPathMatch bool
 	for _, m := range index.Models {
 		if m.Name == name {
 			if m.Owner != "" {
 				matches = append(matches, m.Owner+"/"+m.Name)
 			} else {
-				legacyMatch = true
+				fullPathMatch = true
 			}
 		}
 	}
 
 	switch {
-	case len(matches) == 1 && !legacyMatch:
+	case len(matches) == 1 && !fullPathMatch:
 		return matches[0], nil
-	case len(matches) > 1, len(matches) == 1 && legacyMatch:
-		if legacyMatch {
+	case len(matches) > 1, len(matches) == 1 && fullPathMatch:
+		if fullPathMatch {
 			matches = append(matches, name)
 		}
 		return "", fmt.Errorf("ambiguous model name %q, specify owner explicitly: %s", name, strings.Join(matches, ", "))
-	case legacyMatch:
+	case fullPathMatch:
 		// Legacy model with no owner — pass bare name through
 		return name, nil
 	default:
