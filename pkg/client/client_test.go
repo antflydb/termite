@@ -347,9 +347,16 @@ func TestClient_ListModels(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{
-			"embedders": []string{"bge-small-en-v1.5", "clip-vit-base-patch32"},
-			"chunkers":  []string{"fixed", "chonky"},
-			"rerankers": []string{"bge-reranker-v2-m3"},
+			"embedders":    map[string]any{"bge-small-en-v1.5": map[string]any{}, "clip-vit-base-patch32": map[string]any{"capabilities": []string{"image"}}},
+			"chunkers":     map[string]any{"fixed": map[string]any{}, "chonky": map[string]any{}},
+			"rerankers":    map[string]any{"bge-reranker-v2-m3": map[string]any{}},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -362,9 +369,13 @@ func TestClient_ListModels(t *testing.T) {
 	models, err := termiteClient.ListModels(ctx)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"bge-small-en-v1.5", "clip-vit-base-patch32"}, models.Embedders)
-	assert.Equal(t, []string{"fixed", "chonky"}, models.Chunkers)
-	assert.Equal(t, []string{"bge-reranker-v2-m3"}, models.Rerankers)
+	assert.Len(t, models.Embedders, 2)
+	assert.Contains(t, models.Embedders, "bge-small-en-v1.5")
+	assert.Contains(t, models.Embedders, "clip-vit-base-patch32")
+	assert.Len(t, models.Chunkers, 2)
+	assert.Contains(t, models.Chunkers, "fixed")
+	assert.Len(t, models.Rerankers, 1)
+	assert.Contains(t, models.Rerankers, "bge-reranker-v2-m3")
 }
 
 func TestClient_GetVersion(t *testing.T) {
@@ -400,9 +411,16 @@ func TestClient_CustomHTTPClient(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{
-			"embedders": []string{},
-			"chunkers":  []string{"fixed"},
-			"rerankers": []string{},
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{"fixed": map[string]any{}},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
@@ -416,7 +434,8 @@ func TestClient_CustomHTTPClient(t *testing.T) {
 	ctx := context.Background()
 	models, err := termiteClient.ListModels(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"fixed"}, models.Chunkers)
+	assert.Len(t, models.Chunkers, 1)
+	assert.Contains(t, models.Chunkers, "fixed")
 }
 
 func TestClient_ContextCancellation(t *testing.T) {
@@ -466,9 +485,16 @@ func TestClient_URLNormalization(t *testing.T) {
 		assert.NotContains(t, r.URL.Path, "//")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"embedders": []string{},
-			"chunkers":  []string{},
-			"rerankers": []string{},
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
 		})
 	}))
 	defer server.Close()

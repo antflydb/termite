@@ -145,6 +145,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Embedders:    map[string]ModelInfo{},
 		Generators:   map[string]ModelInfo{},
 		Recognizers:  map[string]ModelInfo{},
+		Extractors:   map[string]ModelInfo{},
 		Rewriters:    map[string]ModelInfo{},
 		Classifiers:  map[string]ModelInfo{},
 		Readers:      map[string]ModelInfo{},
@@ -169,6 +170,13 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.nerRegistry != nil {
 		resp.Recognizers = capsMapToModelInfoMap(t.node.nerRegistry.List())
+
+		// Populate extractors: NER models with extraction capability
+		for name, caps := range t.node.nerRegistry.List() {
+			if slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
+				resp.Extractors[name] = ModelInfo{Capabilities: caps}
+			}
+		}
 	}
 
 	if t.node.seq2seqRegistry != nil {
@@ -734,10 +742,11 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 
 	// Decode request
 	var req struct {
-		Model          string   `json:"model"`           // Model name to use (required)
-		Texts          []string `json:"texts"`           // Texts to extract entities from
-		Labels         []string `json:"labels"`          // Custom labels for GLiNER models (optional)
-		RelationLabels []string `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
+		Model          string          `json:"model"`           // Model name to use (required)
+		Texts          []string        `json:"texts"`           // Texts to extract entities from
+		Labels         []string        `json:"labels"`          // Custom labels for GLiNER models (optional)
+		RelationLabels []string        `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
+		Resolver       *ResolverConfig `json:"resolver"`        // Entity resolution config (optional)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -878,6 +887,65 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 					Score: rel.Score,
 				}
 			}
+		}
+	}
+
+	// If resolver config is present, run entity resolution to deduplicate.
+	if req.Resolver != nil {
+		cfg := ner.ResolverConfig{
+			SimilarityThreshold:   float64(req.Resolver.SimilarityThreshold),
+			TypeMustMatch:         req.Resolver.TypeMustMatch,
+			MinEntityConfidence:   req.Resolver.MinEntityConfidence,
+			MinRelationConfidence: req.Resolver.MinRelationConfidence,
+			DeduplicateRelations:  req.Resolver.DeduplicateRelations,
+			TrackProvenance:       req.Resolver.TrackProvenance,
+		}
+		// Apply defaults for zero-valued threshold (omitzero sends 0 for unset floats).
+		if cfg.SimilarityThreshold == 0 {
+			cfg.SimilarityThreshold = 0.85
+		}
+
+		kg := ner.BuildKnowledgeGraph(entities, relations, cfg)
+
+		// Build entity ID -> resolved entity lookup for relation mapping.
+		entityByID := make(map[string]*ner.ResolvedEntity, len(kg.Entities))
+		for i := range kg.Entities {
+			entityByID[kg.Entities[i].ID] = &kg.Entities[i]
+		}
+
+		// Flatten resolved entities into a single array (no per-text grouping).
+		resolvedEntities := make([]RecognizeEntity, len(kg.Entities))
+		for i, re := range kg.Entities {
+			resolvedEntities[i] = RecognizeEntity{
+				Text:  re.CanonicalName,
+				Label: re.Label,
+				Score: re.Score,
+			}
+		}
+		apiEntities = [][]RecognizeEntity{resolvedEntities}
+
+		// Flatten resolved relations into a single array.
+		if len(kg.Relations) > 0 {
+			resolvedRelations := make([]Relation, len(kg.Relations))
+			for i, rr := range kg.Relations {
+				head := entityByID[rr.HeadID]
+				tail := entityByID[rr.TailID]
+				resolvedRelations[i] = Relation{
+					Head: RecognizeEntity{
+						Text:  head.CanonicalName,
+						Label: head.Label,
+						Score: head.Score,
+					},
+					Tail: RecognizeEntity{
+						Text:  tail.CanonicalName,
+						Label: tail.Label,
+						Score: tail.Score,
+					},
+					Label: rr.Label,
+					Score: rr.Score,
+				}
+			}
+			apiRelations = [][]Relation{resolvedRelations}
 		}
 	}
 

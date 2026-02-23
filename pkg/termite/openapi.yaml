@@ -421,6 +421,43 @@ components:
             Only used when the model supports relation extraction (GLiNER multitask, REBEL).
             If not provided, the model extracts all relations it can detect.
           example: ["founded", "works_at", "located_in"]
+        resolver:
+          $ref: '#/components/schemas/ResolverConfig'
+
+    ResolverConfig:
+      type: object
+      description: |
+        Configuration for entity resolution. When present in a RecognizeRequest,
+        the response entities and relations are deduplicated via entity resolution
+        (e.g., "Elon Musk" and "Musk" are merged into a single entity).
+      properties:
+        similarity_threshold:
+          type: number
+          format: float
+          default: 0.85
+          description: Jaro-Winkler similarity threshold for merging entities (0.0-1.0)
+        type_must_match:
+          type: boolean
+          default: true
+          description: Whether entity types must match for merging
+        min_entity_confidence:
+          type: number
+          format: float
+          default: 0.0
+          description: Minimum confidence score for entities to be included
+        min_relation_confidence:
+          type: number
+          format: float
+          default: 0.0
+          description: Minimum confidence score for relations to be included
+        deduplicate_relations:
+          type: boolean
+          default: true
+          description: Whether to deduplicate relations after entity resolution
+        track_provenance:
+          type: boolean
+          default: true
+          description: Whether to track mention provenance for resolved entities
 
     Relation:
       type: object
@@ -839,6 +876,7 @@ components:
         - embedders
         - generators
         - recognizers
+        - extractors
         - rewriters
         - classifiers
         - readers
@@ -864,6 +902,11 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/ModelInfo'
           description: Available embedding models from models_dir/embedders/
+        extractors:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available extractor models (NER models with 'extraction' capability)
         generators:
           type: object
           additionalProperties:
