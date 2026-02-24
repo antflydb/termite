@@ -538,6 +538,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// OpenAI-compatible API at /openai/v1/* for standard SDK compatibility
 	node.RegisterOpenAIRoutes(rootMux)
 
+	// Anthropic-compatible API at /anthropic/v1/* for Anthropic SDK compatibility
+	node.RegisterAnthropicRoutes(rootMux)
+
 	// Registry proxy so the dashboard can fetch the model index
 	addRegistryProxy(rootMux, defaultRegistryURL())
 
