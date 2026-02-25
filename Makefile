@@ -110,6 +110,7 @@ update-deps: ## Update Go dependencies to latest versions.
 	cd pkg/operator && $(GO) get -u ./... && $(GO) mod tidy
 	cd pkg/proxy && $(GO) get -u ./... && $(GO) mod tidy
 	cd pkg/termite && $(GO) get -u ./... && $(GO) mod tidy
+	cd e2e && $(GO) get -u ./... && $(GO) mod tidy
 
 ##@ Build
 
