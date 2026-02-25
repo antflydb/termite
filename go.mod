@@ -10,7 +10,7 @@ replace (
 
 require (
 	github.com/ajroetker/go-highway v0.0.11-0.20260222004508-f75ca9f315f3
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260221204932-21e849b84acb
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260223033314-276b544065e0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -73,7 +73,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
-	github.com/prometheus/procfs v0.19.2 // indirect
+	github.com/prometheus/procfs v0.20.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.2 // indirect

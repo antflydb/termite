@@ -47,11 +47,14 @@ func newRustTokenCounter() (TokenCounter, error) {
 }
 
 // CountTokens returns the number of tokens in the text using the Rust tokenizer.
+// addSpecialTokens must be false here: CountTokens is used for chunking decisions,
+// not ML inference. Passing true would add [CLS]+[SEP] and inflate every count by 2,
+// causing chunk boundaries to differ from the pure-Go tokenizer.
 func (t *rustTokenCounter) CountTokens(text string) int {
 	if text == "" {
 		return 0
 	}
-	output := t.tk.EncodeWithOptions(text, true)
+	output := t.tk.EncodeWithOptions(text, false)
 	return len(output.IDs)
 }
 

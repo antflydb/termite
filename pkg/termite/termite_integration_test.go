@@ -155,14 +155,21 @@ func TestRunAsTermite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Run in a goroutine
+	readyC := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunAsTermite(ctx, logger, config, nil)
+		RunAsTermite(ctx, logger, config, readyC)
 	}()
 
-	// Give it time to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for server to be ready (may be slow if backends need to download libraries)
+	select {
+	case <-readyC:
+		// Server is ready
+	case <-time.After(120 * time.Second):
+		cancel()
+		t.Fatal("RunAsTermite did not start in time")
+	}
 
 	// Cancel to trigger shutdown
 	cancel()
@@ -171,7 +178,7 @@ func TestRunAsTermite(t *testing.T) {
 	select {
 	case <-done:
 		// Success
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("RunAsTermite did not shut down in time")
 	}
 }
