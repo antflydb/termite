@@ -226,13 +226,7 @@ func TestFlattenOversizedSections_SplitsOnSentences(t *testing.T) {
 	sent2 := strings.Repeat("beta ", 8)
 	oversized := strings.TrimSpace(sent1) + ". " + strings.TrimSpace(sent2) // no newlines
 
-	// Use the actual tokenizer to find a target that fits one sentence but not both.
-	// This ensures the test works regardless of which tokenizer backend is active
-	// (the Rust tokenizer may produce more subword tokens than the pure-Go one).
-	sentenceTokens := fc.tokenizer.CountTokens(strings.TrimSpace(sent1) + ".")
-	targetTokens := sentenceTokens + 2
-
-	result := fc.flattenOversizedSections(toPositionedSections([]string{oversized}), targetTokens)
+	result := fc.flattenOversizedSections(toPositionedSections([]string{oversized}), 10)
 
 	if len(result) < 2 {
 		t.Fatalf("expected section to be split on sentences, got %d pieces", len(result))
