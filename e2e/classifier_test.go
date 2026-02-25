@@ -135,7 +135,7 @@ func testListModelsClassifier(t *testing.T, ctx context.Context, c *client.Termi
 
 	// Check that mDeBERTa model is in the classifiers list
 	foundClassifier := false
-	for _, name := range models.Classifiers {
+	for name := range models.Classifiers {
 		if name == mDebertaLocalName {
 			foundClassifier = true
 			break
@@ -365,7 +365,7 @@ func testListModelsBartMnli(t *testing.T, ctx context.Context, c *client.Termite
 
 	// Check that BART-MNLI model is in the classifiers list
 	foundClassifier := false
-	for _, name := range models.Classifiers {
+	for name := range models.Classifiers {
 		if name == bartMnliLocalName {
 			foundClassifier = true
 			break

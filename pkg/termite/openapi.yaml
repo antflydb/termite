@@ -171,6 +171,13 @@ components:
           type: boolean
           default: true
           description: Truncate input to fit model context length
+        top_k:
+          type: integer
+          description: Maximum number of non-zero entries per sparse vector (only for sparse models, default 256)
+        min_weight:
+          type: number
+          format: float
+          description: Minimum weight threshold for sparse vector entries (only for sparse models, default 0.0)
 
     EmbedResponse:
       type: object
@@ -181,7 +188,6 @@ components:
         }
       required:
         - model
-        - embeddings
       properties:
         model:
           type: string
@@ -194,7 +200,32 @@ components:
             items:
               type: number
               format: float
-          description: Array of embedding vectors (one per input string)
+          description: Array of dense embedding vectors (one per input, populated for dense models)
+        sparse_embeddings:
+          type: array
+          items:
+            $ref: "#/components/schemas/SparseVector"
+          description: Array of sparse embedding vectors (one per input, populated for sparse models)
+
+    SparseVector:
+      type: object
+      description: A sparse vector with parallel index/value arrays, sorted by index ascending
+      required:
+        - indices
+        - values
+      properties:
+        indices:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: Token IDs from the model vocabulary (sorted ascending)
+        values:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Corresponding weights for each index (always positive)
 
     # Chunking Types - reference existing schemas
     Chunk:

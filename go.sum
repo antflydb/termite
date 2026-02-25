@@ -7,8 +7,8 @@ codeberg.org/go-pdf/fpdf v0.10.0/go.mod h1:Y0DGRAdZ0OmnZPvjbMp/1bYxmIPxm0ws4tfoP
 git.sr.ht/~sbinet/gg v0.6.0 h1:RIzgkizAk+9r7uPzf/VfbJHBMKUr0F5hRFxTUGMnt38=
 git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm94=
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/ajroetker/go-highway v0.0.11-0.20260222004508-f75ca9f315f3 h1:MrWc9x+wISpOQbgzOWEkj2EmXmjV6nLRqB2JEuxuGRk=
-github.com/ajroetker/go-highway v0.0.11-0.20260222004508-f75ca9f315f3/go.mod h1:yhghcLHlM/LHIaHUmFfl/Ej/mCKUow2RHF2+aX3UF4s=
+github.com/ajroetker/go-highway v0.0.11-0.20260225214413-9e86a3496147 h1:hCAsrRHTk8FFByDhN4VSzUxVN91MX3MWdE7hPX4JVIU=
+github.com/ajroetker/go-highway v0.0.11-0.20260225214413-9e86a3496147/go.mod h1:yhghcLHlM/LHIaHUmFfl/Ej/mCKUow2RHF2+aX3UF4s=
 github.com/ajroetker/go-huggingface v0.0.0-antfly001 h1:wBaGm+N4OKLwUhXcnlekJOAxD6SZA8mcE3Yuble9Kxo=
 github.com/ajroetker/go-huggingface v0.0.0-antfly001/go.mod h1:4GJV4gSIhU4kyyUmvD2GakxFN5fKPk+dgtCbT1rrygY=
 github.com/ajroetker/gomlx v0.0.0-antfly008 h1:gR4QU267YK+1N0tC23nip7NpVSqyGa+aZuCBVCqBnp0=

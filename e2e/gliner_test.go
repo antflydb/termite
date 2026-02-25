@@ -129,13 +129,13 @@ func testListModelsGLiNER(t *testing.T, ctx context.Context, c *client.TermiteCl
 	// Check that GLiNER model is in the recognizers or extractors list
 	// Use local name since that's how the server sees it
 	foundRecognizer := false
-	for _, name := range models.Recognizers {
+	for name := range models.Recognizers {
 		if name == glinerModelName {
 			foundRecognizer = true
 			break
 		}
 	}
-	for _, name := range models.Extractors {
+	for name := range models.Extractors {
 		if name == glinerModelName {
 			foundRecognizer = true
 			break

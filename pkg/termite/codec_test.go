@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -190,6 +191,129 @@ func BenchmarkDeserializeFloatArrays(b *testing.B) {
 	for b.Loop() {
 		r := bytes.NewReader(serialized)
 		_, _ = DeserializeFloatArrays(r)
+	}
+}
+
+func TestSerializeDeserializeSparseVectors(t *testing.T) {
+	tests := []struct {
+		name string
+		data []embeddings.SparseVector
+	}{
+		{
+			name: "empty array",
+			data: []embeddings.SparseVector{},
+		},
+		{
+			name: "single vector",
+			data: []embeddings.SparseVector{
+				{Indices: []int32{0, 5, 100}, Values: []float32{0.5, 1.2, 0.8}},
+			},
+		},
+		{
+			name: "multiple vectors",
+			data: []embeddings.SparseVector{
+				{Indices: []int32{1, 3}, Values: []float32{0.1, 0.9}},
+				{Indices: []int32{0, 2, 4, 6}, Values: []float32{0.3, 0.7, 0.2, 0.5}},
+				{Indices: []int32{10}, Values: []float32{2.5}},
+			},
+		},
+		{
+			name: "empty sparse vector (zero nnz)",
+			data: []embeddings.SparseVector{
+				{Indices: []int32{}, Values: []float32{}},
+			},
+		},
+		{
+			name: "mixed empty and non-empty",
+			data: []embeddings.SparseVector{
+				{Indices: []int32{5, 10}, Values: []float32{1.0, 2.0}},
+				{Indices: []int32{}, Values: []float32{}},
+				{Indices: []int32{100}, Values: []float32{0.01}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			err := SerializeSparseVectors(&buf, tt.data)
+			require.NoError(t, err)
+
+			result, err := DeserializeSparseVectors(&buf)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.data, result)
+		})
+	}
+}
+
+func TestDeserializeSparseVectors_ReadErr(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr string
+	}{
+		{
+			name:    "empty reader",
+			data:    []byte{},
+			wantErr: "reading num vectors",
+		},
+		{
+			name:    "missing nnz",
+			data:    []byte{1, 0, 0, 0, 0, 0, 0, 0}, // numVectors=1, but no nnz
+			wantErr: "reading nnz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := bytes.NewReader(tt.data)
+			_, err := DeserializeSparseVectors(r)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func BenchmarkSerializeSparseVectors(b *testing.B) {
+	data := make([]embeddings.SparseVector, 100)
+	for i := range data {
+		nnz := 256
+		indices := make([]int32, nnz)
+		values := make([]float32, nnz)
+		for j := range nnz {
+			indices[j] = int32(j * 100)
+			values[j] = float32(j) * 0.01
+		}
+		data[i] = embeddings.SparseVector{Indices: indices, Values: values}
+	}
+
+	for b.Loop() {
+		var buf bytes.Buffer
+		_ = SerializeSparseVectors(&buf, data)
+	}
+}
+
+func BenchmarkDeserializeSparseVectors(b *testing.B) {
+	data := make([]embeddings.SparseVector, 100)
+	for i := range data {
+		nnz := 256
+		indices := make([]int32, nnz)
+		values := make([]float32, nnz)
+		for j := range nnz {
+			indices[j] = int32(j * 100)
+			values[j] = float32(j) * 0.01
+		}
+		data[i] = embeddings.SparseVector{Indices: indices, Values: values}
+	}
+
+	var buf bytes.Buffer
+	_ = SerializeSparseVectors(&buf, data)
+	serialized := buf.Bytes()
+
+	for b.Loop() {
+		r := bytes.NewReader(serialized)
+		_, _ = DeserializeSparseVectors(r)
 	}
 }
 

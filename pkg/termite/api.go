@@ -266,6 +266,12 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a sparse model — use a different code path
+	if ln.embedderRegistry.HasCapability(req.Model, modelregistry.CapabilitySparse) {
+		ln.handleSparseEmbed(w, r, req)
+		return
+	}
+
 	// Acquire embedder (increments ref count to prevent eviction during request)
 	embedder, err := ln.embedderRegistry.Acquire(req.Model)
 	if err != nil {
@@ -332,6 +338,91 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleSparseEmbed handles the sparse embedding code path for models with the "sparse" capability.
+func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request, req EmbedRequest) {
+	// Parse text-only input (sparse models don't support multimodal)
+	texts, err := parseTextOnlyInput(req.Input)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid input: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(texts) == 0 {
+		http.Error(w, "input is required", http.StatusBadRequest)
+		return
+	}
+
+	// Acquire sparse embedder
+	sparseEmbedder, err := ln.embedderRegistry.AcquireSparse(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.embedderRegistry.Release(req.Model)
+
+	// Wrap with caching
+	cachedSparse := ln.sparseEmbeddingCache.WrapSparseEmbedder(sparseEmbedder, req.Model)
+
+	// Generate sparse embeddings
+	sparseVecs, err := cachedSparse.SparseEmbed(r.Context(), texts)
+	if err != nil {
+		ln.logger.Error("failed to generate sparse embeddings",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("generating sparse embeddings: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Determine response format based on Accept header
+	acceptHeader := r.Header.Get("Accept")
+
+	switch acceptHeader {
+	case "application/json":
+		// JSON response with sparse_embeddings field
+		resp := EmbedResponse{
+			Model: req.Model,
+			SparseEmbeddings: make([]SparseVector, len(sparseVecs)),
+		}
+		for i, sv := range sparseVecs {
+			resp.SparseEmbeddings[i] = SparseVector{
+				Indices: sv.Indices,
+				Values:  sv.Values,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			ln.logger.Error("encoding JSON response", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+	default:
+		// Binary serialization with sparse content type
+		w.Header().Set("Content-Type", SparseVectorsContentType)
+		if err := SerializeSparseVectors(w, sparseVecs); err != nil {
+			ln.logger.Error("serializing sparse embeddings", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// parseTextOnlyInput extracts text strings from the embed request input.
+// Returns an error if the input contains multimodal content (images, audio).
+func parseTextOnlyInput(input EmbedRequest_Input) ([]string, error) {
+	// Try array of strings first (most common case)
+	if arr, err := input.AsEmbedRequestInput1(); err == nil && len(arr) > 0 {
+		return arr, nil
+	}
+
+	// Try single string
+	if str, err := input.AsEmbedRequestInput0(); err == nil && str != "" {
+		return []string{str}, nil
+	}
+
+	return nil, errors.New("sparse models only support text input (string or array of strings)")
 }
 
 // parseEmbedInput parses the EmbedRequest input which can be:

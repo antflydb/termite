@@ -11,7 +11,7 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260220060207-2d60adf8dc3f
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260223033314-276b544065e0
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
@@ -36,7 +36,7 @@ require (
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-coreml v0.0.0-20260222014031-24c2326d28c6 // indirect
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260218230850-b757a40d32e7 // indirect
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260222014031-24c2326d28c6 // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
@@ -64,7 +64,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
-	github.com/prometheus/procfs v0.19.2 // indirect
+	github.com/prometheus/procfs v0.20.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect

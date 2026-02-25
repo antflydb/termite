@@ -152,7 +152,7 @@ func testListModelsCLIP(t *testing.T, ctx context.Context, c *client.TermiteClie
 
 	// Check that CLIP model is in the embedders list
 	found := false
-	for _, name := range models.Embedders {
+	for name := range models.Embedders {
 		if name == clipModelName {
 			found = true
 			break
