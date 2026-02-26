@@ -151,7 +151,7 @@ func testListModelsCLIPCLAP(t *testing.T, ctx context.Context, c *client.Termite
 	}
 
 	found := false
-	for _, name := range models.Embedders {
+	for name := range models.Embedders {
 		if name == clipclapModelName {
 			found = true
 			break

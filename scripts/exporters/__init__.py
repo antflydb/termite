@@ -92,3 +92,4 @@ from . import gliner2
 from . import rebel
 from . import pix2struct
 from . import paddleocr
+from . import sparse

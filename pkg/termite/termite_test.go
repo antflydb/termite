@@ -452,6 +452,10 @@ func (m *MockEmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, e
 	return nil, fmt.Errorf("model not found: %s", modelName)
 }
 
+func (m *MockEmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
+	return nil, fmt.Errorf("sparse model not found: %s", modelName)
+}
+
 func (m *MockEmbedderRegistry) Release(modelName string) {}
 
 func (m *MockEmbedderRegistry) List() []string {

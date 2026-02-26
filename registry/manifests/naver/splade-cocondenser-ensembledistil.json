@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "name": "splade-cocondenser-ensembledistil",
+  "type": "embedder",
+  "description": "",
+  "source": "naver/splade-cocondenser-ensembledistil",
+  "files": [
+    {
+      "name": "config.json",
+      "digest": "sha256:4771cc508296d2354ff720f15fb9dbf628f3f22de2dc7d8a2bc08d087e521343",
+      "size": 618
+    },
+    {
+      "name": "model.onnx",
+      "digest": "sha256:4f0e2651580e35587852be2dd6bf3a6b40cd17dbad2090a1530c98f9e43a19a5",
+      "size": 532033129
+    },
+    {
+      "name": "special_tokens_map.json",
+      "digest": "sha256:5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a",
+      "size": 695
+    },
+    {
+      "name": "tokenizer.json",
+      "digest": "sha256:d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+      "size": 711396
+    },
+    {
+      "name": "tokenizer_config.json",
+      "digest": "sha256:ce6b12320e74f5daeb3c659a55e92b21e69293f9bd48b23f7c5ff10d54a57ec7",
+      "size": 1273
+    },
+    {
+      "name": "vocab.txt",
+      "digest": "sha256:07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+      "size": 231508
+    }
+  ],
+  "owner": "naver",
+  "provenance": {
+    "downloadedFrom": "https://huggingface.co/naver/splade-cocondenser-ensembledistil",
+    "downloadedAt": "2026-02-25T21:56:22.541766+00:00"
+  },
+  "capabilities": [
+    "sparse"
+  ]
+}

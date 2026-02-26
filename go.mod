@@ -9,8 +9,8 @@ replace (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.11-0.20260222004508-f75ca9f315f3
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260223033314-276b544065e0
+	github.com/ajroetker/go-highway v0.0.11-0.20260225214413-9e86a3496147
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260225222628-52403304422f
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -91,7 +91,7 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	golang.org/x/text v0.34.0 // indirect

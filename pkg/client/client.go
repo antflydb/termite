@@ -782,6 +782,140 @@ func (c *TermiteClient) Generate(ctx context.Context, model string, messages []o
 	return resp.JSON200, nil
 }
 
+// SparseVector represents a sparse embedding vector with parallel index/value arrays.
+type SparseVector struct {
+	Indices []int32   `json:"indices"`
+	Values  []float32 `json:"values"`
+}
+
+// SparseEmbed generates sparse embeddings for the given text strings.
+// Returns sparse vectors in binary format (most efficient).
+// Only valid for models with the "sparse" capability.
+func (c *TermiteClient) SparseEmbed(ctx context.Context, model string, input []string) ([]SparseVector, error) {
+	// Build the input union type
+	var inputUnion oapi.EmbedRequest_Input
+	if err := inputUnion.FromEmbedRequestInput1(input); err != nil {
+		return nil, fmt.Errorf("building input: %w", err)
+	}
+
+	req := oapi.EmbedRequest{
+		Model: model,
+		Input: inputUnion,
+	}
+
+	// Make request - server returns sparse binary format for sparse models
+	resp, err := c.client.GenerateEmbeddingsWithResponse(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+
+	contentType := resp.HTTPResponse.Header.Get("Content-Type")
+
+	if strings.Contains(contentType, "application/json") {
+		// JSON response — parse sparse_embeddings field
+		if resp.JSON200 != nil && len(resp.JSON200.SparseEmbeddings) > 0 {
+			vecs := make([]SparseVector, len(resp.JSON200.SparseEmbeddings))
+			for i, sv := range resp.JSON200.SparseEmbeddings {
+				vecs[i] = SparseVector{
+					Indices: sv.Indices,
+					Values:  sv.Values,
+				}
+			}
+			return vecs, nil
+		}
+		return nil, fmt.Errorf("unexpected JSON response: no sparse_embeddings in response")
+	}
+
+	// Binary response (application/x-sparse-vectors)
+	if resp.StatusCode() != 200 {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return deserializeSparseVectors(bytes.NewReader(resp.Body))
+}
+
+// SparseEmbedJSON generates sparse embeddings and returns JSON response.
+func (c *TermiteClient) SparseEmbedJSON(ctx context.Context, model string, input []string) (*oapi.EmbedResponse, error) {
+	var inputUnion oapi.EmbedRequest_Input
+	if err := inputUnion.FromEmbedRequestInput1(input); err != nil {
+		return nil, fmt.Errorf("building input: %w", err)
+	}
+
+	req := oapi.EmbedRequest{
+		Model: model,
+		Input: inputUnion,
+	}
+
+	resp, err := c.client.GenerateEmbeddingsWithResponse(ctx, req, func(ctx context.Context, req *http.Request) error {
+		req.Header.Set("Accept", "application/json")
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+
+	if resp.JSON400 != nil {
+		return nil, fmt.Errorf("bad request: %s", resp.JSON400.Error)
+	}
+	if resp.JSON404 != nil {
+		return nil, fmt.Errorf("model not found: %s", resp.JSON404.Error)
+	}
+	if resp.JSON500 != nil {
+		return nil, fmt.Errorf("server error: %s", resp.JSON500.Error)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode(), string(resp.Body))
+	}
+
+	return resp.JSON200, nil
+}
+
+// deserializeSparseVectors reads sparse vectors from binary format.
+// Format: [uint64 num_vectors] per vector: [uint32 nnz] [int32*nnz indices] [float32*nnz values]
+func deserializeSparseVectors(r io.Reader) ([]SparseVector, error) {
+	var numVectors uint64
+	if err := binary.Read(r, binary.LittleEndian, &numVectors); err != nil {
+		return nil, fmt.Errorf("reading num vectors: %w", err)
+	}
+	if numVectors == 0 {
+		return []SparseVector{}, nil
+	}
+	result := make([]SparseVector, numVectors)
+	for i := range numVectors {
+		var nnz uint32
+		if err := binary.Read(r, binary.LittleEndian, &nnz); err != nil {
+			return nil, fmt.Errorf("reading nnz for vector %d: %w", i, err)
+		}
+		indices := make([]int32, nnz)
+		for j := range nnz {
+			if err := binary.Read(r, binary.LittleEndian, &indices[j]); err != nil {
+				return nil, fmt.Errorf("reading index %d for vector %d: %w", j, i, err)
+			}
+		}
+		values := make([]float32, nnz)
+		for j := range nnz {
+			if err := binary.Read(r, binary.LittleEndian, &values[j]); err != nil {
+				return nil, fmt.Errorf("reading value %d for vector %d: %w", j, i, err)
+			}
+		}
+		result[i] = SparseVector{
+			Indices: indices,
+			Values:  values,
+		}
+	}
+	return result, nil
+}
+
 // deserializeFloatArrays reconstructs a 2D float32 array from binary format.
 // Format: uint64(numVectors) + uint64(dimension) + float32 values in little endian
 func deserializeFloatArrays(r io.Reader) ([][]float32, error) {

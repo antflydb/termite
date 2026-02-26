@@ -125,7 +125,7 @@ func testListModelsREBEL(t *testing.T, ctx context.Context, c *client.TermiteCli
 
 	// Check that REBEL model is in the recognizers list
 	foundRecognizer := false
-	for _, name := range models.Recognizers {
+	for name := range models.Recognizers {
 		if name == rebelModelName {
 			foundRecognizer = true
 			break
@@ -139,18 +139,16 @@ func testListModelsREBEL(t *testing.T, ctx context.Context, c *client.TermiteCli
 	}
 
 	// Check capabilities if model info is available
-	if models.RecognizerInfo != nil {
-		if info, ok := models.RecognizerInfo[rebelModelName]; ok {
-			hasRelations := false
-			for _, cap := range info.Capabilities {
-				if cap == "relations" {
-					hasRelations = true
-					break
-				}
+	if info, ok := models.Recognizers[rebelModelName]; ok {
+		hasRelations := false
+		for _, cap := range info.Capabilities {
+			if cap == "relations" {
+				hasRelations = true
+				break
 			}
-			assert.True(t, hasRelations, "REBEL model should have 'relations' capability")
-			t.Logf("REBEL model capabilities: %v", info.Capabilities)
 		}
+		assert.True(t, hasRelations, "REBEL model should have 'relations' capability")
+		t.Logf("REBEL model capabilities: %v", info.Capabilities)
 	}
 }
 

@@ -51,10 +51,11 @@ type TermiteNode struct {
 	requestQueue *RequestQueue
 
 	// Caches for embeddings, reranking, NER, and reading
-	embeddingCache *EmbeddingCache
-	rerankingCache *RerankingCache
-	nerCache       *NERCache
-	readingCache   *ReadingCache
+	embeddingCache       *EmbeddingCache
+	sparseEmbeddingCache *SparseEmbeddingCache
+	rerankingCache       *RerankingCache
+	nerCache             *NERCache
+	readingCache         *ReadingCache
 
 	// allowDownloads controls whether the dashboard shows model download commands
 	allowDownloads bool
@@ -479,6 +480,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
+	sparseEmbeddingCache := NewSparseEmbeddingCache(zl.Named("sparse-embedding-cache"))
+	defer sparseEmbeddingCache.Close()
+
 	rerankingCache := NewRerankingCache(zl.Named("reranking-cache"))
 	defer rerankingCache.Close()
 
@@ -511,6 +515,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
+		sparseEmbeddingCache: sparseEmbeddingCache,
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,

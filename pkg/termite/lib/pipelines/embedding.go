@@ -568,44 +568,7 @@ func (p *EmbeddingPipeline) Embed(ctx context.Context, texts []string) ([][]floa
 		return nil, nil
 	}
 
-	// Tokenize all texts
-	batchSize := len(texts)
-	allInputIDs := make([][]int32, batchSize)
-	allAttentionMask := make([][]int32, batchSize)
-	maxLen := 0
-
-	for i, text := range texts {
-		tokens := p.Tokenizer.Encode(text)
-		if len(tokens) > p.Config.MaxLength {
-			tokens = tokens[:p.Config.MaxLength]
-		}
-		if len(tokens) > maxLen {
-			maxLen = len(tokens)
-		}
-		allInputIDs[i] = IntToInt32(tokens)
-	}
-
-	// Pad to max length and create attention masks
-	for i := range allInputIDs {
-		origLen := len(allInputIDs[i])
-		allAttentionMask[i] = make([]int32, maxLen)
-		for j := range origLen {
-			allAttentionMask[i][j] = 1
-		}
-		// Pad input IDs
-		if origLen < maxLen {
-			padded := make([]int32, maxLen)
-			copy(padded, allInputIDs[i])
-			allInputIDs[i] = padded
-		}
-	}
-
-	// Create model inputs
-	inputs := &backends.ModelInputs{
-		InputIDs:      allInputIDs,
-		AttentionMask: allAttentionMask,
-	}
-
+	inputs := TokenizeTexts(p.Tokenizer, texts, p.Config.MaxLength)
 	return p.EmbedBatch(ctx, inputs)
 }
 
