@@ -138,12 +138,14 @@ func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, lo
 	}
 
 	for _, ownerEntry := range ownerEntries {
-		if !ownerEntry.IsDir() {
+		// Use os.Stat to follow symlinks (DirEntry.IsDir() returns false for symlinks)
+		ownerPath := filepath.Join(modelsDir, ownerEntry.Name())
+		ownerInfo, err := os.Stat(ownerPath)
+		if err != nil || !ownerInfo.IsDir() {
 			continue
 		}
 
 		owner := ownerEntry.Name()
-		ownerPath := filepath.Join(modelsDir, owner)
 
 		// Second level: model directories within owner
 		modelEntries, err := os.ReadDir(ownerPath)
@@ -153,10 +155,12 @@ func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, lo
 		}
 
 		for _, modelEntry := range modelEntries {
-			if !modelEntry.IsDir() {
+			modelPath := filepath.Join(ownerPath, modelEntry.Name())
+			// Use os.Stat to follow symlinks
+			modelInfo, err := os.Stat(modelPath)
+			if err != nil || !modelInfo.IsDir() {
 				continue
 			}
-			modelPath := filepath.Join(ownerPath, modelEntry.Name())
 			model := discoverSingleModel(modelPath, owner, modelEntry.Name(), modelType, logger)
 			if model != nil {
 				discovered = append(discovered, *model)
