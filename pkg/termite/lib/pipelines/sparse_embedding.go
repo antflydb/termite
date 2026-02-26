@@ -182,13 +182,13 @@ func applySoftplusAndSparsify(row []float32, topK int, minWeight float32) embedd
 
 	// Collect entries above minimum weight
 	type entry struct {
-		index int32
+		index uint32
 		value float32
 	}
 	var entries []entry
 	for i, v := range activated {
 		if v > minWeight {
-			entries = append(entries, entry{index: int32(i), value: v})
+			entries = append(entries, entry{index: uint32(i), value: v})
 		}
 	}
 
@@ -212,7 +212,7 @@ func applySoftplusAndSparsify(row []float32, topK int, minWeight float32) embedd
 	})
 
 	// Build sparse vector
-	indices := make([]int32, len(entries))
+	indices := make([]uint32, len(entries))
 	values := make([]float32, len(entries))
 	for i, e := range entries {
 		indices[i] = e.index
