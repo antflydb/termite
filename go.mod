@@ -10,7 +10,7 @@ replace (
 
 require (
 	github.com/ajroetker/go-highway v0.0.11-0.20260225214413-9e86a3496147
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260225222628-52403304422f
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260226010651-7c5015049ef6
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -22,7 +22,7 @@ require (
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
-	github.com/knights-analytics/ortgenai v0.0.3
+	github.com/knights-analytics/ortgenai v0.1.0
 	github.com/oapi-codegen/runtime v1.1.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2

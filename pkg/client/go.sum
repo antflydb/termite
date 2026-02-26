@@ -1,6 +1,6 @@
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
-github.com/antflydb/antfly-go/libaf v0.0.0-20260225222628-52403304422f h1:vrUNvKSba96zGkrXIqvl7anwi1bI701YL7UU58Wvjdc=
-github.com/antflydb/antfly-go/libaf v0.0.0-20260225222628-52403304422f/go.mod h1:fHsIpHCv+PFoW67wEPRNG0LIxSXLnkcfErdHB7FLprc=
+github.com/antflydb/antfly-go/libaf v0.0.0-20260226010651-7c5015049ef6 h1:jqC0iQ+9nXgWwOCeT0c5FpIn17NZ3dUOT5vWgjsiIDA=
+github.com/antflydb/antfly-go/libaf v0.0.0-20260226010651-7c5015049ef6/go.mod h1:fHsIpHCv+PFoW67wEPRNG0LIxSXLnkcfErdHB7FLprc=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0 h1:axGnT1gRIfimI7gJifB699GoE/oq+F2MU7Dml6nw9rQ=
 github.com/apapsch/go-jsonmerge/v2 v2.0.0/go.mod h1:lvDnEdqiQrp0O42VQGgmlKpxL1AP2+08jFMw88y4klk=
 github.com/bmatcuk/doublestar v1.1.1/go.mod h1:UD6OnuiIn0yFxxA2le/rnRU1G4RaI4UvFv1sNto9p6w=

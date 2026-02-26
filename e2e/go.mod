@@ -11,7 +11,7 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260225222628-52403304422f
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260226010651-7c5015049ef6
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
@@ -47,7 +47,7 @@ require (
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
-	github.com/knights-analytics/ortgenai v0.0.3 // indirect
+	github.com/knights-analytics/ortgenai v0.1.0 // indirect
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
