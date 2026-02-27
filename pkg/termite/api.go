@@ -386,8 +386,13 @@ func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request,
 			SparseEmbeddings: make([]SparseVector, len(sparseVecs)),
 		}
 		for i, sv := range sparseVecs {
+			// Convert from uint32 indices to generated int32 for JSON wire format
+			indices := make([]int32, len(sv.Indices))
+			for j, idx := range sv.Indices {
+				indices[j] = int32(idx)
+			}
 			resp.SparseEmbeddings[i] = SparseVector{
-				Indices: sv.Indices,
+				Indices: indices,
 				Values:  sv.Values,
 			}
 		}
