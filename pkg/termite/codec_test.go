@@ -206,29 +206,29 @@ func TestSerializeDeserializeSparseVectors(t *testing.T) {
 		{
 			name: "single vector",
 			data: []embeddings.SparseVector{
-				{Indices: []uint32{0, 5, 100}, Values: []float32{0.5, 1.2, 0.8}},
+				{Indices: []int32{0, 5, 100}, Values: []float32{0.5, 1.2, 0.8}},
 			},
 		},
 		{
 			name: "multiple vectors",
 			data: []embeddings.SparseVector{
-				{Indices: []uint32{1, 3}, Values: []float32{0.1, 0.9}},
-				{Indices: []uint32{0, 2, 4, 6}, Values: []float32{0.3, 0.7, 0.2, 0.5}},
-				{Indices: []uint32{10}, Values: []float32{2.5}},
+				{Indices: []int32{1, 3}, Values: []float32{0.1, 0.9}},
+				{Indices: []int32{0, 2, 4, 6}, Values: []float32{0.3, 0.7, 0.2, 0.5}},
+				{Indices: []int32{10}, Values: []float32{2.5}},
 			},
 		},
 		{
 			name: "empty sparse vector (zero nnz)",
 			data: []embeddings.SparseVector{
-				{Indices: []uint32{}, Values: []float32{}},
+				{Indices: []int32{}, Values: []float32{}},
 			},
 		},
 		{
 			name: "mixed empty and non-empty",
 			data: []embeddings.SparseVector{
-				{Indices: []uint32{5, 10}, Values: []float32{1.0, 2.0}},
-				{Indices: []uint32{}, Values: []float32{}},
-				{Indices: []uint32{100}, Values: []float32{0.01}},
+				{Indices: []int32{5, 10}, Values: []float32{1.0, 2.0}},
+				{Indices: []int32{}, Values: []float32{}},
+				{Indices: []int32{100}, Values: []float32{0.01}},
 			},
 		},
 	}
@@ -279,10 +279,10 @@ func BenchmarkSerializeSparseVectors(b *testing.B) {
 	data := make([]embeddings.SparseVector, 100)
 	for i := range data {
 		nnz := 256
-		indices := make([]uint32, nnz)
+		indices := make([]int32, nnz)
 		values := make([]float32, nnz)
 		for j := range nnz {
-			indices[j] = uint32(j * 100)
+			indices[j] = int32(j * 100)
 			values[j] = float32(j) * 0.01
 		}
 		data[i] = embeddings.SparseVector{Indices: indices, Values: values}
@@ -298,10 +298,10 @@ func BenchmarkDeserializeSparseVectors(b *testing.B) {
 	data := make([]embeddings.SparseVector, 100)
 	for i := range data {
 		nnz := 256
-		indices := make([]uint32, nnz)
+		indices := make([]int32, nnz)
 		values := make([]float32, nnz)
 		for j := range nnz {
-			indices[j] = uint32(j * 100)
+			indices[j] = int32(j * 100)
 			values[j] = float32(j) * 0.01
 		}
 		data[i] = embeddings.SparseVector{Indices: indices, Values: values}

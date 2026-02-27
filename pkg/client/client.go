@@ -784,7 +784,7 @@ func (c *TermiteClient) Generate(ctx context.Context, model string, messages []o
 
 // SparseVector represents a sparse embedding vector with parallel index/value arrays.
 type SparseVector struct {
-	Indices []uint32  `json:"indices"`
+	Indices []int32   `json:"indices"`
 	Values  []float32 `json:"values"`
 }
 
@@ -826,13 +826,8 @@ func (c *TermiteClient) SparseEmbed(ctx context.Context, model string, input []s
 		if resp.JSON200 != nil && len(resp.JSON200.SparseEmbeddings) > 0 {
 			vecs := make([]SparseVector, len(resp.JSON200.SparseEmbeddings))
 			for i, sv := range resp.JSON200.SparseEmbeddings {
-				// Convert from generated int32 indices to uint32
-				indices := make([]uint32, len(sv.Indices))
-				for j, idx := range sv.Indices {
-					indices[j] = uint32(idx)
-				}
 				vecs[i] = SparseVector{
-					Indices: indices,
+					Indices: sv.Indices,
 					Values:  sv.Values,
 				}
 			}
@@ -886,7 +881,7 @@ func (c *TermiteClient) SparseEmbedJSON(ctx context.Context, model string, input
 }
 
 // deserializeSparseVectors reads sparse vectors from binary format.
-// Format: [uint64 num_vectors] per vector: [uint32 nnz] [uint32*nnz indices] [float32*nnz values]
+// Format: [uint64 num_vectors] per vector: [uint32 nnz] [int32*nnz indices] [float32*nnz values]
 func deserializeSparseVectors(r io.Reader) ([]SparseVector, error) {
 	var numVectors uint64
 	if err := binary.Read(r, binary.LittleEndian, &numVectors); err != nil {
@@ -901,7 +896,7 @@ func deserializeSparseVectors(r io.Reader) ([]SparseVector, error) {
 		if err := binary.Read(r, binary.LittleEndian, &nnz); err != nil {
 			return nil, fmt.Errorf("reading nnz for vector %d: %w", i, err)
 		}
-		indices := make([]uint32, nnz)
+		indices := make([]int32, nnz)
 		for j := range nnz {
 			if err := binary.Read(r, binary.LittleEndian, &indices[j]); err != nil {
 				return nil, fmt.Errorf("reading index %d for vector %d: %w", j, i, err)

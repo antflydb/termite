@@ -39,7 +39,7 @@ func TestApplySoftplusAndSparsify_KnownValues(t *testing.T) {
 	}
 
 	// Build a map for easier lookup
-	valueMap := make(map[uint32]float32)
+	valueMap := make(map[int32]float32)
 	for i, idx := range result.Indices {
 		valueMap[idx] = result.Values[i]
 	}
@@ -88,7 +88,7 @@ func TestApplySoftplusAndSparsify_TopK(t *testing.T) {
 
 	// The top-3 should be indices 7, 8, 9 (largest input values)
 	// Output is sorted by index ascending
-	expectedIndices := []uint32{7, 8, 9}
+	expectedIndices := []int32{7, 8, 9}
 	for i, expected := range expectedIndices {
 		if result.Indices[i] != expected {
 			t.Errorf("result.Indices[%d] = %d, want %d", i, result.Indices[i], expected)
