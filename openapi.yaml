@@ -953,7 +953,7 @@ components:
           items:
             type: integer
             format: int32
-          description: Token IDs from the model vocabulary (unsigned uint32 term IDs, sorted ascending)
+          description: Token IDs from the model vocabulary (sorted ascending)
         values:
           type: array
           items:
