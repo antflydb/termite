@@ -160,7 +160,19 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 }
 
 // IsVision2SeqModel checks if a model path contains a Vision2Seq model.
+// This includes standard encoder-decoder models, Florence-2, and Moondream2.
 func IsVision2SeqModel(path string) bool {
+	// Check for Moondream2 (vision_encoder + projection + decoder)
+	if IsMoondream2Model(path) {
+		return true
+	}
+
+	// Check for Florence-2 (vision_encoder + embed_tokens + encoder_model + decoder)
+	if IsFlorence2Model(path) {
+		return true
+	}
+
+	// Standard Vision2Seq (encoder + decoder)
 	encoderPath := FindONNXFile(path, []string{
 		"encoder.onnx",
 		"encoder_model.onnx",
@@ -1185,14 +1197,22 @@ func LoadVision2SeqPipeline(
 		return nil, "", fmt.Errorf("getting session factory: %w", err)
 	}
 
-	// Load the model - check for Florence-2 architecture
+	// Load the model - check for specific architectures
 	var model backends.Model
-	if IsFlorence2Model(modelPath) {
+	if IsMoondream2Model(modelPath) {
+		// Moondream2: vision_encoder + projection + decoder (SigLIP + Phi-2)
+		model, err = LoadMoondream2Model(modelPath, factory)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading Moondream2 model: %w", err)
+		}
+	} else if IsFlorence2Model(modelPath) {
+		// Florence-2: vision_encoder + embed_tokens + encoder_model + decoder
 		model, err = LoadFlorence2Model(modelPath, factory)
 		if err != nil {
 			return nil, "", fmt.Errorf("loading Florence-2 model: %w", err)
 		}
 	} else {
+		// Standard Vision2Seq: encoder + decoder (TrOCR, Donut, etc.)
 		model, err = LoadVision2SeqModel(modelPath, factory)
 		if err != nil {
 			return nil, "", fmt.Errorf("loading model: %w", err)

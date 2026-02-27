@@ -44,6 +44,8 @@ const (
 	ModelTypeSurya ModelType = "surya"
 	// ModelTypePaddleOCR is a multi-stage OCR model (PaddleOCR PP-OCRv4)
 	ModelTypePaddleOCR ModelType = "paddleocr"
+	// ModelTypeMoondream is a vision-language model (vikhyatk/moondream2)
+	ModelTypeMoondream ModelType = "moondream"
 	// ModelTypeGeneric is used when the model type is unknown
 	ModelTypeGeneric ModelType = "generic"
 )
@@ -80,7 +82,7 @@ type Result struct {
 }
 
 // Reader provides OCR and document understanding for images.
-// It wraps Vision2Seq models (TrOCR, Donut, Florence-2) to extract text from images.
+// It wraps Vision2Seq models (TrOCR, Donut, Florence-2, Moondream) to extract text from images.
 type Reader interface {
 	// Read extracts text from the given images.
 	// The optional prompt parameter allows specifying a task prompt for document understanding models:
@@ -88,10 +90,12 @@ type Reader interface {
 	//   - Donut CORD: "<s_cord-v2>" for receipt parsing
 	//   - Donut DocVQA: "<s_docvqa><s_question>...</s_question><s_answer>" for visual QA
 	//   - Florence-2: "<OCR>" for text extraction, "<CAPTION>" for captioning
+	//   - Moondream: natural language prompt (e.g., "Describe this image in detail")
 	//
 	// maxTokens limits the generated output length (0 uses model default).
 	//
-	// Returns one Result per input image.
+	// Returns one Result per input image. For Moondream, Result.Fields contains
+	// structured output (mood, tags, possible_source) extracted from the JSON response.
 	Read(ctx context.Context, images []image.Image, prompt string, maxTokens int) ([]Result, error)
 
 	// Close releases model resources.
@@ -230,6 +234,9 @@ func detectModelType(modelPath string) ModelType {
 	if strings.Contains(pathLower, "paddleocr") || strings.Contains(pathLower, "ppocr") {
 		return ModelTypePaddleOCR
 	}
+	if strings.Contains(pathLower, "moondream") {
+		return ModelTypeMoondream
+	}
 
 	return ModelTypeGeneric
 }
@@ -306,6 +313,12 @@ func (r *PooledReader) parseOutput(text string, prompt string) Result {
 	case ModelTypeFlorence:
 		// Florence outputs are typically cleaner
 		result.Text = FlorenceParseOCR(text)
+
+	case ModelTypeMoondream:
+		// Moondream outputs structured JSON with description, mood, tags, etc.
+		description, fields := MoondreamParseFields(text)
+		result.Text = description
+		result.Fields = fields
 
 	case ModelTypePix2Struct:
 		// Pix2Struct outputs direct answers as plain text
