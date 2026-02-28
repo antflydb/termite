@@ -173,7 +173,7 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 	)
 
 	// Extract max text sequence length from config (e.g., CLIP uses 77)
-	config.MaxTextLength = rawConfig.TextConfig.MaxPositionEmbeddings
+	config.MaxTextLength = FirstNonZero(rawConfig.MaxPositionEmbeddings, rawConfig.TextConfig.MaxPositionEmbeddings)
 
 	// Build image config if we have a visual encoder
 	if config.VisualEncoderFile != "" {
@@ -217,9 +217,10 @@ func IsEmbeddingModel(path string) bool {
 
 // rawEmbeddingConfig represents config.json for embedding models.
 type rawEmbeddingConfig struct {
-	ModelType     string `json:"model_type"`
-	HiddenSize    int    `json:"hidden_size"`
-	ProjectionDim int    `json:"projection_dim"`
+	ModelType             string `json:"model_type"`
+	HiddenSize            int    `json:"hidden_size"`
+	ProjectionDim         int    `json:"projection_dim"`
+	MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 
 	// Vision config (CLIP, SigLIP, etc.)
 	VisionConfig struct {
@@ -567,44 +568,7 @@ func (p *EmbeddingPipeline) Embed(ctx context.Context, texts []string) ([][]floa
 		return nil, nil
 	}
 
-	// Tokenize all texts
-	batchSize := len(texts)
-	allInputIDs := make([][]int32, batchSize)
-	allAttentionMask := make([][]int32, batchSize)
-	maxLen := 0
-
-	for i, text := range texts {
-		tokens := p.Tokenizer.Encode(text)
-		if len(tokens) > p.Config.MaxLength {
-			tokens = tokens[:p.Config.MaxLength]
-		}
-		if len(tokens) > maxLen {
-			maxLen = len(tokens)
-		}
-		allInputIDs[i] = IntToInt32(tokens)
-	}
-
-	// Pad to max length and create attention masks
-	for i := range allInputIDs {
-		origLen := len(allInputIDs[i])
-		allAttentionMask[i] = make([]int32, maxLen)
-		for j := range origLen {
-			allAttentionMask[i][j] = 1
-		}
-		// Pad input IDs
-		if origLen < maxLen {
-			padded := make([]int32, maxLen)
-			copy(padded, allInputIDs[i])
-			allInputIDs[i] = padded
-		}
-	}
-
-	// Create model inputs
-	inputs := &backends.ModelInputs{
-		InputIDs:      allInputIDs,
-		AttentionMask: allAttentionMask,
-	}
-
+	inputs := TokenizeTexts(p.Tokenizer, texts, p.Config.MaxLength)
 	return p.EmbedBatch(ctx, inputs)
 }
 

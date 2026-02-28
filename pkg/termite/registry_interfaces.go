@@ -35,11 +35,17 @@ type EmbedderRegistryInterface interface {
 	// Acquire retrieves an embedder and increments reference count to prevent eviction.
 	// Caller MUST call Release when done.
 	Acquire(modelName string) (embeddings.Embedder, error)
+	// AcquireSparse retrieves a sparse embedder and increments reference count.
+	// Only valid for models with the "sparse" capability.
+	// Caller MUST call Release when done.
+	AcquireSparse(modelName string) (embeddings.SparseEmbedder, error)
 	// Release decrements reference count, allowing the model to be evicted.
 	Release(modelName string)
 	// List returns all available model names
 	List() []string
-	// HasCapability checks if a model has a specific capability (e.g., image, audio)
+	// ListWithCapabilities returns a map of model name to capabilities
+	ListWithCapabilities() map[string][]string
+	// HasCapability checks if a model has a specific capability (e.g., image, audio, sparse)
 	HasCapability(modelName string, capability modelregistry.Capability) bool
 	// Close shuts down the registry and releases resources
 	Close() error

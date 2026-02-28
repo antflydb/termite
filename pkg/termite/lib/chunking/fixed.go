@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
@@ -37,6 +38,17 @@ const (
 
 // Ensure FixedChunker implements the Chunker interface
 var _ chunking.Chunker = (*FixedChunker)(nil)
+
+// positionedSection tracks a text section along with its byte offset in the
+// original input text. Threading offsets through the splitting pipeline ensures
+// that chunk StartChar/EndChar values always satisfy:
+//
+//	originalText[StartChar:EndChar] == chunk.Text
+type positionedSection struct {
+	text   string
+	start  int // byte offset in original text
+	tokens int // cached token count (0 = not yet computed)
+}
 
 // FixedChunkerConfig contains configuration for the fixed chunker.
 type FixedChunkerConfig struct {
@@ -113,6 +125,50 @@ func NewFixedChunker(config FixedChunkerConfig) (*FixedChunker, error) {
 	}, nil
 }
 
+// splitWithPositions splits text by sep, returning positionedSections whose
+// start fields are byte offsets relative to baseOffset in the original text.
+// For ". " splitting, the period is kept with the preceding section.
+func splitWithPositions(text string, sep string, baseOffset int) []positionedSection {
+	if text == "" {
+		return nil
+	}
+
+	isSentenceSplit := sep == ". "
+
+	parts := strings.Split(text, sep)
+	sections := make([]positionedSection, 0, len(parts))
+	pos := baseOffset
+
+	for i, part := range parts {
+		sectionText := part
+		if isSentenceSplit && i < len(parts)-1 {
+			sectionText = part + "."
+		}
+
+		sections = append(sections, positionedSection{
+			text:  sectionText,
+			start: pos,
+		})
+
+		// Advance pos past this part + separator
+		pos += len(part)
+		if i < len(parts)-1 {
+			pos += len(sep)
+		}
+	}
+
+	return sections
+}
+
+// countTokens returns the token count for a section, using the cached value
+// if available.
+func (s *FixedChunker) countTokens(sec *positionedSection) int {
+	if sec.tokens == 0 && sec.text != "" {
+		sec.tokens = s.tokenizer.CountTokens(sec.text)
+	}
+	return sec.tokens
+}
+
 // Chunk splits text into chunks with per-request config overrides.
 func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	if text == "" {
@@ -143,20 +199,17 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 	// Note: Threshold is not applicable to FixedChunker (only used by ONNX models)
 
 	// Split on separator to get candidate sections
-	sections := strings.Split(text, effectiveConfig.Separator)
+	sections := splitWithPositions(text, effectiveConfig.Separator, 0)
 
 	// If splitting on the separator didn't produce multiple sections,
-	// try progressively less strict separators
+	// try progressively less strict separators.
+	// Skip "\n" fallback when the primary separator is already "\n".
 	if len(sections) <= 1 {
-		// Try single newlines
-		sections = strings.Split(text, "\n")
+		if effectiveConfig.Separator != "\n" {
+			sections = splitWithPositions(text, "\n", 0)
+		}
 		if len(sections) <= 1 {
-			// Try periods followed by space (sentences)
-			sections = strings.Split(text, ". ")
-			// Re-add the period to each section except the last
-			for i := 0; i < len(sections)-1; i++ {
-				sections[i] = sections[i] + "."
-			}
+			sections = splitWithPositions(text, ". ", 0)
 		}
 	}
 
@@ -164,9 +217,30 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 		return nil, nil
 	}
 
+	// Flatten oversized sections: if any single section exceeds target tokens,
+	// split it further using progressively finer separators
+	sections = s.flattenOversizedSections(sections, effectiveConfig.TargetTokens)
+
+	// Filter empty sections after trimming and compute token counts
+	filtered := make([]positionedSection, 0, len(sections))
+	for i := range sections {
+		trimmed := strings.TrimSpace(sections[i].text)
+		if trimmed == "" {
+			continue
+		}
+		// Adjust start offset to account for leading whitespace trimmed
+		leadingTrimmed := len(sections[i].text) - len(strings.TrimLeft(sections[i].text, " \t\n\r"))
+		sections[i].text = trimmed
+		sections[i].start += leadingTrimmed
+		sections[i].tokens = 0 // reset cached count since text changed
+		s.countTokens(&sections[i])
+		filtered = append(filtered, sections[i])
+	}
+	sections = filtered
+
 	chunks := make([]chunking.Chunk, 0)
-	currentChunk := strings.Builder{}
-	currentStartChar := 0
+	// Accumulate sections for the current chunk
+	var currentSections []positionedSection
 	currentTokens := 0
 	previousChunkText := "" // For overlap
 
@@ -178,24 +252,29 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 		default:
 		}
 
-		section = strings.TrimSpace(section)
-		if section == "" {
-			continue
-		}
-
-		// Count tokens in this section
-		sectionTokens := s.tokenizer.CountTokens(section)
+		sectionTokens := section.tokens
 
 		// Check if adding this section would exceed target
 		if currentTokens > 0 && currentTokens+sectionTokens > effectiveConfig.TargetTokens {
-			// Finalize current chunk
-			chunkText := strings.TrimSpace(currentChunk.String())
-			if chunkText != "" {
+			// Finalize current chunk from accumulated sections
+			if len(currentSections) > 0 {
+				startChar := currentSections[0].start
+				lastSec := currentSections[len(currentSections)-1]
+				endChar := lastSec.start + len(lastSec.text)
+				chunkText := strings.TrimSpace(text[startChar:endChar])
+
+				// Adjust startChar if trimming removed leading whitespace
+				actualStart := strings.Index(text[startChar:endChar], chunkText)
+				if actualStart > 0 {
+					startChar += actualStart
+				}
+				endChar = startChar + len(chunkText)
+
 				chunks = append(chunks, chunking.NewTextChunk(
 					uint32(len(chunks)),
 					chunkText,
-					currentStartChar,
-					currentStartChar+len(chunkText),
+					startChar,
+					endChar,
 				))
 
 				// Check max chunks limit
@@ -206,55 +285,172 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 				previousChunkText = chunkText
 			}
 
-			// Start new chunk with overlap from previous chunk
-			currentChunk.Reset()
-			currentStartChar = currentStartChar + len(chunkText) + len(effectiveConfig.Separator)
+			// Start new chunk
+			currentSections = nil
+			currentTokens = 0
 
 			// Add overlap from previous chunk if configured
 			if effectiveConfig.OverlapTokens > 0 && previousChunkText != "" {
 				overlapText := s.extractOverlap(previousChunkText, effectiveConfig.OverlapTokens)
 				if overlapText != "" {
-					currentChunk.WriteString(overlapText)
-					currentChunk.WriteString(" ")
 					currentTokens = s.tokenizer.CountTokens(overlapText)
-				} else {
-					currentTokens = 0
 				}
-			} else {
-				currentTokens = 0
 			}
 		}
 
-		// Add section to current chunk
-		if currentChunk.Len() > 0 {
-			currentChunk.WriteString(effectiveConfig.Separator)
-		}
-		currentChunk.WriteString(section)
+		currentSections = append(currentSections, section)
 		currentTokens += sectionTokens
 	}
 
 	// Add final chunk
-	chunkText := strings.TrimSpace(currentChunk.String())
-	if chunkText != "" && len(chunks) < effectiveConfig.MaxChunks {
+	if len(currentSections) > 0 && len(chunks) < effectiveConfig.MaxChunks {
+		startChar := currentSections[0].start
+		lastSec := currentSections[len(currentSections)-1]
+		endChar := lastSec.start + len(lastSec.text)
+		chunkText := strings.TrimSpace(text[startChar:endChar])
+
+		actualStart := strings.Index(text[startChar:endChar], chunkText)
+		if actualStart > 0 {
+			startChar += actualStart
+		}
+		endChar = startChar + len(chunkText)
+
 		chunks = append(chunks, chunking.NewTextChunk(
 			uint32(len(chunks)),
 			chunkText,
-			currentStartChar,
-			currentStartChar+len(chunkText),
+			startChar,
+			endChar,
 		))
 	}
 
 	// If no chunks were created (text too short), return single chunk
 	if len(chunks) == 0 {
+		trimmed := strings.TrimSpace(text)
+		startChar := strings.Index(text, trimmed)
 		chunks = append(chunks, chunking.NewTextChunk(
 			0,
-			strings.TrimSpace(text),
-			0,
-			len(text),
+			trimmed,
+			startChar,
+			startChar+len(trimmed),
 		))
 	}
 
 	return chunks, nil
+}
+
+// flattenOversizedSections splits any sections that exceed targetTokens into
+// smaller pieces using progressively finer separators ("\n", ". "), and as a
+// last resort, force-splits on word boundaries by token count.
+func (s *FixedChunker) flattenOversizedSections(sections []positionedSection, targetTokens int) []positionedSection {
+	result := make([]positionedSection, 0, len(sections))
+	for i := range sections {
+		if s.countTokens(&sections[i]) <= targetTokens {
+			result = append(result, sections[i])
+			continue
+		}
+
+		// Try splitting on single newlines
+		subs := splitWithPositions(sections[i].text, "\n", sections[i].start)
+		if len(subs) <= 1 {
+			// Try splitting on sentences
+			subs = splitWithPositions(sections[i].text, ". ", sections[i].start)
+		} else {
+			// Newline split produced multiple subs — check if any are still
+			// oversized and try sentence splitting on those (cascade fix).
+			var expanded []positionedSection
+			for j := range subs {
+				if s.countTokens(&subs[j]) <= targetTokens {
+					expanded = append(expanded, subs[j])
+				} else {
+					sentSubs := splitWithPositions(subs[j].text, ". ", subs[j].start)
+					if len(sentSubs) > 1 {
+						expanded = append(expanded, sentSubs...)
+					} else {
+						expanded = append(expanded, subs[j])
+					}
+				}
+			}
+			subs = expanded
+		}
+
+		for j := range subs {
+			trimmed := strings.TrimSpace(subs[j].text)
+			if trimmed == "" {
+				continue
+			}
+			subs[j].text = trimmed
+			subs[j].tokens = 0
+
+			if s.countTokens(&subs[j]) <= targetTokens {
+				result = append(result, subs[j])
+			} else {
+				// Force-split on word boundaries
+				result = append(result, s.splitByTokenCount(subs[j], targetTokens)...)
+			}
+		}
+	}
+	return result
+}
+
+// splitByTokenCount splits a section on word boundaries into pieces that each
+// fit within targetTokens. Each returned piece preserves its byte offset in the
+// original text.
+func (s *FixedChunker) splitByTokenCount(sec positionedSection, targetTokens int) []positionedSection {
+	text := sec.text
+	if text == "" {
+		return nil
+	}
+
+	var result []positionedSection
+	// Scan through the text finding word boundaries
+	i := 0
+	pieceStart := 0
+	currentTokens := 0
+
+	for i < len(text) {
+		// Skip whitespace
+		for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r') {
+			i++
+		}
+		if i >= len(text) {
+			break
+		}
+
+		// Find end of word
+		wordStart := i
+		for i < len(text) && text[i] != ' ' && text[i] != '\t' && text[i] != '\n' && text[i] != '\r' {
+			i++
+		}
+		word := text[wordStart:i]
+		wordTokens := s.tokenizer.CountTokens(word)
+
+		if currentTokens > 0 && currentTokens+wordTokens > targetTokens {
+			// Emit current piece
+			pieceText := strings.TrimSpace(text[pieceStart:wordStart])
+			if pieceText != "" {
+				result = append(result, positionedSection{
+					text:   pieceText,
+					start:  sec.start + pieceStart,
+					tokens: currentTokens,
+				})
+			}
+			pieceStart = wordStart
+			currentTokens = 0
+		}
+		currentTokens += wordTokens
+	}
+
+	// Emit last piece
+	pieceText := strings.TrimSpace(text[pieceStart:])
+	if pieceText != "" {
+		result = append(result, positionedSection{
+			text:   pieceText,
+			start:  sec.start + pieceStart,
+			tokens: currentTokens,
+		})
+	}
+
+	return result
 }
 
 // extractOverlap extracts the last N tokens from text for overlap
@@ -264,12 +460,16 @@ func (s *FixedChunker) extractOverlap(text string, targetTokens int) string {
 	}
 
 	// Fallback: take last ~targetTokens*4 characters
-	// This is more reliable than trying to decode tokens, which requires a properly configured decoder
 	overlapChars := targetTokens * 4
 	if len(text) <= overlapChars {
 		return text
 	}
-	return text[len(text)-overlapChars:]
+	cutPoint := len(text) - overlapChars
+	// Advance to the next valid UTF-8 rune boundary
+	for cutPoint < len(text) && !utf8.RuneStart(text[cutPoint]) {
+		cutPoint++
+	}
+	return text[cutPoint:]
 }
 
 // Close releases tokenizer resources

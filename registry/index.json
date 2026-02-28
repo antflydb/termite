@@ -135,6 +135,18 @@
       ]
     },
     {
+      "name": "splade-cocondenser-ensembledistil",
+      "type": "embedder",
+      "description": "",
+      "source": "naver/splade-cocondenser-ensembledistil",
+      "size": 532978619,
+      "variants": [],
+      "owner": "naver",
+      "capabilities": [
+        "sparse"
+      ]
+    },
+    {
       "name": "nomic-embed-text-v1.5",
       "type": "embedder",
       "description": "",

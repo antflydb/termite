@@ -32,6 +32,10 @@ import (
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/termite/pkg/termite/cmd/cmd"
 	gojson "github.com/goccy/go-json"
+
+	// Register built-in models (side-effect imports pull in embedded ONNX blobs)
+	_ "github.com/antflydb/termite/pkg/termite/lib/builtin/embedder"
+	_ "github.com/antflydb/termite/pkg/termite/lib/builtin/reranker"
 )
 
 func init() {

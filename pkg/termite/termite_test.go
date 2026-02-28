@@ -440,6 +440,166 @@ func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
 
 
 
+// MockEmbedderRegistry implements EmbedderRegistryInterface for testing
+type MockEmbedderRegistry struct {
+	models map[string]embeddings.Embedder
+}
+
+func (m *MockEmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
+	if model, ok := m.models[modelName]; ok {
+		return model, nil
+	}
+	return nil, fmt.Errorf("model not found: %s", modelName)
+}
+
+func (m *MockEmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
+	return nil, fmt.Errorf("sparse model not found: %s", modelName)
+}
+
+func (m *MockEmbedderRegistry) Release(modelName string) {}
+
+func (m *MockEmbedderRegistry) List() []string {
+	names := make([]string, 0, len(m.models))
+	for name := range m.models {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (m *MockEmbedderRegistry) ListWithCapabilities() map[string][]string {
+	result := make(map[string][]string, len(m.models))
+	for name := range m.models {
+		result[name] = nil
+	}
+	return result
+}
+
+func (m *MockEmbedderRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
+	return false
+}
+
+func (m *MockEmbedderRegistry) Close() error {
+	return nil
+}
+
+func TestTermiteNode_ListModels_IncludesAllRegistries(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	mockReranker := &MockModel{}
+	mockEmbedder := &MockEmbedder{}
+	mockNER := &MockNER{}
+
+	node := &TermiteNode{
+		logger: logger,
+		rerankerRegistry: &MockRerankerRegistry{
+			models: map[string]reranking.Model{
+				"reranker-1":               mockReranker,
+				"antfly-builtin-reranker":  mockReranker,
+			},
+		},
+		embedderRegistry: &MockEmbedderRegistry{
+			models: map[string]embeddings.Embedder{
+				"embedder-1":               mockEmbedder,
+				"antfly-builtin-embedder":  mockEmbedder,
+			},
+		},
+		nerRegistry: &MockNERRegistry{
+			models: map[string]ner.Model{
+				"gliner2-base": mockNER,
+			},
+			capabilities: map[string][]string{
+				"gliner2-base": {"recognition", "extraction"},
+			},
+		},
+	}
+	handler := NewTermiteAPI(logger, node)
+
+	req := httptest.NewRequest("GET", "/api/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp ModelsResponse
+	err := json.NewDecoder(w.Body).Decode(&resp)
+	require.NoError(t, err)
+
+	// Rerankers should include all models (discovered + pinned builtins)
+	assert.Len(t, resp.Rerankers, 2)
+	assert.Contains(t, resp.Rerankers, "reranker-1")
+	assert.Contains(t, resp.Rerankers, "antfly-builtin-reranker")
+
+	// Embedders should include all models (discovered + pinned builtins)
+	assert.Len(t, resp.Embedders, 2)
+	assert.Contains(t, resp.Embedders, "embedder-1")
+	assert.Contains(t, resp.Embedders, "antfly-builtin-embedder")
+
+	// Recognizers should include NER models with capabilities
+	assert.Len(t, resp.Recognizers, 1)
+	assert.Contains(t, resp.Recognizers, "gliner2-base")
+	info := resp.Recognizers["gliner2-base"]
+	assert.Contains(t, info.Capabilities, "recognition")
+	assert.Contains(t, info.Capabilities, "extraction")
+}
+
+func TestTermiteNode_ListModels_EmptyRegistries(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	// All registries nil — should return empty arrays, not panic
+	node := &TermiteNode{
+		logger: logger,
+	}
+	handler := NewTermiteAPI(logger, node)
+
+	req := httptest.NewRequest("GET", "/api/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp ModelsResponse
+	err := json.NewDecoder(w.Body).Decode(&resp)
+	require.NoError(t, err)
+
+	assert.Empty(t, resp.Rerankers)
+	assert.Empty(t, resp.Embedders)
+	assert.Empty(t, resp.Recognizers)
+	assert.Empty(t, resp.Generators)
+	assert.Empty(t, resp.Rewriters)
+}
+
+func TestTermiteNode_ListModels_OnlyRerankers(t *testing.T) {
+	logger := zaptest.NewLogger(t)
+
+	// Only reranker registry — other fields should be empty
+	mockReranker := &MockModel{}
+	node := &TermiteNode{
+		logger: logger,
+		rerankerRegistry: &MockRerankerRegistry{
+			models: map[string]reranking.Model{
+				"antfly-builtin-reranker": mockReranker,
+			},
+		},
+	}
+	handler := NewTermiteAPI(logger, node)
+
+	req := httptest.NewRequest("GET", "/api/models", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp ModelsResponse
+	err := json.NewDecoder(w.Body).Decode(&resp)
+	require.NoError(t, err)
+
+	assert.Len(t, resp.Rerankers, 1)
+	assert.Contains(t, resp.Rerankers, "antfly-builtin-reranker")
+	assert.Empty(t, resp.Embedders)
+	assert.Empty(t, resp.Recognizers)
+}
+
+
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 

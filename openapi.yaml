@@ -903,6 +903,13 @@ components:
           type: boolean
           default: true
           description: Truncate input to fit model context length
+        top_k:
+          type: integer
+          description: Maximum number of non-zero entries per sparse vector (only for sparse models, default 256)
+        min_weight:
+          type: number
+          format: float
+          description: Minimum weight threshold for sparse vector entries (only for sparse models, default 0.0)
     EmbedResponse:
       type: object
       example:
@@ -916,7 +923,6 @@ components:
             - 0.089
       required:
         - model
-        - embeddings
       properties:
         model:
           type: string
@@ -929,7 +935,31 @@ components:
             items:
               type: number
               format: float
-          description: Array of embedding vectors (one per input string)
+          description: Array of dense embedding vectors (one per input, populated for dense models)
+        sparse_embeddings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SparseVector'
+          description: Array of sparse embedding vectors (one per input, populated for sparse models)
+    SparseVector:
+      type: object
+      description: A sparse vector with parallel index/value arrays, sorted by index ascending
+      required:
+        - indices
+        - values
+      properties:
+        indices:
+          type: array
+          items:
+            type: integer
+            format: int32
+          description: Token IDs from the model vocabulary (sorted ascending)
+        values:
+          type: array
+          items:
+            type: number
+            format: float
+          description: Corresponding weights for each index (always positive)
     Chunk:
       description: A chunk of content. Text chunks have mime_type text/plain.
       allOf:
@@ -1164,6 +1194,42 @@ components:
             - founded
             - works_at
             - located_in
+        resolver:
+          $ref: '#/components/schemas/ResolverConfig'
+    ResolverConfig:
+      type: object
+      description: |
+        Configuration for entity resolution. When present in a RecognizeRequest,
+        the response entities and relations are deduplicated via entity resolution
+        (e.g., "Elon Musk" and "Musk" are merged into a single entity).
+      properties:
+        similarity_threshold:
+          type: number
+          format: float
+          default: 0.85
+          description: Jaro-Winkler similarity threshold for merging entities (0.0-1.0)
+        type_must_match:
+          type: boolean
+          default: true
+          description: Whether entity types must match for merging
+        min_entity_confidence:
+          type: number
+          format: float
+          default: 0
+          description: Minimum confidence score for entities to be included
+        min_relation_confidence:
+          type: number
+          format: float
+          default: 0
+          description: Minimum confidence score for relations to be included
+        deduplicate_relations:
+          type: boolean
+          default: true
+          description: Whether to deduplicate relations after entity resolution
+        track_provenance:
+          type: boolean
+          default: true
+          description: Whether to track mention provenance for resolved entities
     Relation:
       type: object
       required:
@@ -1549,6 +1615,15 @@ components:
           type: string
           description: Detected or forced language
           example: en
+    ModelInfo:
+      type: object
+      description: Information about a model including its capabilities
+      properties:
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: List of capabilities this model supports (omitted when empty)
     ModelsResponse:
       type: object
       required:
@@ -1557,174 +1632,62 @@ components:
         - embedders
         - generators
         - recognizers
+        - extractors
         - rewriters
         - classifiers
         - readers
         - transcribers
       properties:
         chunkers:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available chunking models (always includes "fixed")
-          example:
-            - fixed
-            - mirth/chonky-mmbert-small-multilingual-1
         rerankers:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available reranking models
-          example:
-            - BAAI/bge-reranker-v2-m3
         classifiers:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available zero-shot classification models
-          example:
-            - MoritzLaurer/mDeBERTa-v3-base-mnli-xnli
         embedders:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available embedding models from models_dir/embedders/
-          example:
-            - BAAI/bge-small-en-v1.5
-            - BAAI/bge-small-en-v1.5:i8
-        generators:
-          type: array
-          items:
-            type: string
-          description: Available generator/LLM models from models_dir/generators/
-          example:
-            - google/gemma-3-1b-it
-            - onnxruntime/Gemma-3-ONNX
-        recognizers:
-          type: array
-          items:
-            type: string
-          description: Available recognizer models from models_dir/recognizers/
-          example:
-            - dslim/bert-base-NER
-            - dslim/bert-large-NER
-            - onnx-community/gliner_small-v2.1
         extractors:
-          type: array
-          items:
-            type: string
-          description: Available GLiNER extractor models (zero-shot recognition with custom labels)
-          example:
-            - onnx-community/gliner_small-v2.1
-            - onnx-community/gliner-multitask
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available extractor models (NER models with 'extraction' capability)
+        generators:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available generator/LLM models from models_dir/generators/
+        recognizers:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available recognizer models from models_dir/recognizers/
         rewriters:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available Seq2Seq rewriter models from models_dir/rewriters/
-          example:
-            - lmqg/flan-t5-small-squad-qg
-            - lmqg/flan-t5-base-squad-qg
         readers:
-          type: array
-          items:
-            type: string
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
           description: Available reader/OCR models from models_dir/readers/
-          example:
-            - microsoft/trocr-base-printed
-            - monkt/paddleocr-onnx
-        reader_info:
-          type: object
-          additionalProperties:
-            $ref: '#/components/schemas/ReaderModelInfo'
-          description: |
-            Detailed information about reader models including capabilities.
-            Map of model name to model info. Use this to determine what capabilities
-            each reader supports (document_qa, regions).
-          example:
-            monkt/paddleocr-onnx:
-              capabilities:
-                - regions
-            naver-clova-ix/donut-base-finetuned-docvqa:
-              capabilities:
-                - document_qa
         transcribers:
-          type: array
-          items:
-            type: string
-          description: Available transcriber/speech-to-text models from models_dir/transcribers/
-          example:
-            - openai/whisper-tiny
-            - openai/whisper-base
-        recognizer_info:
           type: object
           additionalProperties:
-            $ref: '#/components/schemas/RecognizerModelInfo'
-          description: |
-            Detailed information about recognizer models including capabilities.
-            Map of model name to model info. Use this to determine what capabilities
-            each recognizer supports (labels, zeroshot, relations, answers).
-          example:
-            dslim/bert-base-NER:
-              capabilities:
-                - labels
-            onnx-community/gliner_small-v2.1:
-              capabilities:
-                - labels
-                - zeroshot
-            onnx-community/gliner-multitask:
-              capabilities:
-                - labels
-                - zeroshot
-                - relations
-                - answers
-    RecognizerCapability:
-      type: string
-      enum:
-        - labels
-        - zeroshot
-        - relations
-        - answers
-        - extraction
-      description: |
-        Capability that a recognizer model supports:
-        - labels: Entity extraction (NER) - extracts labeled spans like PER, ORG, LOC
-        - zeroshot: Supports arbitrary labels at inference time (GLiNER models)
-        - relations: Relation extraction between entities (GLiNER multitask, REBEL)
-        - answers: Extractive question answering (GLiNER multitask)
-        - extraction: Structured schema-based extraction from text (GLiNER2)
-    RecognizerModelInfo:
-      type: object
-      description: Detailed information about a recognizer model
-      properties:
-        capabilities:
-          type: array
-          items:
-            $ref: '#/components/schemas/RecognizerCapability'
-          description: List of capabilities this recognizer model supports
-          example:
-            - labels
-            - zeroshot
-    ReaderCapability:
-      type: string
-      enum:
-        - document_qa
-        - regions
-      description: |
-        Capability that a reader model supports (all readers perform OCR as a baseline):
-        - document_qa: Visual document question answering (Donut, Pix2Struct)
-        - regions: Returns spatial text regions with bounding boxes (PaddleOCR)
-    ReaderModelInfo:
-      type: object
-      description: Detailed information about a reader model
-      properties:
-        capabilities:
-          type: array
-          items:
-            $ref: '#/components/schemas/ReaderCapability'
-          description: List of capabilities this reader model supports
-          example:
-            - regions
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available transcriber/speech-to-text models from models_dir/transcribers/
     Tool:
       type: object
       description: A tool (function) that the model can call

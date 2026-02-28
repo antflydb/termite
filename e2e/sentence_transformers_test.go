@@ -234,7 +234,7 @@ func testListModelsContains(t *testing.T, ctx context.Context, c *client.Termite
 
 	// Check that model is in the embedders list
 	found := false
-	for _, name := range models.Embedders {
+	for name := range models.Embedders {
 		if name == modelName {
 			found = true
 			break

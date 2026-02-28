@@ -124,7 +124,7 @@ func testListModelsParaphraser(t *testing.T, ctx context.Context, c *client.Term
 
 	// Check that Paraphraser model is in the rewriters list
 	foundParaphraser := false
-	for _, name := range models.Rewriters {
+	for name := range models.Rewriters {
 		if name == paraphraserModelName {
 			foundParaphraser = true
 			break
