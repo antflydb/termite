@@ -58,6 +58,13 @@ var moondreamJSONBlockRegex = regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(\\{.*
 // jsonObjectRegex matches a JSON object anywhere in text
 var moondreamJSONObjectRegex = regexp.MustCompile("(?s)(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})")
 
+// MoondreamOutputParser parses Moondream model output into a Result.
+// Extracts JSON fields if present, falls back to raw text.
+func MoondreamOutputParser(text, prompt string) Result {
+	description, fields := MoondreamParseFields(text)
+	return Result{Text: description, Fields: fields}
+}
+
 // MoondreamParseFields parses Moondream's output into a description and structured fields.
 // It handles multiple formats:
 //   - Raw JSON objects

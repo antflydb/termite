@@ -58,6 +58,11 @@ func FlorenceDocVQAPrompt(question string) string {
 	return "<DocVQA>" + question
 }
 
+// FlorenceOutputParser parses Florence-2 model output into a Result.
+func FlorenceOutputParser(text, prompt string) Result {
+	return Result{Text: FlorenceParseOCR(text)}
+}
+
 // FlorenceParseOCR extracts text from Florence-2 OCR output and reconstructs line breaks.
 // Florence-2 outputs concatenated text without newlines. This function uses heuristics
 // to detect line breaks:

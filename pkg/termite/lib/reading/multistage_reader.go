@@ -30,10 +30,9 @@ var _ Reader = (*MultiStageReader)(nil)
 
 // MultiStageReader wraps a MultiStageOCRPipeline with the Reader interface.
 type MultiStageReader struct {
-	pipeline  *pipelines.MultiStageOCRPipeline
-	sem       *semaphore.Weighted
-	logger    *zap.Logger
-	modelType ModelType
+	pipeline *pipelines.MultiStageOCRPipeline
+	sem      *semaphore.Weighted
+	logger   *zap.Logger
 }
 
 // MultiStageReaderConfig holds configuration for creating a MultiStageReader.
@@ -60,11 +59,8 @@ func NewMultiStageReader(
 		logger = zap.NewNop()
 	}
 
-	// Detect model type
-	modelType := detectModelType(cfg.ModelPath)
 	logger.Info("Creating multi-stage reader",
-		zap.String("path", cfg.ModelPath),
-		zap.String("type", string(modelType)))
+		zap.String("path", cfg.ModelPath))
 
 	// Load the multi-stage pipeline
 	pipeline, backendType, err := pipelines.LoadMultiStageOCRPipeline(
@@ -77,15 +73,13 @@ func NewMultiStageReader(
 	}
 
 	reader := &MultiStageReader{
-		pipeline:  pipeline,
-		sem:       semaphore.NewWeighted(1), // single-threaded for now
-		logger:    logger,
-		modelType: modelType,
+		pipeline: pipeline,
+		sem:      semaphore.NewWeighted(1), // single-threaded for now
+		logger:   logger,
 	}
 
 	logger.Info("Created multi-stage reader",
-		zap.String("backend", string(backendType)),
-		zap.String("modelType", string(modelType)))
+		zap.String("backend", string(backendType)))
 
 	return reader, backendType, nil
 }
@@ -193,7 +187,3 @@ func (r *MultiStageReader) Close() error {
 	return r.pipeline.Close()
 }
 
-// ModelType returns the detected model type.
-func (r *MultiStageReader) ModelType() ModelType {
-	return r.modelType
-}

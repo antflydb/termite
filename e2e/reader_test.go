@@ -234,7 +234,7 @@ func TestTrOCRReader(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Run OCR
 	img := createTestImageWithText(t, "Hello", 384, 384)
@@ -260,7 +260,7 @@ func TestTrOCRExportedModel(t *testing.T) {
 	require.NoError(t, err, "Failed to create Reader")
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	img := createTestImageWithText(t, "Hello", 384, 384)
 	ctx := context.Background()
@@ -372,7 +372,7 @@ func TestDonutExportedModel(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Create test image and run with CORD prompt
 	testImg := image.NewRGBA(image.Rect(0, 0, 800, 1000))
@@ -458,7 +458,7 @@ func TestDocVQAWithPDFPage(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Ask questions
 	questions := []string{
@@ -513,7 +513,7 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	ctx := context.Background()
 
@@ -610,7 +610,7 @@ func TestPix2StructDocVQA(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Load test image
 	imgFile, err := os.Open(pageImagePath)
@@ -887,7 +887,7 @@ func TestMoondream2Reader(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Create a simple test image
 	img := createTestImageWithText(t, "Hello", 378, 378)
