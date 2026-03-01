@@ -120,7 +120,7 @@ func testListModelsRewriter(t *testing.T, ctx context.Context, c *client.Termite
 
 	// Check that Rewriter model is in the rewriters list
 	foundRewriter := false
-	for _, name := range models.Rewriters {
+	for name := range models.Rewriters {
 		if name == rewriterModelName {
 			foundRewriter = true
 			break

@@ -155,7 +155,7 @@ func testListModelsGenerator(t *testing.T, ctx context.Context, c *client.Termit
 
 	// Check that Generator model is in the generators list
 	foundGenerator := false
-	for _, name := range models.Generators {
+	for name := range models.Generators {
 		if name == generatorModelName {
 			foundGenerator = true
 			break

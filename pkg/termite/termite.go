@@ -51,10 +51,11 @@ type TermiteNode struct {
 	requestQueue *RequestQueue
 
 	// Caches for embeddings, reranking, NER, and reading
-	embeddingCache *EmbeddingCache
-	rerankingCache *RerankingCache
-	nerCache       *NERCache
-	readingCache   *ReadingCache
+	embeddingCache       *EmbeddingCache
+	sparseEmbeddingCache *SparseEmbeddingCache
+	rerankingCache       *RerankingCache
+	nerCache             *NERCache
+	readingCache         *ReadingCache
 
 	// allowDownloads controls whether the dashboard shows model download commands
 	allowDownloads bool
@@ -241,28 +242,26 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// Initialize reranker registry with lazy loading
 	// Models are discovered at startup but only loaded on first request
-	var rerankerRegistry *RerankerRegistry
-	if rerankerModelsDir != "" {
-		rerankerRegistry, err = NewRerankerRegistry(
-			RerankerConfig{
-				ModelsDir:       rerankerModelsDir,
-				KeepAlive:       keepAlive,
-				MaxLoadedModels: uint64(config.MaxLoadedModels),
-				PoolSize:        config.PoolSize,
-			},
-			sessionManager,
-			zl.Named("reranker"),
-		)
-		if err != nil {
-			zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
-		}
-		defer func() { _ = rerankerRegistry.Close() }()
+	// Always create the registry so built-in rerankers are available
+	rerankerRegistry, err := NewRerankerRegistry(
+		RerankerConfig{
+			ModelsDir:       rerankerModelsDir,
+			KeepAlive:       keepAlive,
+			MaxLoadedModels: uint64(config.MaxLoadedModels),
+			PoolSize:        config.PoolSize,
+		},
+		sessionManager,
+		zl.Named("reranker"),
+	)
+	if err != nil {
+		zl.Fatal("Failed to initialize reranker registry", zap.Error(err))
+	}
+	defer func() { _ = rerankerRegistry.Close() }()
 
-		// If eager loading is requested, preload all models
-		if keepAlive == 0 {
-			if err := rerankerRegistry.PreloadAll(); err != nil {
-				zl.Warn("Failed to preload some reranker models", zap.Error(err))
-			}
+	// If eager loading is requested, preload all models
+	if keepAlive == 0 {
+		if err := rerankerRegistry.PreloadAll(); err != nil {
+			zl.Warn("Failed to preload some reranker models", zap.Error(err))
 		}
 	}
 
@@ -481,6 +480,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
+	sparseEmbeddingCache := NewSparseEmbeddingCache(zl.Named("sparse-embedding-cache"))
+	defer sparseEmbeddingCache.Close()
+
 	rerankingCache := NewRerankingCache(zl.Named("reranking-cache"))
 	defer rerankingCache.Close()
 
@@ -513,6 +515,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
+		sparseEmbeddingCache: sparseEmbeddingCache,
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,
@@ -539,6 +542,9 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	// OpenAI-compatible API at /openai/v1/* for standard SDK compatibility
 	node.RegisterOpenAIRoutes(rootMux)
+
+	// Anthropic-compatible API at /anthropic/v1/* for Anthropic SDK compatibility
+	node.RegisterAnthropicRoutes(rootMux)
 
 	// Registry proxy so the dashboard can fetch the model index
 	addRegistryProxy(rootMux, defaultRegistryURL())

@@ -137,7 +137,7 @@ func testListModelsFunctionGemma(t *testing.T, ctx context.Context, c *client.Te
 
 	// Check that FunctionGemma model is in the generators list
 	foundGenerator := false
-	for _, name := range models.Generators {
+	for name := range models.Generators {
 		if name == functionGemmaModelName {
 			foundGenerator = true
 			break

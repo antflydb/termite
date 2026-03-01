@@ -119,94 +119,80 @@ func (t *TermiteAPI) ExtractJSON(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiExtract(w, r)
 }
 
+// stringsToModelInfoMap converts a flat list of model names to a map with empty ModelInfo.
+func stringsToModelInfoMap(names []string) map[string]ModelInfo {
+	m := make(map[string]ModelInfo, len(names))
+	for _, name := range names {
+		m[name] = ModelInfo{}
+	}
+	return m
+}
+
+// capsMapToModelInfoMap converts a map of model name to capabilities to a ModelInfo map.
+func capsMapToModelInfoMap(caps map[string][]string) map[string]ModelInfo {
+	m := make(map[string]ModelInfo, len(caps))
+	for name, c := range caps {
+		m[name] = ModelInfo{Capabilities: c}
+	}
+	return m
+}
+
 // ListModels implements ServerInterface
 func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	resp := ModelsResponse{
-		Chunkers:     []string{},
-		Rerankers:    []string{},
-		Embedders:    []string{},
-		Generators:   []string{},
-		Recognizers:  []string{},
-		Extractors:   []string{},
-		Rewriters:    []string{},
-		Classifiers:  []string{},
-		Readers:      []string{},
-		Transcribers: []string{},
+		Chunkers:     map[string]ModelInfo{},
+		Rerankers:    map[string]ModelInfo{},
+		Embedders:    map[string]ModelInfo{},
+		Generators:   map[string]ModelInfo{},
+		Recognizers:  map[string]ModelInfo{},
+		Extractors:   map[string]ModelInfo{},
+		Rewriters:    map[string]ModelInfo{},
+		Classifiers:  map[string]ModelInfo{},
+		Readers:      map[string]ModelInfo{},
+		Transcribers: map[string]ModelInfo{},
 	}
 
 	if t.node.chunker != nil {
-		resp.Chunkers = t.node.chunker.ListModels()
+		resp.Chunkers = stringsToModelInfoMap(t.node.chunker.ListModels())
 	}
 
 	if t.node.embedderRegistry != nil {
-		resp.Embedders = t.node.embedderRegistry.List()
+		resp.Embedders = capsMapToModelInfoMap(t.node.embedderRegistry.ListWithCapabilities())
 	}
 
 	if t.node.rerankerRegistry != nil {
-		resp.Rerankers = t.node.rerankerRegistry.List()
+		resp.Rerankers = stringsToModelInfoMap(t.node.rerankerRegistry.List())
 	}
 
 	if t.node.generatorRegistry != nil {
-		resp.Generators = t.node.generatorRegistry.List()
+		resp.Generators = stringsToModelInfoMap(t.node.generatorRegistry.List())
 	}
 
 	if t.node.nerRegistry != nil {
-		capsMap := t.node.nerRegistry.List()
-		// Extract model names from capabilities map
-		resp.Recognizers = make([]string, 0, len(capsMap))
-		for name := range capsMap {
-			resp.Recognizers = append(resp.Recognizers, name)
-		}
-		extractors := make([]string, 0)
-		for name := range capsMap {
-			if t.node.nerRegistry.HasCapability(name, modelregistry.CapabilityExtraction) {
-				extractors = append(extractors, name)
-			}
-		}
-		resp.Extractors = extractors
-		if len(capsMap) > 0 {
-			resp.RecognizerInfo = make(map[string]RecognizerModelInfo, len(capsMap))
-			for name, caps := range capsMap {
-				// Convert string capabilities to RecognizerCapability enum
-				enumCaps := make([]RecognizerCapability, len(caps))
-				for i, c := range caps {
-					enumCaps[i] = RecognizerCapability(c)
-				}
-				resp.RecognizerInfo[name] = RecognizerModelInfo{
-					Capabilities: enumCaps,
-				}
+		resp.Recognizers = capsMapToModelInfoMap(t.node.nerRegistry.List())
+
+		// Populate extractors: NER models with extraction capability
+		for name, caps := range t.node.nerRegistry.List() {
+			if slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
+				resp.Extractors[name] = ModelInfo{Capabilities: caps}
 			}
 		}
 	}
 
 	if t.node.seq2seqRegistry != nil {
-		resp.Rewriters = t.node.seq2seqRegistry.List()
+		resp.Rewriters = stringsToModelInfoMap(t.node.seq2seqRegistry.List())
 	}
 
 	if t.node.classifierRegistry != nil {
-		resp.Classifiers = t.node.classifierRegistry.List()
+		resp.Classifiers = stringsToModelInfoMap(t.node.classifierRegistry.List())
 	}
 
 	if t.node.readerRegistry != nil {
-		resp.Readers = t.node.readerRegistry.List()
-
-		capsMap := t.node.readerRegistry.ListWithCapabilities()
-		if len(capsMap) > 0 {
-			resp.ReaderInfo = make(map[string]ReaderModelInfo, len(capsMap))
-			for name, caps := range capsMap {
-				enumCaps := make([]ReaderCapability, len(caps))
-				for i, c := range caps {
-					enumCaps[i] = ReaderCapability(c)
-				}
-				resp.ReaderInfo[name] = ReaderModelInfo{
-					Capabilities: enumCaps,
-				}
-			}
-		}
+		resp.Readers = capsMapToModelInfoMap(t.node.readerRegistry.ListWithCapabilities())
 	}
 
 	if t.node.transcriberRegistry != nil {
-		resp.Transcribers = t.node.transcriberRegistry.List()
+		resp.Transcribers = stringsToModelInfoMap(t.node.transcriberRegistry.List())
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -280,6 +266,12 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a sparse model — use a different code path
+	if ln.embedderRegistry.HasCapability(req.Model, modelregistry.CapabilitySparse) {
+		ln.handleSparseEmbed(w, r, req)
+		return
+	}
+
 	// Acquire embedder (increments ref count to prevent eviction during request)
 	embedder, err := ln.embedderRegistry.Acquire(req.Model)
 	if err != nil {
@@ -346,6 +338,96 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleSparseEmbed handles the sparse embedding code path for models with the "sparse" capability.
+func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request, req EmbedRequest) {
+	// Parse text-only input (sparse models don't support multimodal)
+	texts, err := parseTextOnlyInput(req.Input)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid input: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if len(texts) == 0 {
+		http.Error(w, "input is required", http.StatusBadRequest)
+		return
+	}
+
+	// Acquire sparse embedder
+	sparseEmbedder, err := ln.embedderRegistry.AcquireSparse(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.embedderRegistry.Release(req.Model)
+
+	// Wrap with caching
+	cachedSparse := ln.sparseEmbeddingCache.WrapSparseEmbedder(sparseEmbedder, req.Model)
+
+	// Generate sparse embeddings
+	sparseVecs, err := cachedSparse.SparseEmbed(r.Context(), texts)
+	if err != nil {
+		ln.logger.Error("failed to generate sparse embeddings",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("generating sparse embeddings: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Determine response format based on Accept header
+	acceptHeader := r.Header.Get("Accept")
+
+	switch acceptHeader {
+	case "application/json":
+		// JSON response with sparse_embeddings field
+		resp := EmbedResponse{
+			Model: req.Model,
+			SparseEmbeddings: make([]SparseVector, len(sparseVecs)),
+		}
+		for i, sv := range sparseVecs {
+			// Convert from uint32 indices to generated int32 for JSON wire format
+			indices := make([]int32, len(sv.Indices))
+			for j, idx := range sv.Indices {
+				indices[j] = int32(idx)
+			}
+			resp.SparseEmbeddings[i] = SparseVector{
+				Indices: indices,
+				Values:  sv.Values,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			ln.logger.Error("encoding JSON response", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+	default:
+		// Binary serialization with sparse content type
+		w.Header().Set("Content-Type", SparseVectorsContentType)
+		if err := SerializeSparseVectors(w, sparseVecs); err != nil {
+			ln.logger.Error("serializing sparse embeddings", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+// parseTextOnlyInput extracts text strings from the embed request input.
+// Returns an error if the input contains multimodal content (images, audio).
+func parseTextOnlyInput(input EmbedRequest_Input) ([]string, error) {
+	// Try array of strings first (most common case)
+	if arr, err := input.AsEmbedRequestInput1(); err == nil && len(arr) > 0 {
+		return arr, nil
+	}
+
+	// Try single string
+	if str, err := input.AsEmbedRequestInput0(); err == nil && str != "" {
+		return []string{str}, nil
+	}
+
+	return nil, errors.New("sparse models only support text input (string or array of strings)")
 }
 
 // parseEmbedInput parses the EmbedRequest input which can be:
@@ -756,10 +838,11 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 
 	// Decode request
 	var req struct {
-		Model          string   `json:"model"`           // Model name to use (required)
-		Texts          []string `json:"texts"`           // Texts to extract entities from
-		Labels         []string `json:"labels"`          // Custom labels for GLiNER models (optional)
-		RelationLabels []string `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
+		Model          string          `json:"model"`           // Model name to use (required)
+		Texts          []string        `json:"texts"`           // Texts to extract entities from
+		Labels         []string        `json:"labels"`          // Custom labels for GLiNER models (optional)
+		RelationLabels []string        `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
+		Resolver       *ResolverConfig `json:"resolver"`        // Entity resolution config (optional)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -900,6 +983,65 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 					Score: rel.Score,
 				}
 			}
+		}
+	}
+
+	// If resolver config is present, run entity resolution to deduplicate.
+	if req.Resolver != nil {
+		cfg := ner.ResolverConfig{
+			SimilarityThreshold:   float64(req.Resolver.SimilarityThreshold),
+			TypeMustMatch:         req.Resolver.TypeMustMatch,
+			MinEntityConfidence:   req.Resolver.MinEntityConfidence,
+			MinRelationConfidence: req.Resolver.MinRelationConfidence,
+			DeduplicateRelations:  req.Resolver.DeduplicateRelations,
+			TrackProvenance:       req.Resolver.TrackProvenance,
+		}
+		// Apply defaults for zero-valued threshold (omitzero sends 0 for unset floats).
+		if cfg.SimilarityThreshold == 0 {
+			cfg.SimilarityThreshold = 0.85
+		}
+
+		kg := ner.BuildKnowledgeGraph(entities, relations, cfg)
+
+		// Build entity ID -> resolved entity lookup for relation mapping.
+		entityByID := make(map[string]*ner.ResolvedEntity, len(kg.Entities))
+		for i := range kg.Entities {
+			entityByID[kg.Entities[i].ID] = &kg.Entities[i]
+		}
+
+		// Flatten resolved entities into a single array (no per-text grouping).
+		resolvedEntities := make([]RecognizeEntity, len(kg.Entities))
+		for i, re := range kg.Entities {
+			resolvedEntities[i] = RecognizeEntity{
+				Text:  re.CanonicalName,
+				Label: re.Label,
+				Score: re.Score,
+			}
+		}
+		apiEntities = [][]RecognizeEntity{resolvedEntities}
+
+		// Flatten resolved relations into a single array.
+		if len(kg.Relations) > 0 {
+			resolvedRelations := make([]Relation, len(kg.Relations))
+			for i, rr := range kg.Relations {
+				head := entityByID[rr.HeadID]
+				tail := entityByID[rr.TailID]
+				resolvedRelations[i] = Relation{
+					Head: RecognizeEntity{
+						Text:  head.CanonicalName,
+						Label: head.Label,
+						Score: head.Score,
+					},
+					Tail: RecognizeEntity{
+						Text:  tail.CanonicalName,
+						Label: tail.Label,
+						Score: tail.Score,
+					},
+					Label: rr.Label,
+					Score: rr.Score,
+				}
+			}
+			apiRelations = [][]Relation{resolvedRelations}
 		}
 	}
 

@@ -137,7 +137,7 @@ func testListModelsChunker(t *testing.T, ctx context.Context, c *client.TermiteC
 
 	// Check that chunker model is in the chunkers list
 	foundChunker := false
-	for _, name := range models.Chunkers {
+	for name := range models.Chunkers {
 		if name == chunkerModelName {
 			foundChunker = true
 			break
@@ -146,7 +146,7 @@ func testListModelsChunker(t *testing.T, ctx context.Context, c *client.TermiteC
 
 	// Also check that fixed chunkers are always available
 	hasFixed := false
-	for _, name := range models.Chunkers {
+	for name := range models.Chunkers {
 		if strings.HasPrefix(name, "fixed") {
 			hasFixed = true
 			break

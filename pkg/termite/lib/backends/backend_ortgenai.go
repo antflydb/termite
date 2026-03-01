@@ -125,7 +125,7 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 	var generatedText strings.Builder
 	var tokenCount int
 	for delta := range outputChan {
-		generatedText.WriteString(delta.Tokens)
+		generatedText.WriteString(delta.Token)
 		tokenCount++
 		if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
 			genCancel()
@@ -207,7 +207,7 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 			select {
 			case <-ctx.Done():
 				return
-			case tokenChan <- GenerativeToken{Token: delta.Tokens, Index: delta.Sequence}:
+			case tokenChan <- GenerativeToken{Token: delta.Token, Index: delta.Sequence}:
 			}
 		}
 
@@ -261,7 +261,7 @@ func createOrtgenaiSession(modelPath string) (*ortgenai.Session, error) {
 	}
 
 	// Create session
-	session, err := ortgenai.CreateGenerativeSession(modelPath)
+	session, err := ortgenai.CreateSession(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating ortgenai session: %w", err)
 	}

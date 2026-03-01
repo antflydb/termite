@@ -90,6 +90,11 @@ const (
 	// CapabilityExtraction indicates the model supports structured extraction
 	// (e.g., GLiNER2 models)
 	CapabilityExtraction Capability = "extraction"
+
+	// CapabilitySparse indicates the model generates sparse (SPLADE-style) embeddings
+	// instead of dense embeddings. The model outputs vocab-dimension logits that are
+	// activated with softplus and sparsified to top-k entries.
+	CapabilitySparse Capability = "sparse"
 )
 
 // ParseModelType parses a string into a ModelType

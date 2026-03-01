@@ -88,6 +88,52 @@ func TestSemanticSimilarity(t *testing.T) {
 	}
 }
 
+func TestLongTextTruncation(t *testing.T) {
+	e := getEmbedder(t)
+	ctx := context.Background()
+
+	// Build a text that tokenizes to well over MaxSequenceLength (512) tokens.
+	// Repeating a sentence many times ensures we exceed the limit.
+	var longText string
+	for i := 0; i < 200; i++ {
+		longText += "The quick brown fox jumps over the lazy dog. "
+	}
+
+	// Verify it actually tokenizes to more than 512 tokens.
+	tokens := e.tok.Encode(longText)
+	if len(tokens) <= MaxSequenceLength {
+		t.Fatalf("expected >%d tokens, got %d — test text is too short", MaxSequenceLength, len(tokens))
+	}
+	t.Logf("Long text tokenizes to %d tokens (limit %d)", len(tokens), MaxSequenceLength)
+
+	// This should succeed (not panic or return an ONNX shape error) because
+	// EmbedTexts truncates to MaxSequenceLength before inference.
+	results, err := e.EmbedTexts(ctx, []string{longText})
+	if err != nil {
+		t.Fatalf("EmbedTexts with long text: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if len(results[0]) != Dimension {
+		t.Errorf("expected dimension %d, got %d", Dimension, len(results[0]))
+	}
+
+	// Also test a batch where some texts are long and some are short.
+	results, err = e.EmbedTexts(ctx, []string{longText, "short text", longText})
+	if err != nil {
+		t.Fatalf("EmbedTexts with mixed-length batch: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if len(r) != Dimension {
+			t.Errorf("result %d: expected dimension %d, got %d", i, Dimension, len(r))
+		}
+	}
+}
+
 func TestEmptyInput(t *testing.T) {
 	e := getEmbedder(t)
 	ctx := context.Background()

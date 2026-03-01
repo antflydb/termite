@@ -52,6 +52,9 @@ type ChunkingModelConfig struct {
 
 	// ModelType is the model architecture type (bert, roberta, deberta, etc.)
 	ModelType string
+
+	// MaxTextLength is the maximum text sequence length from max_position_embeddings
+	MaxTextLength int
 }
 
 // LoadChunkingModelConfig loads and parses configuration for a chunking model.
@@ -94,6 +97,9 @@ func LoadChunkingModelConfig(modelPath string) (*ChunkingModelConfig, error) {
 
 	// Extract number of labels
 	config.NumLabels = FirstNonZero(rawConfig.NumLabels, 3)
+
+	// Extract max text sequence length
+	config.MaxTextLength = rawConfig.MaxPositionEmbeddings
 
 	// Build labels map
 	config.Labels = make(map[int]string)
@@ -149,11 +155,12 @@ func IsChunkingModel(path string) bool {
 
 // rawChunkingConfig represents config.json for chunking models.
 type rawChunkingConfig struct {
-	ModelType  string            `json:"model_type"`
-	NumLabels  int               `json:"num_labels"`
-	HiddenSize int               `json:"hidden_size"`
-	ID2Label   map[string]string `json:"id2label"`
-	Label2ID   map[string]int    `json:"label2id"`
+	ModelType             string            `json:"model_type"`
+	NumLabels             int               `json:"num_labels"`
+	HiddenSize            int               `json:"hidden_size"`
+	MaxPositionEmbeddings int               `json:"max_position_embeddings"`
+	ID2Label              map[string]string `json:"id2label"`
+	Label2ID              map[string]int    `json:"label2id"`
 }
 
 // loadRawChunkingConfig loads config.json for chunking models.
@@ -716,7 +723,7 @@ func LoadChunkingPipeline(
 
 	// Build pipeline config
 	pipelineConfig := &ChunkingPipelineConfig{
-		MaxLength:        FirstNonZero(loaderCfg.maxLength, 512),
+		MaxLength:        FirstNonZero(loaderCfg.maxLength, config.MaxTextLength, 512),
 		MinChunkSize:     FirstNonZero(loaderCfg.minChunkSize, 50),
 		MaxChunkSize:     FirstNonZero(loaderCfg.maxChunkSize, 2000),
 		Overlap:          loaderCfg.overlap,

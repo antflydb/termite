@@ -3088,6 +3088,21 @@ def test_generator_model(model_dir: Path) -> bool:
         return False
 
 
+def cmd_upload(args):
+    """Handle the upload subcommand."""
+    endpoint = args.r2_endpoint or os.environ.get("AWS_ENDPOINT_URL")
+    if not endpoint:
+        logger.error("Endpoint not specified. Set --r2-endpoint or AWS_ENDPOINT_URL")
+        sys.exit(1)
+
+    output_dir = args.output_dir
+    if not (output_dir / "index.json").exists():
+        logger.error(f"No index.json found in {output_dir}")
+        sys.exit(1)
+
+    upload_to_r2(output_dir, args.r2_bucket, endpoint)
+
+
 def cmd_gc(args):
     """Handle the gc subcommand."""
     endpoint = args.r2_endpoint or os.environ.get("AWS_ENDPOINT_URL")
@@ -3360,6 +3375,9 @@ Examples:
   # Export Florence-2 for document understanding (requires trust-remote-code)
   %(prog)s reader microsoft/Florence-2-base --trust-remote-code
 
+  # Upload local registry to R2 (skips existing blobs)
+  %(prog)s upload
+
   # Garbage collect orphaned blobs and index entries (dry run)
   %(prog)s gc
 
@@ -3407,6 +3425,29 @@ Environment Variables:
         help="R2 bucket name",
     )
     gc_parser.add_argument(
+        "--r2-endpoint",
+        help="S3-compatible endpoint URL (or set AWS_ENDPOINT_URL env var)",
+    )
+
+    # Upload subcommand
+    upload_parser = subparsers.add_parser(
+        "upload",
+        help="Upload local registry to R2 (skips existing blobs)",
+        description="Upload all manifests, blobs, and index.json from the local registry to R2. "
+                    "Existing blobs are skipped automatically.",
+    )
+    upload_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("./registry"),
+        help="Local registry directory (default: ./registry)",
+    )
+    upload_parser.add_argument(
+        "--r2-bucket",
+        default="antfly-model-registry",
+        help="R2 bucket name",
+    )
+    upload_parser.add_argument(
         "--r2-endpoint",
         help="S3-compatible endpoint URL (or set AWS_ENDPOINT_URL env var)",
     )
@@ -3511,6 +3552,8 @@ Environment Variables:
 
     if args.command == "gc":
         cmd_gc(args)
+    elif args.command == "upload":
+        cmd_upload(args)
     else:
         # Export command (embedder, reranker, chunker, recognizer, rewriter, generator)
         cmd_export(args)
