@@ -50,7 +50,7 @@ const SparseVectorsContentType = "application/x-sparse-vectors"
 //	[uint64 num_vectors]
 //	For each vector:
 //	  [uint32 nnz]
-//	  [int32  * nnz indices]
+//	  [uint32 * nnz indices]
 //	  [float32 * nnz values]
 //
 // All values little-endian.
@@ -92,7 +92,7 @@ func DeserializeSparseVectors(r io.Reader) ([]embeddings.SparseVector, error) {
 		if err := binary.Read(r, binary.LittleEndian, &nnz); err != nil {
 			return nil, fmt.Errorf("reading nnz for vector %d: %w", i, err)
 		}
-		indices := make([]int32, nnz)
+		indices := make([]uint32, nnz)
 		for j := range nnz {
 			if err := binary.Read(r, binary.LittleEndian, &indices[j]); err != nil {
 				return nil, fmt.Errorf("reading index %d for vector %d: %w", j, i, err)

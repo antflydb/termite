@@ -16,238 +16,178 @@ package pipelines
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
+
+	"github.com/gomlx/gomlx/pkg/core/tensors/bucketing"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
-	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 )
 
 // =============================================================================
-// Moondream2 Model Detection
+// Decoder-Only VLM Model Detection
 // =============================================================================
 
-// IsMoondream2Model checks if a model path contains a Moondream2 model.
-// Moondream2 is detected by the presence of vision_encoder.onnx, projection.onnx,
-// and decoder_model.onnx (the 3-session architecture with SigLIP + Phi-2).
-func IsMoondream2Model(path string) bool {
+// IsDecoderOnlyVLMModel checks if a model path contains a decoder-only VLM
+// (e.g., Moondream2). Detected by the presence of vision_encoder.onnx and
+// embed_tokens.onnx, with no encoder_model.onnx (which would indicate an
+// encoder-decoder VLM like Florence-2).
+func IsDecoderOnlyVLMModel(path string) bool {
 	visionEncoder := FindONNXFile(path, []string{"vision_encoder.onnx"})
-	projection := FindONNXFile(path, []string{"projection.onnx"})
-	decoder := FindONNXFile(path, []string{"decoder_model.onnx", "decoder.onnx"})
+	embedTokens := FindONNXFile(path, []string{"embed_tokens.onnx"})
+	encoderModel := FindONNXFile(path, []string{"encoder_model.onnx"})
 
-	// Also check the model name contains "moondream" to distinguish from Florence-2
-	// which also has vision_encoder.onnx but uses a different architecture
-	pathLower := strings.ToLower(filepath.Base(path))
-	isMoondreamName := strings.Contains(pathLower, "moondream")
-
-	return visionEncoder != "" && projection != "" && decoder != "" && isMoondreamName
+	return visionEncoder != "" && embedTokens != "" && encoderModel == ""
 }
 
 // =============================================================================
-// Moondream2 Model Configuration
+// Decoder-Only VLM Model
 // =============================================================================
 
-// Moondream2ModelConfig holds parsed configuration for a Moondream2 model.
-type Moondream2ModelConfig struct {
-	// Path to the model directory
-	ModelPath string
+// decoderOnlyVLMModel implements backends.Model for decoder-only VLM
+// architectures (e.g., Moondream2). Uses a vision encoder to extract image
+// features, embed_tokens to embed text, then concatenates them as inputs_embeds
+// for a decoder-only transformer (no cross-attention):
+//   - vision_encoder: pixel_values → image_features
+//   - embed_tokens: input_ids → text_embeddings
+//   - decoder: inputs_embeds (concat of [image_features | text_embeddings]) + position_ids → logits (first step)
+//   - decoder: inputs_embeds (single token via embed_tokens) + past_key_values + position_ids → logits (subsequent steps)
+//
+// Unlike encoder-decoder VLMs (Florence-2), there is no separate encoder_model.
+// Image features are injected as prefix tokens through concatenation with text
+// embeddings in inputs_embeds. The decoder always takes inputs_embeds (not
+// input_ids) and always outputs KV cache tensors.
+type decoderOnlyVLMModel struct {
+	config *Vision2SeqModelConfig
 
-	// Paths to ONNX files
-	VisionEncoderPath string
-	ProjectionPath    string
-	DecoderPath       string
+	// Model sessions
+	visionEncoderSession backends.Session // vision_encoder.onnx
+	embedTokensSession   backends.Session // embed_tokens.onnx
+	decoderSession       backends.Session // decoder_model_merged.onnx (ONNX Runtime fallback)
 
-	// DecoderConfig holds decoder configuration
-	DecoderConfig *backends.DecoderConfig
+	// Split decoder sessions for GoMLX backends (XLA, Go, CoreML).
+	// The merged decoder's ONNX If node cannot be evaluated at runtime by these
+	// backends. Instead we use separate ONNX files (decoder_model.onnx and
+	// decoder_with_past_model.onnx) that are purpose-built for each phase.
+	decoderFirstStepSession backends.Session // decoder_model.onnx (first step, no KV cache)
+	decoderWithPastSession  backends.Session // decoder_with_past_model.onnx (subsequent steps, with KV cache)
+	useSplitDecoders        bool
 
-	// ImageConfig holds image preprocessing configuration
-	ImageConfig *backends.ImageConfig
-
-	// Architecture details
-	NumLayers    int
-	NumHeads     int
-	HeadDim      int
-	HiddenSize   int
-	VisionHidden int // Vision encoder hidden size (may differ from text)
-}
-
-// LoadMoondream2ModelConfig loads configuration for a Moondream2 model.
-func LoadMoondream2ModelConfig(modelPath string) (*Moondream2ModelConfig, error) {
-	// Find ONNX files
-	visionEncoderPath := FindONNXFile(modelPath, []string{"vision_encoder.onnx"})
-	projectionPath := FindONNXFile(modelPath, []string{"projection.onnx"})
-	decoderPath := FindONNXFile(modelPath, []string{"decoder_model.onnx", "decoder.onnx"})
-
-	// Load config.json
-	configPath := filepath.Join(modelPath, "config.json")
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading config.json: %w", err)
-	}
-
-	var rawConfig map[string]any
-	if err := json.Unmarshal(configData, &rawConfig); err != nil {
-		return nil, fmt.Errorf("parsing config.json: %w", err)
-	}
-
-	config := &Moondream2ModelConfig{
-		ModelPath:         modelPath,
-		VisionEncoderPath: visionEncoderPath,
-		ProjectionPath:    projectionPath,
-		DecoderPath:       decoderPath,
-	}
-
-	// Extract architecture details (Moondream2 uses Phi-2 decoder)
-	config.HiddenSize = getIntFromMoondreamConfig(rawConfig, "hidden_size", 2048)
-	config.NumLayers = getIntFromMoondreamConfig(rawConfig, "num_hidden_layers", 24)
-	config.NumHeads = getIntFromMoondreamConfig(rawConfig, "num_attention_heads", 32)
-	config.HeadDim = config.HiddenSize / config.NumHeads
-	config.VisionHidden = getIntFromMoondreamConfig(rawConfig, "vision_hidden_size", 1152)
-
-	// Build decoder config (Moondream2 uses GPT-2 tokenizer)
-	config.DecoderConfig = &backends.DecoderConfig{
-		VocabSize:           getIntFromMoondreamConfig(rawConfig, "vocab_size", 51200),
-		MaxLength:           getIntFromMoondreamConfig(rawConfig, "max_length", 2048),
-		BOSTokenID:          int32(getIntFromMoondreamConfig(rawConfig, "bos_token_id", 50256)),
-		EOSTokenID:          int32(getIntFromMoondreamConfig(rawConfig, "eos_token_id", 50256)),
-		PadTokenID:          int32(getIntFromMoondreamConfig(rawConfig, "pad_token_id", 50256)),
-		DecoderStartTokenID: int32(getIntFromMoondreamConfig(rawConfig, "bos_token_id", 50256)),
-		NumLayers:           config.NumLayers,
-		NumHeads:            config.NumHeads,
-		HeadDim:             config.HeadDim,
-	}
-
-	// Build image config (Moondream2 uses SigLIP vision encoder)
-	imageSize := getIntFromMoondreamConfig(rawConfig, "image_size", 378)
-	config.ImageConfig = &backends.ImageConfig{
-		Width:         imageSize,
-		Height:        imageSize,
-		Channels:      3,
-		Mean:          [3]float32{0.5, 0.5, 0.5},  // SigLIP normalization
-		Std:           [3]float32{0.5, 0.5, 0.5},  // SigLIP normalization
-		RescaleFactor: 1.0 / 255.0,
-	}
-
-	// Try to load preprocessor_config.json for more accurate image config
-	preprocPath := filepath.Join(modelPath, "preprocessor_config.json")
-	if preprocData, err := os.ReadFile(preprocPath); err == nil {
-		var preproc map[string]any
-		if json.Unmarshal(preprocData, &preproc) == nil {
-			if size := getIntFromMoondreamConfig(preproc, "size", 0); size > 0 {
-				config.ImageConfig.Width = size
-				config.ImageConfig.Height = size
-			}
-			if mean, ok := preproc["image_mean"].([]any); ok && len(mean) == 3 {
-				for i, v := range mean {
-					if f, ok := v.(float64); ok {
-						config.ImageConfig.Mean[i] = float32(f)
-					}
-				}
-			}
-			if std, ok := preproc["image_std"].([]any); ok && len(std) == 3 {
-				for i, v := range std {
-					if f, ok := v.(float64); ok {
-						config.ImageConfig.Std[i] = float32(f)
-					}
-				}
-			}
-		}
-	}
-
-	return config, nil
-}
-
-func getIntFromMoondreamConfig(config map[string]any, key string, defaultVal int) int {
-	if v, ok := config[key].(float64); ok {
-		return int(v)
-	}
-	return defaultVal
-}
-
-// =============================================================================
-// Moondream2 Model
-// =============================================================================
-
-// moondream2Model implements backends.Model for Moondream2 architecture.
-// Moondream2 uses a 3-stage encoder:
-//   - vision_encoder: pixel_values → image_features (SigLIP)
-//   - projection: image_features → projected_features (MLP to Phi-2 embedding space)
-//   - decoder: projected_features + input_ids → logits (Phi-2 decoder)
-type moondream2Model struct {
-	config *Moondream2ModelConfig
-
-	// Moondream2 sessions
-	visionEncoderSession backends.Session // vision_encoder.onnx (SigLIP)
-	projectionSession    backends.Session // projection.onnx (MLP)
-	decoderSession       backends.Session // decoder_model.onnx (Phi-2)
+	// kvBucketStrategy buckets past_key_values sequence lengths to reduce
+	// the number of unique shapes seen by JIT backends (XLA, CoreML).
+	kvBucketStrategy bucketing.Strategy
 
 	backendType backends.BackendType
 }
 
-// LoadMoondream2Model loads a Moondream2 model using the given session factory.
-func LoadMoondream2Model(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (backends.Model, error) {
+// LoadDecoderOnlyVLMModel loads a decoder-only VLM model using the given session factory.
+func LoadDecoderOnlyVLMModel(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (backends.Model, error) {
 	// Load configuration
-	config, err := LoadMoondream2ModelConfig(modelPath)
+	config, err := LoadVision2SeqModelConfig(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading model config: %w", err)
 	}
 
-	// Validate required files
-	if config.VisionEncoderPath == "" {
+	// Find required ONNX files
+	visionEncoderPath := FindONNXFile(modelPath, []string{"vision_encoder.onnx"})
+	embedTokensPath := FindONNXFile(modelPath, []string{"embed_tokens.onnx"})
+	decoderPath := FindONNXFile(modelPath, []string{
+		"decoder_model_merged.onnx",
+		"decoder_with_past.onnx",
+		"decoder.onnx",
+		"decoder_model.onnx",
+	})
+
+	if visionEncoderPath == "" {
 		return nil, fmt.Errorf("vision_encoder.onnx not found in %s", modelPath)
 	}
-	if config.ProjectionPath == "" {
-		return nil, fmt.Errorf("projection.onnx not found in %s", modelPath)
+	if embedTokensPath == "" {
+		return nil, fmt.Errorf("embed_tokens.onnx not found in %s", modelPath)
 	}
-	if config.DecoderPath == "" {
+	if decoderPath == "" {
 		return nil, fmt.Errorf("decoder ONNX file not found in %s", modelPath)
 	}
 
-	// Create sessions
-	visionEncoderSession, err := factory.CreateSession(config.VisionEncoderPath, opts...)
+	config.DecoderPath = decoderPath
+
+	// Create sessions with cascading cleanup on error
+	visionEncoderSession, err := factory.CreateSession(visionEncoderPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("creating vision encoder session: %w", err)
 	}
 
-	projectionSession, err := factory.CreateSession(config.ProjectionPath, opts...)
+	embedTokensSession, err := factory.CreateSession(embedTokensPath, opts...)
 	if err != nil {
 		visionEncoderSession.Close()
-		return nil, fmt.Errorf("creating projection session: %w", err)
+		return nil, fmt.Errorf("creating embed_tokens session: %w", err)
 	}
 
-	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
-	if err != nil {
-		visionEncoderSession.Close()
-		projectionSession.Close()
-		return nil, fmt.Errorf("creating decoder session: %w", err)
-	}
-
-	return &moondream2Model{
+	model := &decoderOnlyVLMModel{
 		config:               config,
 		visionEncoderSession: visionEncoderSession,
-		projectionSession:    projectionSession,
-		decoderSession:       decoderSession,
+		embedTokensSession:   embedTokensSession,
 		backendType:          factory.Backend(),
-	}, nil
+	}
+
+	closeOnError := func() {
+		visionEncoderSession.Close()
+		embedTokensSession.Close()
+	}
+
+	// Create the main decoder session
+	decoderSession, err := factory.CreateSession(decoderPath, opts...)
+	if err != nil {
+		closeOnError()
+		return nil, fmt.Errorf("creating decoder session: %w", err)
+	}
+	model.decoderSession = decoderSession
+
+	// Try to load split decoders for GoMLX backends (XLA, Go, CoreML).
+	// These backends cannot evaluate ONNX If nodes at runtime, so the merged
+	// decoder disables KV caching. The separate decoder_model.onnx and
+	// decoder_with_past_model.onnx files are purpose-built for each phase.
+	isGoMLXBackend := false
+	switch factory.Backend() {
+	case backends.BackendGo, backends.BackendXLA, backends.BackendCoreML:
+		isGoMLXBackend = true
+	}
+	if isGoMLXBackend && config.DecoderFirstStepPath != "" && config.DecoderWithPastPath != "" {
+		firstStepSession, err := factory.CreateSession(config.DecoderFirstStepPath, opts...)
+		if err == nil {
+			withPastOpts := append(opts, backends.WithDynamicAxes([]backends.DynamicAxisOverride{
+				{InputName: "inputs_embeds", Axis: 1, ParamName: "decoder_sequence_length"},
+				{InputName: "input_ids", Axis: 1, ParamName: "decoder_sequence_length"},
+			}))
+			withPastSession, err := factory.CreateSession(config.DecoderWithPastPath, withPastOpts...)
+			if err == nil {
+				model.decoderFirstStepSession = firstStepSession
+				model.decoderWithPastSession = withPastSession
+				model.useSplitDecoders = true
+
+				switch factory.Backend() {
+				case backends.BackendXLA, backends.BackendCoreML:
+					model.kvBucketStrategy = bucketing.Pow2()
+				}
+			} else {
+				firstStepSession.Close()
+			}
+		}
+	}
+
+	return model, nil
 }
 
-// Forward runs the Moondream2 model.
-// - If ImagePixels is set (and EncoderOutput is nil): runs vision encoder + projection
+// Forward runs the decoder-only VLM model.
+// - If ImagePixels is set (and EncoderOutput is nil): runs vision encoder
 // - If EncoderOutput is set: runs decoder step
-func (m *moondream2Model) Forward(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+func (m *decoderOnlyVLMModel) Forward(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	if inputs == nil {
 		return nil, fmt.Errorf("nil inputs")
 	}
 
-	// If encoder output provided, run decoder
 	if inputs.EncoderOutput != nil {
 		return m.runDecoder(ctx, inputs)
 	}
 
-	// Otherwise run vision encoder + projection
 	if inputs.ImagePixels == nil || len(inputs.ImagePixels) == 0 {
 		return nil, fmt.Errorf("no image pixels or encoder output provided")
 	}
@@ -255,12 +195,13 @@ func (m *moondream2Model) Forward(ctx context.Context, inputs *backends.ModelInp
 	return m.runEncoder(ctx, inputs)
 }
 
-// runEncoder runs the vision encoder and projection layers.
-// Pipeline: pixel_values → vision_encoder → hidden_states → projection → projected_features
-func (m *moondream2Model) runEncoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+// runEncoder runs the vision encoder on pixel values.
+// Unlike encoder-decoder VLMs, there is no separate encoder_model stage —
+// the vision encoder output is concatenated with text embeddings in the
+// decoder's inputs_embeds.
+func (m *decoderOnlyVLMModel) runEncoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	batchSize := inputs.ImageBatch
 
-	// Step 1: Run vision encoder on pixel_values
 	pixelValues := backends.NamedTensor{
 		Name:  "pixel_values",
 		Shape: []int64{int64(batchSize), int64(inputs.ImageChannels), int64(inputs.ImageHeight), int64(inputs.ImageWidth)},
@@ -276,7 +217,6 @@ func (m *moondream2Model) runEncoder(ctx context.Context, inputs *backends.Model
 		return nil, fmt.Errorf("no output from vision encoder")
 	}
 
-	// Get image features [batch, seq_len, hidden_size]
 	imageFeatures := visionOutputs[0]
 	imageFeaturesData, ok := imageFeatures.Data.([]float32)
 	if !ok {
@@ -287,32 +227,9 @@ func (m *moondream2Model) runEncoder(ctx context.Context, inputs *backends.Model
 		return nil, fmt.Errorf("unexpected image features shape: %v (expected 3D)", imageFeatures.Shape)
 	}
 
-	// Step 2: Run projection layer
-	projInputs := []backends.NamedTensor{{
-		Name:  "hidden_states",
-		Shape: imageFeatures.Shape,
-		Data:  imageFeaturesData,
-	}}
-
-	projOutputs, err := m.projectionSession.Run(projInputs)
-	if err != nil {
-		return nil, fmt.Errorf("running projection: %w", err)
-	}
-
-	if len(projOutputs) == 0 {
-		return nil, fmt.Errorf("no output from projection")
-	}
-
-	// Get projected features [batch, seq_len, hidden_size]
-	projectedFeatures := projOutputs[0]
-	projectedData, ok := projectedFeatures.Data.([]float32)
-	if !ok {
-		return nil, fmt.Errorf("projection output is not float32")
-	}
-
 	encoderOutput := &backends.EncoderOutput{
-		HiddenStates: projectedData,
-		Shape:        [3]int{int(projectedFeatures.Shape[0]), int(projectedFeatures.Shape[1]), int(projectedFeatures.Shape[2])},
+		HiddenStates: imageFeaturesData,
+		Shape:        [3]int{int(imageFeatures.Shape[0]), int(imageFeatures.Shape[1]), int(imageFeatures.Shape[2])},
 	}
 
 	return &backends.ModelOutput{
@@ -320,10 +237,22 @@ func (m *moondream2Model) runEncoder(ctx context.Context, inputs *backends.Model
 	}, nil
 }
 
-// runDecoder performs one step of autoregressive decoding.
-func (m *moondream2Model) runDecoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+// runDecoder performs one step of autoregressive decoding for a decoder-only VLM.
+//
+// First step (no KV cache): embed text tokens via embed_tokens, concatenate
+// [image_features | text_embeds] into inputs_embeds, and run the decoder.
+//
+// Subsequent steps (with KV cache): embed the new token via embed_tokens,
+// pass its embedding as inputs_embeds along with past_key_values and position_ids.
+//
+// The Moondream2 decoder always takes inputs_embeds (not input_ids) and always
+// outputs present.* KV cache tensors. Unlike some merged decoders, there is no
+// use_cache_branch input — the model switches behavior based on whether
+// past_key_values has sequence length 0 or not.
+func (m *decoderOnlyVLMModel) runDecoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	inputIDs := inputs.InputIDs
 	encoderOutput := inputs.EncoderOutput
+	pastKeyValues := inputs.PastKeyValues
 
 	batchSize := len(inputIDs)
 	if batchSize == 0 {
@@ -331,78 +260,64 @@ func (m *moondream2Model) runDecoder(ctx context.Context, inputs *backends.Model
 	}
 
 	seqLen := len(inputIDs[0])
+	isFirstStep := pastKeyValues == nil || pastKeyValues.SeqLen == 0
 
-	// Get decoder input names
-	inputInfo := m.decoderSession.InputInfo()
-	inputNames := make(map[string]bool)
-	for _, info := range inputInfo {
-		inputNames[info.Name] = true
+	// Choose decoder session
+	var decoderSession backends.Session
+	if m.useSplitDecoders {
+		if isFirstStep {
+			decoderSession = m.decoderFirstStepSession
+		} else {
+			decoderSession = m.decoderWithPastSession
+		}
+	} else {
+		decoderSession = m.decoderSession
 	}
 
-	// Build decoder inputs
 	var tensorInputs []backends.NamedTensor
 
-	// Add input_ids (flatten to int64)
-	flatInputIDs := make([]int64, batchSize*seqLen)
-	for i := range batchSize {
-		for j := range seqLen {
-			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
+	if isFirstStep {
+		// First step: embed text and concatenate with image features
+		embeds, err := m.buildFirstStepInputs(decoderSession, inputIDs, batchSize, seqLen, encoderOutput)
+		if err != nil {
+			return nil, err
 		}
-	}
-	tensorInputs = append(tensorInputs, backends.NamedTensor{
-		Name:  GetDecoderInputIDsName(inputNames),
-		Shape: []int64{int64(batchSize), int64(seqLen)},
-		Data:  flatInputIDs,
-	})
-
-	// Add encoder hidden states
-	if inputNames["encoder_hidden_states"] || inputNames["inputs_embeds"] {
-		name := "encoder_hidden_states"
-		if inputNames["inputs_embeds"] && !inputNames["encoder_hidden_states"] {
-			name = "inputs_embeds"
+		tensorInputs = embeds
+	} else {
+		// Subsequent steps: embed new token, pass with KV cache
+		embeds, err := m.buildSubsequentStepInputs(decoderSession, inputIDs, batchSize, seqLen, pastKeyValues)
+		if err != nil {
+			return nil, err
 		}
-		tensorInputs = append(tensorInputs, backends.NamedTensor{
-			Name:  name,
-			Shape: []int64{int64(encoderOutput.Shape[0]), int64(encoderOutput.Shape[1]), int64(encoderOutput.Shape[2])},
-			Data:  encoderOutput.HiddenStates,
-		})
+		tensorInputs = embeds
 	}
 
-	// Add attention mask if needed
-	if inputNames["attention_mask"] {
-		mask := make([]int64, batchSize*seqLen)
-		for i := range mask {
-			mask[i] = 1
+	// Pad KV cache tensors for bucketing
+	var realPastSeqLen int
+	if m.kvBucketStrategy != nil && !isFirstStep {
+		realPastSeqLen = kvCacheSeqLen(pastKeyValues)
+		bucketedSeqLen := m.kvBucketStrategy.Bucket(realPastSeqLen)
+		if bucketedSeqLen > realPastSeqLen {
+			tensorInputs = padDecoderKVInputs(tensorInputs, realPastSeqLen, bucketedSeqLen)
 		}
-		tensorInputs = append(tensorInputs, backends.NamedTensor{
-			Name:  "attention_mask",
-			Shape: []int64{int64(batchSize), int64(seqLen)},
-			Data:  mask,
-		})
-	}
-
-	// Add encoder attention mask if needed
-	if inputNames["encoder_attention_mask"] {
-		encSeqLen := encoderOutput.Shape[1]
-		mask := make([]int64, batchSize*encSeqLen)
-		for i := range mask {
-			mask[i] = 1
-		}
-		tensorInputs = append(tensorInputs, backends.NamedTensor{
-			Name:  "encoder_attention_mask",
-			Shape: []int64{int64(batchSize), int64(encSeqLen)},
-			Data:  mask,
-		})
 	}
 
 	// Run decoder
-	outputs, err := m.decoderSession.Run(tensorInputs)
+	outputs, err := decoderSession.Run(tensorInputs)
 	if err != nil {
 		return nil, fmt.Errorf("running decoder: %w", err)
 	}
 
 	if len(outputs) == 0 {
 		return nil, fmt.Errorf("no decoder output")
+	}
+
+	// Trim padded positions from present outputs
+	if m.kvBucketStrategy != nil && !isFirstStep && realPastSeqLen > 0 {
+		bucketedSeqLen := m.kvBucketStrategy.Bucket(realPastSeqLen)
+		if bucketedSeqLen > realPastSeqLen {
+			outputs = trimPresentKV(outputs, realPastSeqLen, bucketedSeqLen)
+		}
 	}
 
 	// Extract logits (first output)
@@ -415,31 +330,434 @@ func (m *moondream2Model) runDecoder(ctx context.Context, inputs *backends.Model
 	logitsShape := logitsOutput.Shape
 
 	// Reshape logits to [batch, vocab_size] (taking last position)
+	outputSeqLen := int(logitsShape[1])
 	vocabSize := int(logitsShape[len(logitsShape)-1])
 	logits := make([][]float32, batchSize)
 	for i := range batchSize {
 		logits[i] = make([]float32, vocabSize)
-		startIdx := i*seqLen*vocabSize + (seqLen-1)*vocabSize
+		startIdx := i*outputSeqLen*vocabSize + (outputSeqLen-1)*vocabSize
 		copy(logits[i], logitsData[startIdx:startIdx+vocabSize])
 	}
 
+	// Always extract KV cache from decoder outputs. The merged decoder outputs
+	// present.* tensors on every step. Returning them triggers the generation
+	// loop to use the KV cache path (trimming InputIDs to just the last token).
+	newKVCache := m.extractKVCache(outputs, batchSize, pastKeyValues)
+
 	return &backends.ModelOutput{
-		Logits: logits,
+		Logits:        logits,
+		PastKeyValues: newKVCache,
 	}, nil
 }
 
+// buildFirstStepInputs creates decoder inputs for the first step.
+// Embeds text tokens via embed_tokens, then concatenates [image_features | text_embeds]
+// into inputs_embeds for the decoder.
+func (m *decoderOnlyVLMModel) buildFirstStepInputs(
+	session backends.Session,
+	inputIDs [][]int32,
+	batchSize, seqLen int,
+	encoderOutput *backends.EncoderOutput,
+) ([]backends.NamedTensor, error) {
+	// Flatten input IDs for embed_tokens
+	flatInputIDs := make([]int64, batchSize*seqLen)
+	for i := range batchSize {
+		for j := range seqLen {
+			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
+		}
+	}
+
+	// Run embed_tokens on text input_ids
+	embedInput := backends.NamedTensor{
+		Name:  "input_ids",
+		Shape: []int64{int64(batchSize), int64(seqLen)},
+		Data:  flatInputIDs,
+	}
+
+	embedOutputs, err := m.embedTokensSession.Run([]backends.NamedTensor{embedInput})
+	if err != nil {
+		return nil, fmt.Errorf("running embed_tokens: %w", err)
+	}
+	if len(embedOutputs) == 0 {
+		return nil, fmt.Errorf("no output from embed_tokens")
+	}
+
+	textEmbedsData, ok := embedOutputs[0].Data.([]float32)
+	if !ok {
+		return nil, fmt.Errorf("embed_tokens output is not float32")
+	}
+
+	hiddenSize := int(embedOutputs[0].Shape[2])
+	imageSeqLen := encoderOutput.Shape[1]
+
+	// Concatenate [image_features | text_embeds] → inputs_embeds
+	totalSeqLen := imageSeqLen + seqLen
+	inputsEmbeds := make([]float32, batchSize*totalSeqLen*hiddenSize)
+
+	for b := range batchSize {
+		// Copy image features
+		for s := range imageSeqLen {
+			srcIdx := b*imageSeqLen*hiddenSize + s*hiddenSize
+			dstIdx := b*totalSeqLen*hiddenSize + s*hiddenSize
+			copy(inputsEmbeds[dstIdx:dstIdx+hiddenSize], encoderOutput.HiddenStates[srcIdx:srcIdx+hiddenSize])
+		}
+		// Copy text embeds
+		for s := range seqLen {
+			srcIdx := b*seqLen*hiddenSize + s*hiddenSize
+			dstIdx := b*totalSeqLen*hiddenSize + (imageSeqLen+s)*hiddenSize
+			copy(inputsEmbeds[dstIdx:dstIdx+hiddenSize], textEmbedsData[srcIdx:srcIdx+hiddenSize])
+		}
+	}
+
+	var inputs []backends.NamedTensor
+
+	// Get session input names
+	inputInfo := session.InputInfo()
+	inputNames := make(map[string]bool)
+	for _, info := range inputInfo {
+		inputNames[info.Name] = true
+	}
+
+	// Add inputs_embeds
+	inputs = append(inputs, backends.NamedTensor{
+		Name:  "inputs_embeds",
+		Shape: []int64{int64(batchSize), int64(totalSeqLen), int64(hiddenSize)},
+		Data:  inputsEmbeds,
+	})
+
+	// Add attention mask if needed
+	if inputNames["attention_mask"] {
+		mask := make([]int64, batchSize*totalSeqLen)
+		for i := range mask {
+			mask[i] = 1
+		}
+		inputs = append(inputs, backends.NamedTensor{
+			Name:  "attention_mask",
+			Shape: []int64{int64(batchSize), int64(totalSeqLen)},
+			Data:  mask,
+		})
+	}
+
+	// Add position_ids if needed: [0, 1, 2, ..., totalSeqLen-1]
+	if inputNames["position_ids"] {
+		posIDs := make([]int64, batchSize*totalSeqLen)
+		for b := range batchSize {
+			for s := range totalSeqLen {
+				posIDs[b*totalSeqLen+s] = int64(s)
+			}
+		}
+		inputs = append(inputs, backends.NamedTensor{
+			Name:  "position_ids",
+			Shape: []int64{int64(batchSize), int64(totalSeqLen)},
+			Data:  posIDs,
+		})
+	}
+
+	// Add use_cache_branch if needed (first step → false)
+	if inputNames["use_cache_branch"] {
+		inputs = append(inputs, createUseCacheBranchTensor(inputInfo, false))
+	}
+
+	// Add zero-initialized past_key_values (decoder-only: no encoder KV)
+	for _, info := range inputInfo {
+		if IsPastKeyValueInput(info.Name) {
+			inputs = append(inputs, m.createZeroPastKVTensor(info.Name, batchSize))
+		}
+	}
+
+	return inputs, nil
+}
+
+// buildSubsequentStepInputs creates decoder inputs for subsequent steps.
+// The Moondream2 decoder always takes inputs_embeds (not input_ids), so we
+// run embed_tokens on the new token to get its embedding, then pass it
+// along with the KV cache and position_ids.
+func (m *decoderOnlyVLMModel) buildSubsequentStepInputs(
+	session backends.Session,
+	inputIDs [][]int32,
+	batchSize, seqLen int,
+	pastKV *backends.KVCache,
+) ([]backends.NamedTensor, error) {
+	// Flatten input IDs for embed_tokens
+	flatInputIDs := make([]int64, batchSize*seqLen)
+	for i := range batchSize {
+		for j := range seqLen {
+			flatInputIDs[i*seqLen+j] = int64(inputIDs[i][j])
+		}
+	}
+
+	// Run embed_tokens to convert token(s) to embeddings
+	embedInput := backends.NamedTensor{
+		Name:  "input_ids",
+		Shape: []int64{int64(batchSize), int64(seqLen)},
+		Data:  flatInputIDs,
+	}
+	embedOutputs, err := m.embedTokensSession.Run([]backends.NamedTensor{embedInput})
+	if err != nil {
+		return nil, fmt.Errorf("running embed_tokens: %w", err)
+	}
+	if len(embedOutputs) == 0 {
+		return nil, fmt.Errorf("no output from embed_tokens")
+	}
+
+	embedsData, ok := embedOutputs[0].Data.([]float32)
+	if !ok {
+		return nil, fmt.Errorf("embed_tokens output is not float32")
+	}
+	hiddenSize := int(embedOutputs[0].Shape[2])
+
+	var inputs []backends.NamedTensor
+
+	inputInfo := session.InputInfo()
+	inputNames := make(map[string]bool)
+	for _, info := range inputInfo {
+		inputNames[info.Name] = true
+	}
+
+	// Add inputs_embeds (the decoder always takes inputs_embeds, not input_ids)
+	inputs = append(inputs, backends.NamedTensor{
+		Name:  "inputs_embeds",
+		Shape: []int64{int64(batchSize), int64(seqLen), int64(hiddenSize)},
+		Data:  embedsData,
+	})
+
+	// Get actual past sequence length from KV cache tensor shapes
+	pastSeqLen := kvCacheSeqLen(pastKV)
+
+	// Add attention mask covering all past + current tokens
+	if inputNames["attention_mask"] {
+		totalLen := pastSeqLen + seqLen
+		mask := make([]int64, batchSize*totalLen)
+		for i := range mask {
+			mask[i] = 1
+		}
+		inputs = append(inputs, backends.NamedTensor{
+			Name:  "attention_mask",
+			Shape: []int64{int64(batchSize), int64(totalLen)},
+			Data:  mask,
+		})
+	}
+
+	// Add position_ids: [pastSeqLen, pastSeqLen+1, ..., pastSeqLen+seqLen-1]
+	if inputNames["position_ids"] {
+		posIDs := make([]int64, batchSize*seqLen)
+		for b := range batchSize {
+			for s := range seqLen {
+				posIDs[b*seqLen+s] = int64(pastSeqLen + s)
+			}
+		}
+		inputs = append(inputs, backends.NamedTensor{
+			Name:  "position_ids",
+			Shape: []int64{int64(batchSize), int64(seqLen)},
+			Data:  posIDs,
+		})
+	}
+
+	// Add use_cache_branch if needed (subsequent step → true)
+	if inputNames["use_cache_branch"] {
+		inputs = append(inputs, createUseCacheBranchTensor(inputInfo, true))
+	}
+
+	// Add past_key_values from cache
+	for _, info := range inputInfo {
+		if IsPastKeyValueInput(info.Name) {
+			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize)
+			inputs = append(inputs, tensor)
+		}
+	}
+
+	return inputs, nil
+}
+
+// createUseCacheBranchTensor creates the use_cache_branch tensor.
+func createUseCacheBranchTensor(inputInfo []backends.TensorInfo, useCache bool) backends.NamedTensor {
+	var dataType backends.DataType = backends.DataTypeBool
+	for _, info := range inputInfo {
+		if info.Name == "use_cache_branch" {
+			dataType = info.DataType
+			break
+		}
+	}
+
+	if dataType == backends.DataTypeFloat32 {
+		val := []float32{0}
+		if useCache {
+			val[0] = 1
+		}
+		return backends.NamedTensor{
+			Name:  "use_cache_branch",
+			Shape: []int64{1},
+			Data:  val,
+		}
+	}
+	return backends.NamedTensor{
+		Name:  "use_cache_branch",
+		Shape: []int64{1},
+		Data:  []bool{useCache},
+	}
+}
+
+// createZeroPastKVTensor creates zero-initialized past KV tensors for the first step.
+// Decoder-only models have no encoder KV tensors — all are self-attention only.
+func (m *decoderOnlyVLMModel) createZeroPastKVTensor(name string, batchSize int) backends.NamedTensor {
+	numHeads := m.config.NumHeads
+	headDim := m.config.HeadDim
+	if numHeads == 0 {
+		numHeads = 8
+	}
+	if headDim == 0 {
+		headDim = 64
+	}
+
+	return backends.NamedTensor{
+		Name:  name,
+		Shape: []int64{int64(batchSize), int64(numHeads), 0, int64(headDim)},
+		Data:  []float32{},
+	}
+}
+
+// createPastKVTensor retrieves a cached KV tensor from the previous step.
+func (m *decoderOnlyVLMModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int) backends.NamedTensor {
+	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
+		outputName := mapPastToPresent(name)
+		if tensor, ok := pastKV.Tensors[outputName]; ok {
+			return backends.NamedTensor{
+				Name:  name,
+				Shape: tensor.Shape,
+				Data:  tensor.Data,
+			}
+		}
+	}
+
+	// Fallback to zero tensor
+	return m.createZeroPastKVTensor(name, batchSize)
+}
+
+// extractKVCache extracts the KV cache from decoder outputs.
+// Collects all present.* output tensors and stores them for the next step.
+func (m *decoderOnlyVLMModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
+	tensors := make(map[string]backends.NamedTensor)
+	hasKVOutputs := false
+
+	for _, output := range outputs {
+		if IsPresentKeyValueOutput(output.Name) {
+			hasKVOutputs = true
+			data, ok := output.Data.([]float32)
+			if ok {
+				dataCopy := make([]float32, len(data))
+				copy(dataCopy, data)
+				shapeCopy := make([]int64, len(output.Shape))
+				copy(shapeCopy, output.Shape)
+				tensors[output.Name] = backends.NamedTensor{
+					Name:  output.Name,
+					Shape: shapeCopy,
+					Data:  dataCopy,
+				}
+			}
+		}
+	}
+
+	if hasKVOutputs {
+		seqLen := 1
+		if pastKV != nil {
+			seqLen = pastKV.SeqLen + 1
+		}
+		return &backends.KVCache{
+			SeqLen:    seqLen,
+			NumLayers: m.config.NumLayers,
+			NumHeads:  m.config.NumHeads,
+			HeadDim:   m.config.HeadDim,
+			BatchSize: batchSize,
+			Tensors:   tensors,
+		}
+	}
+
+	return nil
+}
+
+// kvCacheSeqLen returns the actual sequence length from KV cache tensor shapes.
+// This reflects the total past sequence (including image tokens from the first step)
+// rather than the step counter in KVCache.SeqLen.
+func kvCacheSeqLen(pastKV *backends.KVCache) int {
+	if pastKV == nil || pastKV.Tensors == nil {
+		return 0
+	}
+	for _, tensor := range pastKV.Tensors {
+		if len(tensor.Shape) == 4 {
+			return int(tensor.Shape[2])
+		}
+	}
+	return 0
+}
+
+// trimPresentKV removes zero-padding from all present.* KV output tensors.
+// This is the decoder-only equivalent of trimPresentDecoderKV — since decoder-only
+// models have no encoder KV tensors, all present outputs are trimmed.
+//
+// After a padded forward pass the present tensor has shape
+// [batch, heads, bucketedSeqLen+1, headDim]. We keep positions [0:realSeqLen]
+// and [bucketedSeqLen:bucketedSeqLen+1], producing [batch, heads, realSeqLen+1, headDim].
+func trimPresentKV(outputs []backends.NamedTensor, realSeqLen, bucketedSeqLen int) []backends.NamedTensor {
+	result := make([]backends.NamedTensor, len(outputs))
+	for i, t := range outputs {
+		if !IsPresentKeyValueOutput(t.Name) {
+			result[i] = t
+			continue
+		}
+
+		data, ok := t.Data.([]float32)
+		if !ok || len(t.Shape) != 4 {
+			result[i] = t
+			continue
+		}
+
+		batch := int(t.Shape[0])
+		heads := int(t.Shape[1])
+		srcSeqLen := int(t.Shape[2]) // bucketedSeqLen + 1
+		headDim := int(t.Shape[3])
+		trimmedSeqLen := realSeqLen + 1
+
+		trimmedSize := batch * heads * trimmedSeqLen * headDim
+		trimmed := make([]float32, trimmedSize)
+
+		for b := range batch {
+			for h := range heads {
+				srcBase := (b*heads + h) * srcSeqLen * headDim
+				dstBase := (b*heads + h) * trimmedSeqLen * headDim
+
+				// Copy the real past positions [0:realSeqLen].
+				copy(trimmed[dstBase:dstBase+realSeqLen*headDim],
+					data[srcBase:srcBase+realSeqLen*headDim])
+
+				// Copy the new token position [bucketedSeqLen].
+				newTokSrc := srcBase + bucketedSeqLen*headDim
+				newTokDst := dstBase + realSeqLen*headDim
+				copy(trimmed[newTokDst:newTokDst+headDim],
+					data[newTokSrc:newTokSrc+headDim])
+			}
+		}
+
+		result[i] = backends.NamedTensor{
+			Name:  t.Name,
+			Shape: []int64{t.Shape[0], t.Shape[1], int64(trimmedSeqLen), t.Shape[3]},
+			Data:  trimmed,
+		}
+	}
+	return result
+}
+
 // DecoderConfig returns configuration needed for generation.
-func (m *moondream2Model) DecoderConfig() *backends.DecoderConfig {
+func (m *decoderOnlyVLMModel) DecoderConfig() *backends.DecoderConfig {
 	return m.config.DecoderConfig
 }
 
 // ImageConfig returns configuration for image preprocessing.
-func (m *moondream2Model) ImageConfig() *backends.ImageConfig {
+func (m *decoderOnlyVLMModel) ImageConfig() *backends.ImageConfig {
 	return m.config.ImageConfig
 }
 
 // Close releases resources associated with the model.
-func (m *moondream2Model) Close() error {
+func (m *decoderOnlyVLMModel) Close() error {
 	var errs []error
 
 	if m.visionEncoderSession != nil {
@@ -449,11 +767,11 @@ func (m *moondream2Model) Close() error {
 		m.visionEncoderSession = nil
 	}
 
-	if m.projectionSession != nil {
-		if err := m.projectionSession.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("closing projection: %w", err))
+	if m.embedTokensSession != nil {
+		if err := m.embedTokensSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing embed_tokens: %w", err))
 		}
-		m.projectionSession = nil
+		m.embedTokensSession = nil
 	}
 
 	if m.decoderSession != nil {
@@ -463,6 +781,20 @@ func (m *moondream2Model) Close() error {
 		m.decoderSession = nil
 	}
 
+	if m.decoderFirstStepSession != nil {
+		if err := m.decoderFirstStepSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing first-step decoder: %w", err))
+		}
+		m.decoderFirstStepSession = nil
+	}
+
+	if m.decoderWithPastSession != nil {
+		if err := m.decoderWithPastSession.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("closing with-past decoder: %w", err))
+		}
+		m.decoderWithPastSession = nil
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing model: %v", errs)
 	}
@@ -470,99 +802,11 @@ func (m *moondream2Model) Close() error {
 }
 
 // Name returns the model name for logging and debugging.
-func (m *moondream2Model) Name() string {
+func (m *decoderOnlyVLMModel) Name() string {
 	return m.config.ModelPath
 }
 
 // Backend returns the backend type this model uses.
-func (m *moondream2Model) Backend() backends.BackendType {
+func (m *decoderOnlyVLMModel) Backend() backends.BackendType {
 	return m.backendType
-}
-
-// =============================================================================
-// Moondream2 Pipeline
-// =============================================================================
-
-// Moondream2Pipeline extends Vision2SeqPipeline with Moondream-specific behavior.
-// Moondream is optimized for image understanding tasks with natural language prompts.
-type Moondream2Pipeline struct {
-	*Vision2SeqPipeline
-
-	// Version detected from model path
-	version string
-}
-
-// NewMoondream2Pipeline creates a new Moondream2Pipeline.
-func NewMoondream2Pipeline(
-	model backends.Model,
-	tokenizer tokenizers.Tokenizer,
-	config *Vision2SeqConfig,
-) *Moondream2Pipeline {
-	// Create base Vision2Seq pipeline
-	base := NewVision2SeqPipeline(model, tokenizer, config)
-
-	// Detect version from model path
-	version := "2"
-	if m, ok := model.(*moondream2Model); ok {
-		pathLower := strings.ToLower(filepath.Base(m.config.ModelPath))
-		if strings.Contains(pathLower, "moondream3") || strings.Contains(pathLower, "moondream-3") {
-			version = "3"
-		}
-	}
-
-	return &Moondream2Pipeline{
-		Vision2SeqPipeline: base,
-		version:            version,
-	}
-}
-
-// Version returns the detected Moondream version (e.g., "2", "3").
-func (p *Moondream2Pipeline) Version() string {
-	return p.version
-}
-
-// Architecture returns the model architecture identifier.
-func (p *Moondream2Pipeline) Architecture() string {
-	return "moondream"
-}
-
-// =============================================================================
-// Moondream2 Loader
-// =============================================================================
-
-// LoadMoondream2Pipeline loads a complete Moondream2 pipeline from a model directory.
-func LoadMoondream2Pipeline(
-	modelPath string,
-	sessionManager *backends.SessionManager,
-	modelBackends []string,
-	opts ...Vision2SeqPipelineOption,
-) (*Moondream2Pipeline, backends.BackendType, error) {
-	// Get session factory from manager
-	factory, backendType, err := sessionManager.GetSessionFactoryForModel(modelBackends)
-	if err != nil {
-		return nil, "", fmt.Errorf("getting session factory: %w", err)
-	}
-
-	// Load the tokenizer
-	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
-	if err != nil {
-		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
-	}
-
-	// Load the Moondream2 model
-	model, err := LoadMoondream2Model(modelPath, factory)
-	if err != nil {
-		return nil, "", fmt.Errorf("loading Moondream2 model: %w", err)
-	}
-
-	// Apply options
-	config := &Vision2SeqConfig{}
-	for _, opt := range opts {
-		opt(config)
-	}
-
-	// Create the pipeline
-	pipeline := NewMoondream2Pipeline(model, tokenizer, config)
-
-	return pipeline, backendType, nil
 }
