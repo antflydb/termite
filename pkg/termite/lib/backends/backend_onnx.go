@@ -34,10 +34,12 @@ func init() {
 // onnxBackend implements Backend using ONNX Runtime (Linux/Windows).
 // This is the fastest backend for CPU and CUDA inference.
 //
-// Runtime Requirements:
-//   - Set LD_LIBRARY_PATH before running:
-//     export LD_LIBRARY_PATH=/path/to/onnxruntime/lib
-//   - For CUDA: export LD_LIBRARY_PATH=/path/to/onnxruntime/lib:/usr/local/cuda/lib64
+// Library Discovery (checked in order):
+//  1. ONNXRUNTIME_ROOT environment variable
+//  2. lib/ directory relative to the running binary (omni install layout)
+//  3. LD_LIBRARY_PATH (Linux) or DYLD_LIBRARY_PATH (macOS)
+//
+// For CUDA: ensure CUDA libraries are also discoverable.
 //
 // Build Requirements:
 //   - CGO must be enabled (CGO_ENABLED=1)
@@ -106,8 +108,11 @@ func (b *onnxBackend) initONNX() error {
 	return b.initErr
 }
 
-// getOnnxLibraryPath returns the directory containing libonnxruntime from environment.
-// Checks ONNXRUNTIME_ROOT first, then LD_LIBRARY_PATH (or DYLD_LIBRARY_PATH on macOS).
+// getOnnxLibraryPath returns the directory containing libonnxruntime.
+// Discovery order:
+//  1. ONNXRUNTIME_ROOT environment variable (set by Makefile)
+//  2. lib/ directory next to the running binary (omni install layout)
+//  3. LD_LIBRARY_PATH or DYLD_LIBRARY_PATH
 func getOnnxLibraryPath() string {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	libName := getOnnxLibraryName()
@@ -126,6 +131,11 @@ func getOnnxLibraryPath() string {
 		}
 	}
 
+	// Check lib/ relative to the binary (omni install layout)
+	if dir := findLibRelativeToBinary(libName); dir != "" {
+		return dir
+	}
+
 	// Check library path environment variable (platform-specific)
 	ldPath := os.Getenv("LD_LIBRARY_PATH")
 	if runtime.GOOS == "darwin" {
@@ -142,6 +152,45 @@ func getOnnxLibraryPath() string {
 	}
 
 	return ""
+}
+
+// findLibRelativeToBinary checks for a library in lib/ directories relative
+// to the running binary. This supports the omni install layout where bundled
+// libraries are placed next to the binary or under a well-known lib path.
+func findLibRelativeToBinary(libName string) string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return ""
+	}
+	binDir := filepath.Dir(exe)
+
+	// Check <binary_dir>/lib/ (e.g. /opt/antfly/lib/)
+	if dir := filepath.Join(binDir, "lib"); dirContains(dir, libName) {
+		return dir
+	}
+
+	// Check <binary_dir>/../lib/antfly/ (e.g. /usr/local/lib/antfly/)
+	if dir := filepath.Join(binDir, "..", "lib", "antfly"); dirContains(dir, libName) {
+		return dir
+	}
+
+	// Check <binary_dir>/../lib/termite/ (e.g. /usr/local/lib/termite/)
+	// This supports standalone termite omni installs.
+	if dir := filepath.Join(binDir, "..", "lib", "termite"); dirContains(dir, libName) {
+		return dir
+	}
+
+	return ""
+}
+
+// dirContains returns true if dir contains a file named name.
+func dirContains(dir, name string) bool {
+	_, err := os.Stat(filepath.Join(dir, name))
+	return err == nil
 }
 
 // getOnnxLibraryName returns the platform-specific library name.

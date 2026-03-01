@@ -208,6 +208,20 @@ func NewEmbedderRegistry(
 		return nil, err
 	}
 
+	// Register any built-in embedders that were registered via init()
+	for _, factory := range getBuiltinEmbedderFactories() {
+		name, embedder, err := factory()
+		if err != nil {
+			logger.Warn("Failed to initialize built-in embedder", zap.Error(err))
+			continue
+		}
+		registry.pinnedMu.Lock()
+		registry.pinned[name] = embedder
+		registry.pinnedMu.Unlock()
+		logger.Info("Registered built-in embedder as pinned model",
+			zap.String("model", name))
+	}
+
 	return registry, nil
 }
 
@@ -236,6 +250,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 		poolSize = min(runtime.NumCPU(), 4)
 	}
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -264,6 +279,11 @@ func (r *EmbedderRegistry) discoverModels() error {
 
 		// Multimodal models: register standard + quantized variants
 		if len(caps) > 0 {
+			// Skip if already discovered
+			if _, exists := r.discovered[registryFullName]; exists {
+				continue
+			}
+
 			hasStandard := (mc.hasImage || mc.hasAudio)
 			hasQuantized := (mc.hasImageQuantized || mc.hasAudioQuantized)
 
@@ -288,15 +308,17 @@ func (r *EmbedderRegistry) discoverModels() error {
 
 			if hasQuantized {
 				quantizedName := registryFullName + "-i8-qt"
-				r.discovered[quantizedName] = &ModelInfo{
-					Name:             quantizedName,
-					Path:             modelPath,
-					PoolSize:         1, // Multimodal models use single instance
-					ModelType:        "multimodal",
-					Quantized:        true,
-					Capabilities:     caps,
-					Variants:         []string{"quantized"},
-					RequiredBackends: requiredBackends,
+				if _, exists := r.discovered[quantizedName]; !exists {
+					r.discovered[quantizedName] = &ModelInfo{
+						Name:             quantizedName,
+						Path:             modelPath,
+						PoolSize:         1, // Multimodal models use single instance
+						ModelType:        "multimodal",
+						Quantized:        true,
+						Capabilities:     caps,
+						Variants:         []string{"quantized"},
+						RequiredBackends: requiredBackends,
+					}
 				}
 			}
 			continue
@@ -307,7 +329,8 @@ func (r *EmbedderRegistry) discoverModels() error {
 			continue
 		}
 
-		// Collect variant IDs for logging
+		// Register each variant (skip already-discovered entries)
+		anyNew := false
 		variantIDs := make([]string, 0, len(variants))
 		for v := range variants {
 			if v == "" {
@@ -317,16 +340,14 @@ func (r *EmbedderRegistry) discoverModels() error {
 			}
 		}
 
-		r.logger.Info("Discovered embedder model (not loaded)",
-			zap.String("name", registryFullName),
-			zap.String("path", modelPath),
-			zap.Strings("variants", variantIDs))
-
-		// Register each variant
 		for variantID, onnxFilename := range variants {
 			registryName := registryFullName
 			if variantID != "" {
 				registryName = registryFullName + "-" + variantID
+			}
+
+			if _, exists := r.discovered[registryName]; exists {
+				continue
 			}
 
 			r.discovered[registryName] = &ModelInfo{
@@ -338,11 +359,21 @@ func (r *EmbedderRegistry) discoverModels() error {
 				Variants:         variantIDs,
 				RequiredBackends: requiredBackends,
 			}
+			anyNew = true
+		}
+
+		if anyNew {
+			r.logger.Info("Discovered embedder model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath),
+				zap.Strings("variants", variantIDs))
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Embedder model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -377,7 +408,16 @@ func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 	r.mu.RUnlock()
 
 	if !known {
-		return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, known = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !known {
+			return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		}
 	}
 
 	// Load the model (with synchronization to prevent double-loading)
@@ -476,8 +516,11 @@ func (r *EmbedderRegistry) Touch(modelName string) {
 	}
 }
 
-// List returns all available (discovered) model names
+// List returns all available (discovered) model names.
+// Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) List() []string {
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -659,7 +702,16 @@ func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregis
 	r.mu.RUnlock()
 
 	if !known {
-		return false
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, known = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !known {
+			return false
+		}
 	}
 
 	return slices.Contains(info.Capabilities, string(capability))

@@ -31,11 +31,12 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// Ensure PooledGLiNER implements Model, Recognizer, and Classifier interfaces.
+// Ensure PooledGLiNER implements Model, Recognizer, Classifier, and Extractor interfaces.
 var (
 	_ Model      = (*PooledGLiNER)(nil)
 	_ Recognizer = (*PooledGLiNER)(nil)
 	_ Classifier = (*PooledGLiNER)(nil)
+	_ Extractor  = (*PooledGLiNER)(nil)
 )
 
 // =============================================================================
@@ -653,6 +654,65 @@ func countClassifications(results [][]Classification) int {
 		count += len(classifications)
 	}
 	return count
+}
+
+// =============================================================================
+// JSON Extraction Methods (GLiNER2 only)
+// =============================================================================
+
+// SupportsExtraction returns true if the model supports structured schema-based extraction.
+func (p *PooledGLiNER) SupportsExtraction() bool {
+	// Check config capabilities first
+	for _, cap := range p.config.Capabilities {
+		if cap == "extraction" {
+			return true
+		}
+	}
+	// Fall back to model type check: any GLiNER2 model can do extraction
+	return p.config.ModelType == GLiNERModelGLiNER2
+}
+
+// Extract extracts structured data from texts based on the given schemas.
+// Returns extraction results for each input text.
+func (p *PooledGLiNER) Extract(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error) {
+	if len(texts) == 0 {
+		return []ExtractionResult{}, nil
+	}
+
+	if !p.SupportsExtraction() {
+		return nil, ErrNotSupported
+	}
+
+	p.logger.Debug("Starting GLiNER2 extraction",
+		zap.Int("num_texts", len(texts)),
+		zap.Int("num_schemas", len(schemas)))
+
+	// Process each text, acquiring a pipeline slot per-text so concurrent
+	// requests can interleave rather than one batch hogging a slot.
+	results := make([]ExtractionResult, len(texts))
+	for i, text := range texts {
+		if err := p.sem.Acquire(ctx, 1); err != nil {
+			return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+		}
+		idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
+		pipeline := p.pipelineList[idx]
+
+		result, err := extractFromText(ctx, pipeline, text, schemas, config, p.logger)
+		p.sem.Release(1)
+		if err != nil {
+			p.logger.Error("GLiNER2 extraction failed",
+				zap.Int("pipelineIndex", idx),
+				zap.Int("textIndex", i),
+				zap.Error(err))
+			return nil, fmt.Errorf("extracting from text %d: %w", i, err)
+		}
+		results[i] = result
+	}
+
+	p.logger.Debug("GLiNER2 extraction completed",
+		zap.Int("num_texts", len(texts)))
+
+	return results, nil
 }
 
 // =============================================================================

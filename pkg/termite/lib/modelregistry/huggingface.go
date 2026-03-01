@@ -127,7 +127,7 @@ func (c *HuggingFaceClient) PullFromHuggingFace(
 
 	// Download each file
 	for _, fileName := range toDownload {
-		localPath, err := repo.DownloadFile(fileName)
+		localPath, err := repo.DownloadFileCtx(ctx, fileName)
 		if err != nil {
 			return fmt.Errorf("downloading %s: %w", fileName, err)
 		}
@@ -223,15 +223,107 @@ func (c *HuggingFaceClient) generateAndSaveManifest(
 	return manifest.SaveTo(manifestPath)
 }
 
-// selectGeneratorFiles selects files needed for onnxruntime-genai models.
-// This includes genai_config.json, all ONNX files, and tokenizer files.
-// If variant is specified, only files from that subdirectory are selected.
-// If variant is empty, it auto-selects the smallest cpu variant.
+// knownONNXVariantSuffixes maps filename suffixes (before .onnx) to variant names.
+// A file like "decoder_model_fp16.onnx" has suffix "_fp16".
+// Longer suffixes are checked first to avoid false matches (e.g., "_q4f16" before "_q4").
+var knownONNXVariantSuffixes = []struct {
+	suffix  string
+	variant string
+}{
+	{"_q4f16", "q4f16"},
+	{"_quantized", "quantized"},
+	{"_fp16", "fp16"},
+	{"_int8", "int8"},
+	{"_uint8", "uint8"},
+	{"_bnb4", "bnb4"},
+	{"_q4", "q4"},
+}
+
+// onnxVariantSuffix returns the variant suffix of an ONNX filename, or "" if it is
+// a base (non-variant) file. For example:
+//   - "decoder_model_fp16.onnx" → "_fp16"
+//   - "decoder_model.onnx"      → ""
+//   - "encoder_model_fp16.onnx_data" → "_fp16"
+func onnxVariantSuffix(filename string) string {
+	base := filepath.Base(filename)
+	stem := base
+	switch {
+	case strings.HasSuffix(stem, ".onnx.data"):
+		stem = strings.TrimSuffix(stem, ".onnx.data")
+	case strings.HasSuffix(stem, ".onnx_data"):
+		stem = strings.TrimSuffix(stem, ".onnx_data")
+	case strings.HasSuffix(stem, ".onnx"):
+		stem = strings.TrimSuffix(stem, ".onnx")
+	default:
+		return ""
+	}
+
+	for _, v := range knownONNXVariantSuffixes {
+		if strings.HasSuffix(stem, v.suffix) {
+			return v.suffix
+		}
+	}
+	return ""
+}
+
+// matchesVariantSuffix checks if an ONNX file matches the requested variant.
+// For variant="" (default/base), only files without a known variant suffix match.
+// For variant="fp16", only files with the "_fp16" suffix match.
+// Non-ONNX files always match (they are supporting files like tokenizer.json).
+func matchesVariantSuffix(filename string, variant string) bool {
+	base := filepath.Base(filename)
+	isONNX := strings.HasSuffix(base, ".onnx") ||
+		strings.HasSuffix(base, ".onnx_data") ||
+		strings.HasSuffix(base, ".onnx.data")
+	if !isONNX {
+		return true
+	}
+
+	fileSuffix := onnxVariantSuffix(filename)
+
+	if variant == "" {
+		// Default: only base files (no variant suffix)
+		return fileSuffix == ""
+	}
+
+	// Find the suffix for the requested variant
+	for _, v := range knownONNXVariantSuffixes {
+		if v.variant == variant {
+			return fileSuffix == v.suffix
+		}
+	}
+
+	// Unknown variant, try direct suffix match
+	return fileSuffix == "_"+variant
+}
+
+// hasFilesInSubdir checks if any files exist under the given subdirectory prefix.
+func hasFilesInSubdir(files []string, subdir string) bool {
+	prefix := subdir + "/"
+	for _, f := range files {
+		if strings.HasPrefix(f, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// selectGeneratorFiles selects files needed for onnxruntime-genai and encoder-decoder models.
+// This includes genai_config.json, ONNX files, and tokenizer files.
+//
+// For repos with subdirectory-based variants (e.g., cpu-int4/model.onnx), only files
+// from the selected subdirectory are included.
+//
+// For repos with flat file layouts (e.g., decoder_model.onnx, decoder_model_fp16.onnx),
+// filename-based variant filtering is applied to avoid downloading all variants.
 func selectGeneratorFiles(files []string, variant string) []string {
-	// If no variant specified, auto-select the smallest cpu variant
+	// If no variant specified, auto-select the smallest cpu variant (subdirectory-based)
 	if variant == "" {
 		variant = findSmallestGeneratorVariant(files)
 	}
+
+	// Determine if we're using subdirectory-based variants
+	useSubdirFilter := variant != "" && hasFilesInSubdir(files, variant)
 
 	var result []string
 
@@ -260,8 +352,8 @@ func selectGeneratorFiles(files []string, variant string) []string {
 	}
 
 	for _, f := range files {
-		// Filter by variant subdirectory if specified
-		if variant != "" && !strings.HasPrefix(f, variant+"/") && f != variant {
+		// Filter by variant subdirectory if using subdirectory-based variants
+		if useSubdirFilter && !strings.HasPrefix(f, variant+"/") && f != variant {
 			continue
 		}
 
@@ -276,6 +368,10 @@ func selectGeneratorFiles(files []string, variant string) []string {
 		// Check suffix matches
 		for _, suffix := range includeSuffixes {
 			if strings.HasSuffix(base, suffix) {
+				// For flat repos, apply filename-based variant filtering on ONNX files
+				if !useSubdirFilter && !matchesVariantSuffix(f, variant) {
+					break
+				}
 				result = append(result, f)
 				break
 			}
@@ -596,10 +692,63 @@ func (c *HuggingFaceClient) DetectGeneratorVariants(ctx context.Context, repoID 
 	return variants, nil
 }
 
-// DetectModelType attempts to detect the model type from repo contents.
-// It checks for genai_config.json (generator), encoder/decoder (rewriter),
-// visual/text models (CLIP multimodal embedder), audio/text models (CLAP multimodal embedder),
-// or regular model.onnx.
+// pipelineTagToModelType maps HuggingFace pipeline_tag values to termite ModelType.
+// See https://huggingface.co/docs/hub/models-widgets#enabling-a-widget for the full list.
+var pipelineTagToModelType = map[string]ModelType{
+	// Embedder models
+	"feature-extraction":    ModelTypeEmbedder,
+	"sentence-similarity":   ModelTypeEmbedder,
+	"zero-shot-image-classification": ModelTypeEmbedder,
+
+	// Reranker models
+	"text-ranking": ModelTypeReranker,
+
+	// Generator models
+	"text-generation": ModelTypeGenerator,
+
+	// Rewriter / seq2seq models
+	"text2text-generation": ModelTypeRewriter,
+	"summarization":        ModelTypeRewriter,
+	"translation":          ModelTypeRewriter,
+
+	// Reader / OCR / vision-language models
+	"image-text-to-text":       ModelTypeReader,
+	"image-to-text":            ModelTypeReader,
+	"document-question-answering": ModelTypeReader,
+
+	// Transcriber models
+	"automatic-speech-recognition": ModelTypeTranscriber,
+
+	// Classifier models
+	"text-classification":  ModelTypeClassifier,
+	"token-classification": ModelTypeClassifier,
+	"zero-shot-classification": ModelTypeClassifier,
+
+	// Recognizer models
+	"object-detection":    ModelTypeRecognizer,
+	"image-classification": ModelTypeRecognizer,
+	"image-segmentation":  ModelTypeRecognizer,
+}
+
+// GetRepoInfo fetches the HuggingFace model info including pipeline_tag and tags.
+func (c *HuggingFaceClient) GetRepoInfo(ctx context.Context, repoID string) (*hub.RepoInfo, error) {
+	repo := hub.New(repoID)
+	if c.token != "" {
+		repo = repo.WithAuth(c.token)
+	}
+	if err := repo.DownloadInfo(false); err != nil {
+		return nil, fmt.Errorf("fetching model info: %w", err)
+	}
+	info := repo.Info()
+	if info == nil {
+		return nil, fmt.Errorf("no model info available for %s", repoID)
+	}
+	return info, nil
+}
+
+// DetectModelType attempts to detect the model type from repo contents and metadata.
+// It first checks file structure (genai_config.json, encoder/decoder, visual/text models),
+// then falls back to the HuggingFace pipeline_tag for disambiguation.
 func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) (ModelType, error) {
 	files, err := c.ListRepoFiles(ctx, repoID)
 	if err != nil {
@@ -654,12 +803,31 @@ func (c *HuggingFaceClient) DetectModelType(ctx context.Context, repoID string) 
 		return ModelTypeEmbedder, nil
 	}
 
-	// Check for standard model
-	if hasModelOnnx {
-		// Could be embedder, chunker, or reranker - can't tell without more context
-		// Default to embedder as it's the most common
-		return "", fmt.Errorf("cannot auto-detect model type (found model.onnx but could be embedder, chunker, or reranker)")
+	// Fall back to HuggingFace pipeline_tag for disambiguation
+	if modelType, err := c.detectFromPipelineTag(ctx, repoID); err == nil {
+		return modelType, nil
 	}
 
-	return "", fmt.Errorf("no recognizable model files found in repository")
+	if hasModelOnnx {
+		return "", fmt.Errorf("cannot auto-detect model type for %s (use --type flag to specify: embedder, chunker, reranker, reader, etc.)", repoID)
+	}
+
+	return "", fmt.Errorf("no recognizable model files found in repository %s", repoID)
+}
+
+// detectFromPipelineTag fetches the HuggingFace model info and maps the pipeline_tag to a ModelType.
+func (c *HuggingFaceClient) detectFromPipelineTag(ctx context.Context, repoID string) (ModelType, error) {
+	info, err := c.GetRepoInfo(ctx, repoID)
+	if err != nil {
+		return "", err
+	}
+
+	if info.PipelineTag != "" {
+		if modelType, ok := pipelineTagToModelType[info.PipelineTag]; ok {
+			return modelType, nil
+		}
+		return "", fmt.Errorf("unknown pipeline_tag %q", info.PipelineTag)
+	}
+
+	return "", fmt.Errorf("no pipeline_tag in model info")
 }

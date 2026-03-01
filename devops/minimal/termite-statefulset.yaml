@@ -6,7 +6,7 @@
 # Prerequisites:
 #   - GKE cluster with TPU node pool (see cluster-setup.sh)
 #   - TPU v5e recommended for inference workloads
-#   - Docker images built from termite/Dockerfile.termite and termite/Dockerfile.termite-xla
+#   - Docker images built from termite/Dockerfile.termite and termite/Dockerfile.termite-omni
 #
 # Usage:
 #   kubectl apply -f termite-statefulset.yaml

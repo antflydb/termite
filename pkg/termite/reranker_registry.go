@@ -55,6 +55,10 @@ type RerankerRegistry struct {
 	refCounts   map[string]int
 	refCountsMu sync.Mutex
 
+	// Pinned models (never evicted, stored separately from cache)
+	pinned   map[string]reranking.Model
+	pinnedMu sync.RWMutex
+
 	// Configuration
 	keepAlive       time.Duration
 	maxLoadedModels uint64
@@ -95,6 +99,7 @@ func NewRerankerRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*RerankerModelInfo),
 		refCounts:       make(map[string]int),
+		pinned:          make(map[string]reranking.Model),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -166,6 +171,20 @@ func NewRerankerRegistry(
 		return nil, err
 	}
 
+	// Register any built-in rerankers that were registered via init()
+	for _, factory := range getBuiltinRerankerFactories() {
+		name, model, err := factory()
+		if err != nil {
+			logger.Warn("Failed to initialize built-in reranker", zap.Error(err))
+			continue
+		}
+		registry.pinnedMu.Lock()
+		registry.pinned[name] = model
+		registry.pinnedMu.Unlock()
+		logger.Info("Registered built-in reranker as pinned model",
+			zap.String("model", name))
+	}
+
 	logger.Info("Lazy reranker registry initialized",
 		zap.Int("models_discovered", len(registry.discovered)),
 		zap.Duration("keep_alive", keepAlive),
@@ -197,6 +216,7 @@ func (r *RerankerRegistry) discoverModels() error {
 	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
+	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -207,26 +227,17 @@ func (r *RerankerRegistry) discoverModels() error {
 			continue
 		}
 
-		// Log discovered variants
-		variantIDs := make([]string, 0, len(variants))
-		for v := range variants {
-			if v == "" {
-				variantIDs = append(variantIDs, "default")
-			} else {
-				variantIDs = append(variantIDs, v)
-			}
-		}
-		r.logger.Info("Discovered reranker model (not loaded)",
-			zap.String("name", registryFullName),
-			zap.String("path", modelPath),
-			zap.Strings("variants", variantIDs))
-
-		// Store each variant for lazy loading
+		// Store each variant for lazy loading (skip already-discovered entries)
+		anyNew := false
 		for variantID, onnxFilename := range variants {
 			// Determine registry name
 			registryName := registryFullName
 			if variantID != "" {
 				registryName = registryFullName + "-" + variantID
+			}
+
+			if _, exists := r.discovered[registryName]; exists {
+				continue
 			}
 
 			r.discovered[registryName] = &RerankerModelInfo{
@@ -235,11 +246,30 @@ func (r *RerankerRegistry) discoverModels() error {
 				OnnxFilename: onnxFilename,
 				PoolSize:     poolSize,
 			}
+			anyNew = true
+		}
+
+		if anyNew {
+			// Log discovered variants
+			variantIDs := make([]string, 0, len(variants))
+			for v := range variants {
+				if v == "" {
+					variantIDs = append(variantIDs, "default")
+				} else {
+					variantIDs = append(variantIDs, v)
+				}
+			}
+			r.logger.Info("Discovered reranker model (not loaded)",
+				zap.String("name", registryFullName),
+				zap.String("path", modelPath),
+				zap.Strings("variants", variantIDs))
 		}
 	}
+	discoveredCount := len(r.discovered)
+	r.mu.Unlock()
 
 	r.logger.Info("Reranker model discovery complete",
-		zap.Int("models_discovered", len(r.discovered)),
+		zap.Int("models_discovered", discoveredCount),
 		zap.Duration("keep_alive", r.keepAlive),
 		zap.Uint64("max_loaded_models", r.maxLoadedModels))
 
@@ -251,7 +281,16 @@ func (r *RerankerRegistry) discoverModels() error {
 // the model from being evicted during use. Get() does not track usage and
 // the returned reranker may be closed if the cache evicts it.
 func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
-	// Check cache first
+	// Check pinned first (never evicted)
+	r.pinnedMu.RLock()
+	if model, ok := r.pinned[modelName]; ok {
+		r.pinnedMu.RUnlock()
+		r.logger.Debug("Reranker pinned hit", zap.String("model", modelName))
+		return model, nil
+	}
+	r.pinnedMu.RUnlock()
+
+	// Check cache
 	if item := r.cache.Get(modelName); item != nil {
 		r.logger.Debug("Reranker cache hit", zap.String("model", modelName))
 		return item.Value(), nil
@@ -263,7 +302,16 @@ func (r *RerankerRegistry) Get(modelName string) (reranking.Model, error) {
 	r.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("reranker model not found: %s", modelName)
+		// Model not yet discovered — rescan disk for newly pulled models
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Reranker re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("reranker model not found: %s", modelName)
+		}
 	}
 
 	// Load the model
@@ -335,8 +383,12 @@ func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, 
 	return model, nil
 }
 
-// List returns all available reranker model names (discovered, not necessarily loaded)
+// List returns all available reranker model names (discovered, not necessarily loaded).
+// Re-scans the models directory to pick up newly pulled models.
 func (r *RerankerRegistry) List() []string {
+	// Refresh discovery to pick up newly pulled models
+	r.discoverModels()
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -347,15 +399,29 @@ func (r *RerankerRegistry) List() []string {
 	return names
 }
 
-// ListLoaded returns only the currently loaded reranker model names
+// ListLoaded returns only the currently loaded reranker model names (from cache and pinned)
 func (r *RerankerRegistry) ListLoaded() []string {
 	keys := r.cache.Keys()
-	return keys
+
+	r.pinnedMu.RLock()
+	pinnedNames := make([]string, 0, len(r.pinned))
+	for name := range r.pinned {
+		pinnedNames = append(pinnedNames, name)
+	}
+	r.pinnedMu.RUnlock()
+
+	names := make([]string, 0, len(keys)+len(pinnedNames))
+	names = append(names, pinnedNames...)
+	names = append(names, keys...)
+	return names
 }
 
-// IsLoaded returns whether a model is currently loaded in memory
+// IsLoaded returns whether a model is currently loaded in memory (in cache or pinned)
 func (r *RerankerRegistry) IsLoaded(modelName string) bool {
-	return r.cache.Has(modelName)
+	r.pinnedMu.RLock()
+	isPinned := r.pinned[modelName] != nil
+	r.pinnedMu.RUnlock()
+	return isPinned || r.cache.Has(modelName)
 }
 
 // Preload loads specified models at startup to avoid first-request latency
@@ -419,6 +485,20 @@ func (r *RerankerRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
+
+	// Close all pinned models
+	r.pinnedMu.Lock()
+	for name, model := range r.pinned {
+		r.logger.Debug("Closing pinned reranker model",
+			zap.String("model", name))
+		if err := model.Close(); err != nil {
+			r.logger.Warn("Error closing pinned reranker model",
+				zap.String("model", name),
+				zap.Error(err))
+		}
+	}
+	r.pinned = make(map[string]reranking.Model)
+	r.pinnedMu.Unlock()
 
 	return nil
 }

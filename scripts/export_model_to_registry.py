@@ -2450,6 +2450,9 @@ def test_model(
     if recognizer_arch == "gliner":
         return test_gliner_model(model_dir)
 
+    if recognizer_arch == "gliner2":
+        return test_gliner2_model(model_dir)
+
     if recognizer_arch == "rebel":
         return test_rebel_model(model_dir)
 
@@ -2625,6 +2628,64 @@ def test_gliner_model(model_dir: Path) -> bool:
 
         logger.info(f"Test input: \"{test_text}\"")
         logger.info(f"Input shape: {inputs['input_ids'].shape}")
+        logger.info("Test passed!")
+        return True
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        return False
+
+
+def test_gliner2_model(model_dir: Path) -> bool:
+    """Test a GLiNER2 model."""
+    import onnxruntime as ort
+    import numpy as np
+    from transformers import AutoTokenizer
+
+    try:
+        onnx_path = model_dir / "model.onnx"
+        if not onnx_path.exists():
+            logger.error(f"model.onnx not found in {model_dir}")
+            return False
+
+        logger.info("Loading GLiNER2 ONNX model...")
+        session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+
+        logger.info("Loading tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+
+        # Test with sample input - GLiNER2 requires span_idx in addition to token inputs
+        test_text = "Tim Cook is the CEO of Apple Inc. in Cupertino."
+        inputs = tokenizer(
+            test_text,
+            return_tensors="np",
+            padding="max_length",
+            max_length=128,
+            truncation=True,
+        )
+
+        # Create dummy span indices (batch=1, num_spans=10, 2)
+        # These represent (start, end) word indices for candidate spans
+        span_idx = np.array([[[i, i + 1] for i in range(10)]], dtype=np.int64)
+
+        # Create words_mask (same shape as input_ids, marking word boundaries)
+        words_mask = np.ones_like(inputs["input_ids"], dtype=np.int64)
+
+        logger.info(f"Test input: \"{test_text}\"")
+        logger.info(f"Input shape: {inputs['input_ids'].shape}")
+
+        # Run inference
+        outputs = session.run(
+            None,
+            {
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"],
+                "words_mask": words_mask,
+                "span_idx": span_idx,
+            },
+        )
+
+        logger.info(f"Output shape: {outputs[0].shape}")
         logger.info("Test passed!")
         return True
 

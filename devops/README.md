@@ -62,11 +62,8 @@ cd /path/to/antfly/termite
 # Base Termite (for model pulling, CPU-only)
 docker build -f Dockerfile.termite -t ghcr.io/antflydb/termite:latest .
 
-# Termite with XLA/TPU (for GKE TPU nodes)
-docker build -f Dockerfile.termite-xla -t ghcr.io/antflydb/termite:xla-tpu .
-
-# Termite with ONNX Runtime (for GPU nodes, 16x faster than CPU)
-docker build -f Dockerfile.termite-onnx -t ghcr.io/antflydb/termite:onnx .
+# Termite Omni (ONNX + XLA, runtime backend selection)
+docker build -f Dockerfile.termite-omni -t ghcr.io/antflydb/termite:omni .
 
 # Routing Proxy
 docker build -f Dockerfile.proxy -t ghcr.io/antflydb/termite-proxy:latest .
@@ -87,8 +84,8 @@ docker buildx create --name multiarch --driver docker-container --use
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f Dockerfile.termite -t ghcr.io/antflydb/termite:latest --push .
 
-docker buildx build --platform linux/amd64 \
-  -f Dockerfile.termite-xla -t ghcr.io/antflydb/termite:xla-tpu --push .
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f Dockerfile.termite-omni -t ghcr.io/antflydb/termite:omni --push .
 ```
 
 ## Image Reference
@@ -96,8 +93,7 @@ docker buildx build --platform linux/amd64 \
 | Image | Dockerfile | Purpose | Architecture |
 |-------|------------|---------|--------------|
 | `termite:latest` | `Dockerfile.termite` | Base image, model pulling | amd64, arm64 |
-| `termite:xla-tpu` | `Dockerfile.termite-xla` | TPU inference | amd64 |
-| `termite:onnx` | `Dockerfile.termite-onnx` | GPU/ONNX inference | amd64 |
+| `termite:omni` | `Dockerfile.termite-omni` | ONNX + XLA inference | amd64, arm64 |
 | `termite-proxy:latest` | `Dockerfile.proxy` | Routing proxy | amd64, arm64 |
 | `termite-operator:latest` | `Dockerfile.operator` | Kubernetes operator | amd64, arm64 |
 

@@ -173,7 +173,7 @@ curl http://localhost:4200/metrics | grep queue_depth
 | Image | Dockerfile | Purpose |
 |-------|------------|---------|
 | `ghcr.io/antflydb/termite:latest` | `Dockerfile.termite` | Base image |
-| `ghcr.io/antflydb/termite:xla-tpu` | `Dockerfile.termite-xla` | TPU inference |
+| `ghcr.io/antflydb/termite:omni` | `Dockerfile.termite-omni` | ONNX + XLA inference |
 | `ghcr.io/antflydb/termite-proxy:latest` | `Dockerfile.proxy` | Routing proxy |
 | `ghcr.io/antflydb/termite-operator:latest` | `Dockerfile.operator` | Kubernetes operator |
 

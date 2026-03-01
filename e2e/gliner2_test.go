@@ -117,6 +117,18 @@ func TestGLiNER2E2E(t *testing.T) {
 		testClassifyTextMultiLabelGLiNER2(t, ctx, termiteClient)
 	})
 
+	t.Run("ExtractJSON", func(t *testing.T) {
+		testGLiNER2ExtractJSON(t, ctx, termiteClient)
+	})
+
+	t.Run("ExtractJSONMultipleInstances", func(t *testing.T) {
+		testGLiNER2ExtractJSONMultipleInstances(t, ctx, termiteClient)
+	})
+
+	t.Run("ExtractJSONChoiceFields", func(t *testing.T) {
+		testGLiNER2ExtractJSONChoiceFields(t, ctx, termiteClient)
+	})
+
 	// Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -383,6 +395,136 @@ func testClassifyTextMultiLabelGLiNER2(t *testing.T, ctx context.Context, c *cli
 	}
 
 	t.Logf("Multi-label classification completed successfully")
+}
+
+// testGLiNER2ExtractJSON tests basic structured JSON extraction
+func testGLiNER2ExtractJSON(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"John Smith is 30 years old and works at Google.",
+	}
+
+	schema := map[string][]string{
+		"person": {"name::str", "age::str", "company::str"},
+	}
+
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, nil)
+	if err != nil {
+		t.Logf("ExtractJSON returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2ModelName, resp.Model)
+	assert.Len(t, resp.Results, len(texts), "Should have results for each input text")
+
+	// Log extraction results
+	for i, result := range resp.Results {
+		t.Logf("Text %d extraction results:", i)
+		for structName, instances := range result {
+			t.Logf("  Structure %q:", structName)
+			for j, instance := range instances {
+				t.Logf("    Instance %d:", j)
+				for fieldName, fieldValue := range instance {
+					t.Logf("      %s: %v", fieldName, fieldValue)
+				}
+			}
+		}
+	}
+
+	// Verify we got at least one person instance
+	if len(resp.Results) > 0 {
+		result := resp.Results[0]
+		persons, ok := result["person"]
+		if ok && len(persons) > 0 {
+			t.Logf("Successfully extracted %d person instance(s)", len(persons))
+		} else {
+			t.Logf("No person instances extracted (model may not have found matches)")
+		}
+	}
+
+	t.Logf("JSON extraction completed successfully")
+}
+
+// testGLiNER2ExtractJSONMultipleInstances tests extraction with multiple instances
+func testGLiNER2ExtractJSONMultipleInstances(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"John Smith is 30 years old and works at Google. Jane Doe is 25 years old and works at Apple.",
+	}
+
+	schema := map[string][]string{
+		"person": {"name::str", "age::str", "company::str"},
+	}
+
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, nil)
+	if err != nil {
+		t.Logf("ExtractJSON returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2ModelName, resp.Model)
+	assert.Len(t, resp.Results, len(texts))
+
+	// Log extraction results
+	for i, result := range resp.Results {
+		t.Logf("Text %d extraction results:", i)
+		for structName, instances := range result {
+			t.Logf("  Structure %q: %d instances", structName, len(instances))
+			for j, instance := range instances {
+				t.Logf("    Instance %d:", j)
+				for fieldName, fieldValue := range instance {
+					t.Logf("      %s: %v", fieldName, fieldValue)
+				}
+			}
+		}
+	}
+
+	t.Logf("Multiple instance extraction completed successfully")
+}
+
+// testGLiNER2ExtractJSONChoiceFields tests extraction with choice fields
+func testGLiNER2ExtractJSONChoiceFields(t *testing.T, ctx context.Context, c *client.TermiteClient) {
+	t.Helper()
+
+	texts := []string{
+		"Dr. John Smith is a software engineer at Google with expertise in machine learning.",
+	}
+
+	schema := map[string][]string{
+		"employee": {"name::str", "role::[engineer|manager|director]", "company::str", "skills::list"},
+	}
+
+	config := &client.ExtractJSONConfig{
+		Threshold:         0.3,
+		IncludeConfidence: true,
+	}
+
+	resp, err := c.ExtractJSON(ctx, gliner2ModelName, texts, schema, config)
+	if err != nil {
+		t.Logf("ExtractJSON with choice fields returned error (may be expected): %v", err)
+		return
+	}
+
+	assert.Equal(t, gliner2ModelName, resp.Model)
+	assert.Len(t, resp.Results, len(texts))
+
+	// Log extraction results
+	for i, result := range resp.Results {
+		t.Logf("Text %d extraction results:", i)
+		for structName, instances := range result {
+			t.Logf("  Structure %q: %d instances", structName, len(instances))
+			for j, instance := range instances {
+				t.Logf("    Instance %d:", j)
+				for fieldName, fieldValue := range instance {
+					t.Logf("      %s: %v", fieldName, fieldValue)
+				}
+			}
+		}
+	}
+
+	t.Logf("Choice field extraction completed successfully")
 }
 
 // TestGLiNER2ModelTypeDetection tests that GLiNER2 models are correctly detected

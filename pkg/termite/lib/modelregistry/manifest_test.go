@@ -55,6 +55,57 @@ func TestParseModelType(t *testing.T) {
 	}
 }
 
+func TestPipelineTagToModelType(t *testing.T) {
+	tests := []struct {
+		tag      string
+		expected ModelType
+		wantOK   bool
+	}{
+		// Embedder
+		{"feature-extraction", ModelTypeEmbedder, true},
+		{"sentence-similarity", ModelTypeEmbedder, true},
+		{"zero-shot-image-classification", ModelTypeEmbedder, true},
+		// Reranker
+		{"text-ranking", ModelTypeReranker, true},
+		// Generator
+		{"text-generation", ModelTypeGenerator, true},
+		// Rewriter
+		{"text2text-generation", ModelTypeRewriter, true},
+		{"summarization", ModelTypeRewriter, true},
+		{"translation", ModelTypeRewriter, true},
+		// Reader
+		{"image-text-to-text", ModelTypeReader, true},
+		{"image-to-text", ModelTypeReader, true},
+		{"document-question-answering", ModelTypeReader, true},
+		// Transcriber
+		{"automatic-speech-recognition", ModelTypeTranscriber, true},
+		// Classifier
+		{"text-classification", ModelTypeClassifier, true},
+		{"token-classification", ModelTypeClassifier, true},
+		{"zero-shot-classification", ModelTypeClassifier, true},
+		// Recognizer
+		{"object-detection", ModelTypeRecognizer, true},
+		{"image-classification", ModelTypeRecognizer, true},
+		{"image-segmentation", ModelTypeRecognizer, true},
+		// Unknown
+		{"unknown-task", "", false},
+		{"", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.tag, func(t *testing.T) {
+			got, ok := pipelineTagToModelType[tt.tag]
+			if ok != tt.wantOK {
+				t.Errorf("pipelineTagToModelType[%q] ok = %v, want %v", tt.tag, ok, tt.wantOK)
+				return
+			}
+			if got != tt.expected {
+				t.Errorf("pipelineTagToModelType[%q] = %v, want %v", tt.tag, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestModelTypeDirName(t *testing.T) {
 	tests := []struct {
 		modelType ModelType
