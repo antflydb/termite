@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	mediachunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"go.uber.org/zap"
 )
 
@@ -39,6 +41,8 @@ type TermiteNode struct {
 	transcriberRegistry   TranscriberRegistryInterface
 	chunker               ChunkerInterface
 	mediaChunker          *mediachunking.FixedMediaChunker
+	vadChunker            *mediachunking.VADAudioChunker
+	vadChunkerName        string
 	rerankerRegistry      RerankerRegistryInterface
 	generatorRegistry     GeneratorRegistryInterface
 	nerRegistry           NERRegistryInterface
@@ -193,6 +197,16 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
 	defer func() { _ = cachedChunker.Close() }()
+
+	// Discover and load VAD audio chunker if available
+	var vadChunker *mediachunking.VADAudioChunker
+	var vadChunkerName string
+	if chunkerModelsDir != "" && sessionManager != nil {
+		vadChunker, vadChunkerName = discoverVADChunker(chunkerModelsDir, sessionManager, zl)
+		if vadChunker != nil {
+			defer func() { _ = vadChunker.Close() }()
+		}
+	}
 
 	// Initialize embedder registry (lazy loading with TTL-based unloading)
 	embedderRegistry, err := NewEmbedderRegistry(
@@ -504,6 +518,8 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		embedderRegistry:      embedderRegistry,
 		chunker:               cachedChunker,
 		mediaChunker:          mediachunking.NewFixedMediaChunker(),
+		vadChunker:            vadChunker,
+		vadChunkerName:        vadChunkerName,
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,
@@ -601,4 +617,59 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	zl.Info("HTTP server stopped")
+}
+
+// discoverVADChunker scans the chunker models directory for a model with the
+// "audio" capability (e.g., Silero VAD) and returns a ready-to-use VADAudioChunker.
+// Returns (nil, "") if no suitable model is found.
+func discoverVADChunker(chunkerModelsDir string, sessionManager *backends.SessionManager, logger *zap.Logger) (*mediachunking.VADAudioChunker, string) {
+	models, err := discoverModelsInDir(chunkerModelsDir, modelregistry.ModelTypeChunker, logger)
+	if err != nil {
+		logger.Warn("Failed to discover chunker models for VAD", zap.Error(err))
+		return nil, ""
+	}
+
+	for _, model := range models {
+		if model.Manifest == nil || !model.Manifest.HasCapability(modelregistry.CapabilityAudio) {
+			continue
+		}
+
+		// Found an audio-capable chunker model — create a session
+		modelFile := filepath.Join(model.Path, "model.onnx")
+		if _, err := os.Stat(modelFile); os.IsNotExist(err) {
+			logger.Warn("VAD model directory missing model.onnx",
+				zap.String("model", model.FullName()),
+				zap.String("path", model.Path))
+			continue
+		}
+
+		var modelBackends []string
+		if model.Manifest != nil {
+			modelBackends = model.Manifest.Backends
+		}
+
+		factory, _, err := sessionManager.GetSessionFactoryForModel(modelBackends)
+		if err != nil {
+			logger.Warn("No session factory available for VAD model",
+				zap.String("model", model.FullName()),
+				zap.Error(err))
+			continue
+		}
+
+		session, err := factory.CreateSession(modelFile)
+		if err != nil {
+			logger.Warn("Failed to create session for VAD model",
+				zap.String("model", model.FullName()),
+				zap.Error(err))
+			continue
+		}
+
+		chunker := mediachunking.NewVADAudioChunker(session, mediachunking.DefaultVADConfig())
+		logger.Info("Loaded VAD audio chunker",
+			zap.String("model", model.FullName()),
+			zap.String("path", model.Path))
+		return chunker, model.FullName()
+	}
+
+	return nil, ""
 }

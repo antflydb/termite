@@ -84,10 +84,10 @@ github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0/go.mod h1:E/TSTwGw
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
 github.com/gomlx/exceptions v0.0.3 h1:HKnTgEjj4jlmhr8zVFkTP9qmV1ey7ypYYosQ8GzXWuM=
 github.com/gomlx/exceptions v0.0.3/go.mod h1:uHL0TQwJ0xaV2/snJOJV6hSE4yRmhhfymuYgNredGxU=
-github.com/gomlx/go-coreml v0.0.0-20260222014031-24c2326d28c6 h1:n5N/uLcVQkn2zMukf/TBBkYGNXImkEJB/41ci8bqC3s=
-github.com/gomlx/go-coreml v0.0.0-20260222014031-24c2326d28c6/go.mod h1:iZG+LBo+jgnd44RMPJCVDfYmDaIH5P7mg5p2rVNoaIM=
-github.com/gomlx/go-coreml/gomlx v0.0.0-20260222014031-24c2326d28c6 h1:SfAQwn0pS5ccudcg4KBOI9SbHGDrAUp+wQpizhIGZbU=
-github.com/gomlx/go-coreml/gomlx v0.0.0-20260222014031-24c2326d28c6/go.mod h1:+Wr9Foxmh+gBinCXBaLArU4x5jRoM51Te1P/k8PhbG4=
+github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e h1:dTMN+0LOhEKnNcxdMxCRxQP0HYn8qLco8PGlMUGqxxM=
+github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e/go.mod h1:iZG+LBo+jgnd44RMPJCVDfYmDaIH5P7mg5p2rVNoaIM=
+github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e h1:+EMDGV26SOEbpzypqAICKVdX8h74bN+mNC8oQMAuWnk=
+github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e/go.mod h1:R++KkcIEfEioRbwtJKJtdVZmjKvx35tmHWLgp868U9Q=
 github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7 h1:lZSXhh4/1962rXKwEvnhkRPYXPFe0zWn57JzZaQgEOQ=
 github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7/go.mod h1:gwv58mA3ih33rgue4CuZ/ERxj5P2ZKKSFaD0s6Rt090=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

@@ -22,6 +22,7 @@ import (
 	"math"
 	"math/cmplx"
 
+	"github.com/antflydb/termite/pkg/termite/lib/audio"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )
 
@@ -234,29 +235,8 @@ func (ap *AudioProcessor) bytesToSamples(data []byte, bitsPerSample, numChannels
 }
 
 // resample performs simple linear interpolation resampling.
-// For production use, consider using a proper resampling library.
 func (ap *AudioProcessor) resample(samples []float32, fromRate, toRate int) []float32 {
-	if fromRate == toRate {
-		return samples
-	}
-
-	ratio := float64(fromRate) / float64(toRate)
-	newLen := int(float64(len(samples)) / ratio)
-	resampled := make([]float32, newLen)
-
-	for i := range newLen {
-		srcIdx := float64(i) * ratio
-		srcIdxInt := int(srcIdx)
-		frac := float32(srcIdx - float64(srcIdxInt))
-
-		if srcIdxInt+1 < len(samples) {
-			resampled[i] = samples[srcIdxInt]*(1-frac) + samples[srcIdxInt+1]*frac
-		} else if srcIdxInt < len(samples) {
-			resampled[i] = samples[srcIdxInt]
-		}
-	}
-
-	return resampled
+	return audio.Resample(samples, fromRate, toRate)
 }
 
 // computeMelSpectrogram converts audio samples to a mel spectrogram.

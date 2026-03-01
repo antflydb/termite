@@ -310,9 +310,11 @@ func (c *TermiteClient) Chunk(ctx context.Context, text string, config ChunkConf
 
 // MediaChunkConfig contains configuration for media chunking.
 type MediaChunkConfig struct {
+	Model             string
 	MaxChunks         int
 	WindowDurationMs  int
 	OverlapDurationMs int
+	Threshold         float32
 }
 
 // ChunkMedia splits binary media content (audio/wav, image/gif) into chunks.
@@ -335,9 +337,11 @@ func (c *TermiteClient) ChunkMedia(ctx context.Context, data []byte, mimeType st
 	req := oapi.ChunkRequest{
 		Input: input,
 		Config: oapi.ChunkConfig{
+			Model:             config.Model,
 			MaxChunks:         config.MaxChunks,
 			WindowDurationMs:  config.WindowDurationMs,
 			OverlapDurationMs: config.OverlapDurationMs,
+			Threshold:         config.Threshold,
 		},
 	}
 
