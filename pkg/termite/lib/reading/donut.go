@@ -107,6 +107,19 @@ func DonutRVLCDIPPrompt() string {
 	return "<s_rvlcdip>"
 }
 
+// DonutOutputParser parses Donut model output into a structured Result.
+// Handles both structured field extraction (CORD) and DocVQA answers.
+func DonutOutputParser(text, prompt string) Result {
+	result := Result{
+		Text:   DonutCleanOutput(text),
+		Fields: DonutParseFields(text),
+	}
+	if strings.Contains(prompt, "<s_docvqa>") {
+		result.Text = DonutParseDocVQAAnswer(text)
+	}
+	return result
+}
+
 // DonutParseDocVQAAnswer extracts the answer from a DocVQA response.
 // Input: "The total is $123.45</s_answer></s_docvqa>"
 // Returns: "The total is $123.45"

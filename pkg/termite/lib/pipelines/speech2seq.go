@@ -760,6 +760,8 @@ func (m *speech2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCac
 }
 
 // extractKVCache extracts the KV-cache from decoder outputs.
+// Encoder cross-attention KV tensors are carried forward from the previous
+// step when the current decoder doesn't re-emit them.
 func (m *speech2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
 	// Collect all present_key_values or present.* outputs
 	tensors := make(map[string]backends.NamedTensor)
@@ -779,6 +781,17 @@ func (m *speech2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSi
 					Shape: shapeCopy,
 					Data:  dataCopy,
 				}
+			}
+		}
+	}
+
+	// Carry forward encoder cross-attention KV tensors from the previous
+	// step when the with-past decoder doesn't re-emit them.
+	if pastKV != nil && pastKV.Tensors != nil {
+		for name, tensor := range pastKV.Tensors {
+			if _, exists := tensors[name]; !exists && isEncoderKVTensor(name) {
+				tensors[name] = tensor
+				hasKVOutputs = true
 			}
 		}
 	}

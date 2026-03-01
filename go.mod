@@ -9,8 +9,8 @@ replace (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.11-0.20260225214413-9e86a3496147
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260226010651-7c5015049ef6
+	github.com/ajroetker/go-highway v0.0.11
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260301002911-7bda42e89b87
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -23,7 +23,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
 	github.com/knights-analytics/ortgenai v0.1.0
-	github.com/oapi-codegen/runtime v1.1.2
+	github.com/oapi-codegen/runtime v1.2.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -73,7 +73,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.67.5 // indirect
-	github.com/prometheus/procfs v0.20.0 // indirect
+	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.2 // indirect

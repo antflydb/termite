@@ -28,13 +28,13 @@ import (
 )
 
 // =============================================================================
-// Florence-2 Model Detection
+// Encoder-Decoder VLM Model Detection
 // =============================================================================
 
-// IsFlorence2Model checks if a model path contains a Florence-2 model.
-// Florence-2 is detected by the presence of vision_encoder.onnx, embed_tokens.onnx,
-// and encoder_model.onnx (which expects inputs_embeds instead of pixel_values).
-func IsFlorence2Model(path string) bool {
+// IsEncoderDecoderVLMModel checks if a model path contains an encoder-decoder VLM
+// (e.g., Florence-2). Detected by the presence of vision_encoder.onnx,
+// embed_tokens.onnx, and encoder_model.onnx.
+func IsEncoderDecoderVLMModel(path string) bool {
 	visionEncoder := FindONNXFile(path, []string{"vision_encoder.onnx"})
 	embedTokens := FindONNXFile(path, []string{"embed_tokens.onnx"})
 	encoderModel := FindONNXFile(path, []string{"encoder_model.onnx"})
@@ -43,19 +43,19 @@ func IsFlorence2Model(path string) bool {
 }
 
 // =============================================================================
-// Florence-2 Model
+// Encoder-Decoder VLM Model
 // =============================================================================
 
-// florence2Model implements backends.Model for Florence-2 architecture.
-// Florence-2 uses a multi-stage encoder:
+// encoderDecoderVLMModel implements backends.Model for encoder-decoder VLM
+// architectures (e.g., Florence-2). Uses a multi-stage encoder:
 //   - vision_encoder: pixel_values → image_features
 //   - embed_tokens: input_ids → text_embeddings
 //   - encoder_model: inputs_embeds (concat of image_features + text_embeddings) → hidden_states
 //   - decoder: hidden_states + decoder_input_ids → logits
-type florence2Model struct {
+type encoderDecoderVLMModel struct {
 	config *Vision2SeqModelConfig
 
-	// Florence-2 specific sessions
+	// Model sessions
 	visionEncoderSession backends.Session // vision_encoder.onnx
 	embedTokensSession   backends.Session // embed_tokens.onnx
 	encoderModelSession  backends.Session // encoder_model.onnx
@@ -84,8 +84,8 @@ type florence2Model struct {
 	backendType backends.BackendType
 }
 
-// NewFlorence2Model creates a Model for Florence-2 architecture.
-func NewFlorence2Model(
+// NewEncoderDecoderVLMModel creates a Model for encoder-decoder VLM architecture.
+func NewEncoderDecoderVLMModel(
 	config *Vision2SeqModelConfig,
 	visionEncoder backends.Session,
 	embedTokens backends.Session,
@@ -93,7 +93,7 @@ func NewFlorence2Model(
 	decoder backends.Session,
 	backendType backends.BackendType,
 ) backends.Model {
-	return &florence2Model{
+	return &encoderDecoderVLMModel{
 		config:               config,
 		visionEncoderSession: visionEncoder,
 		embedTokensSession:   embedTokens,
@@ -103,8 +103,8 @@ func NewFlorence2Model(
 	}
 }
 
-// LoadFlorence2Model loads a Florence-2 model using the given session factory.
-func LoadFlorence2Model(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (backends.Model, error) {
+// LoadEncoderDecoderVLMModel loads an encoder-decoder VLM model using the given session factory.
+func LoadEncoderDecoderVLMModel(modelPath string, factory backends.SessionFactory, opts ...backends.SessionOption) (backends.Model, error) {
 	// Load configuration
 	config, err := LoadVision2SeqModelConfig(modelPath)
 	if err != nil {
@@ -158,7 +158,7 @@ func LoadFlorence2Model(modelPath string, factory backends.SessionFactory, opts 
 		return nil, fmt.Errorf("creating encoder_model session: %w", err)
 	}
 
-	model := &florence2Model{
+	model := &encoderDecoderVLMModel{
 		config:               config,
 		visionEncoderSession: visionEncoderSession,
 		embedTokensSession:   embedTokensSession,
@@ -225,10 +225,10 @@ func LoadFlorence2Model(modelPath string, factory backends.SessionFactory, opts 
 	return model, nil
 }
 
-// Forward runs the Florence-2 model.
+// Forward runs the encoder-decoder VLM model.
 // - If ImagePixels is set (and EncoderOutput is nil): runs multi-stage encoder
 // - If EncoderOutput is set: runs decoder step
-func (m *florence2Model) Forward(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+func (m *encoderDecoderVLMModel) Forward(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	if inputs == nil {
 		return nil, fmt.Errorf("nil inputs")
 	}
@@ -243,15 +243,15 @@ func (m *florence2Model) Forward(ctx context.Context, inputs *backends.ModelInpu
 		return nil, fmt.Errorf("no image pixels or encoder output provided")
 	}
 
-	return m.runFlorence2Encoder(ctx, inputs)
+	return m.runEncoder(ctx, inputs)
 }
 
-// runFlorence2Encoder runs the multi-stage Florence-2 encoder.
+// runEncoder runs the multi-stage encoder.
 // 1. vision_encoder(pixel_values) → image_features
 // 2. embed_tokens(input_ids) → prompt_embeds
 // 3. concat([image_features, prompt_embeds]) → inputs_embeds
 // 4. encoder_model(inputs_embeds) → hidden_states
-func (m *florence2Model) runFlorence2Encoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+func (m *encoderDecoderVLMModel) runEncoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	batchSize := inputs.ImageBatch
 
 	// Step 1: Run vision encoder on pixel_values
@@ -393,7 +393,7 @@ func (m *florence2Model) runFlorence2Encoder(ctx context.Context, inputs *backen
 }
 
 // runDecoder performs one step of autoregressive decoding.
-func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
+func (m *encoderDecoderVLMModel) runDecoder(ctx context.Context, inputs *backends.ModelInputs) (*backends.ModelOutput, error) {
 	inputIDs := inputs.InputIDs
 	encoderOutput := inputs.EncoderOutput
 	pastKeyValues := inputs.PastKeyValues
@@ -503,7 +503,7 @@ func (m *florence2Model) runDecoder(ctx context.Context, inputs *backends.ModelI
 // buildDecoderInputsForSession creates the input tensors for the specified decoder session.
 // This allows using different sessions for the first step (no KV cache) and subsequent steps.
 // Florence-2 decoder expects inputs_embeds instead of input_ids.
-func (m *florence2Model) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+func (m *encoderDecoderVLMModel) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
 	// Get decoder input names from the specified session
@@ -626,7 +626,7 @@ func (m *florence2Model) buildDecoderInputsForSession(session backends.Session, 
 // createPastKVTensor creates a tensor for past key/value cache.
 // Maps input names like "past_key_values.0.decoder.key" to stored output names
 // like "present.0.decoder.key" to retrieve cached values from previous steps.
-func (m *florence2Model) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
+func (m *encoderDecoderVLMModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
 	// Check if we have cached tensor data from a previous step
 	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
 		outputName := mapPastToPresent(name)
@@ -671,7 +671,10 @@ func (m *florence2Model) createPastKVTensor(name string, pastKV *backends.KVCach
 
 // extractKVCache extracts the KV cache from decoder outputs.
 // Collects all present.* output tensors and stores them for the next step.
-func (m *florence2Model) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
+// Encoder cross-attention KV tensors (present.N.encoder.*) are carried
+// forward from the previous step when the current decoder doesn't re-emit
+// them (the with-past decoder only outputs decoder self-attention KV).
+func (m *encoderDecoderVLMModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
 	tensors := make(map[string]backends.NamedTensor)
 	hasKVOutputs := false
 
@@ -689,6 +692,18 @@ func (m *florence2Model) extractKVCache(outputs []backends.NamedTensor, batchSiz
 					Shape: shapeCopy,
 					Data:  dataCopy,
 				}
+			}
+		}
+	}
+
+	// Carry forward encoder cross-attention KV tensors from the previous
+	// step. The with-past decoder only outputs present.N.decoder.* tensors;
+	// without this the encoder KV computed on the first step would be lost.
+	if pastKV != nil && pastKV.Tensors != nil {
+		for name, tensor := range pastKV.Tensors {
+			if _, exists := tensors[name]; !exists && isEncoderKVTensor(name) {
+				tensors[name] = tensor
+				hasKVOutputs = true
 			}
 		}
 	}
@@ -835,17 +850,17 @@ func isDecoderKVPresent(name string) bool {
 }
 
 // DecoderConfig returns configuration needed for generation.
-func (m *florence2Model) DecoderConfig() *backends.DecoderConfig {
+func (m *encoderDecoderVLMModel) DecoderConfig() *backends.DecoderConfig {
 	return m.config.DecoderConfig
 }
 
 // ImageConfig returns configuration for image preprocessing.
-func (m *florence2Model) ImageConfig() *backends.ImageConfig {
+func (m *encoderDecoderVLMModel) ImageConfig() *backends.ImageConfig {
 	return m.config.ImageConfig
 }
 
 // Close releases resources associated with the model.
-func (m *florence2Model) Close() error {
+func (m *encoderDecoderVLMModel) Close() error {
 	var errs []error
 
 	if m.visionEncoderSession != nil {
@@ -897,12 +912,12 @@ func (m *florence2Model) Close() error {
 }
 
 // Name returns the model name for logging and debugging.
-func (m *florence2Model) Name() string {
+func (m *encoderDecoderVLMModel) Name() string {
 	return m.config.ModelPath
 }
 
 // Backend returns the backend type this model uses.
-func (m *florence2Model) Backend() backends.BackendType {
+func (m *encoderDecoderVLMModel) Backend() backends.BackendType {
 	return m.backendType
 }
 
@@ -919,8 +934,8 @@ type Florence2Pipeline struct {
 	// ImageProcessor handles image preprocessing.
 	ImageProcessor *ImageProcessor
 
-	// florence2Model provides access to the tokenizer for prompt encoding
-	model *florence2Model
+	// model provides access to the underlying encoder-decoder VLM model
+	model *encoderDecoderVLMModel
 }
 
 // NewFlorence2Pipeline creates a new Florence-2 pipeline.
@@ -939,8 +954,8 @@ func NewFlorence2Pipeline(
 	// Create base encoder-decoder pipeline
 	base := NewEncoderDecoderPipeline(model, tokenizer, config.GenerationConfig)
 
-	// Get the florence2Model if available
-	f2m, _ := model.(*florence2Model)
+	// Get the encoderDecoderVLMModel if available
+	f2m, _ := model.(*encoderDecoderVLMModel)
 
 	return &Florence2Pipeline{
 		EncoderDecoderPipeline: base,
@@ -1025,10 +1040,10 @@ func LoadFlorence2Pipeline(
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 
-	// Load the Florence-2 model
-	model, err := LoadFlorence2Model(modelPath, factory)
+	// Load the encoder-decoder VLM model
+	model, err := LoadEncoderDecoderVLMModel(modelPath, factory)
 	if err != nil {
-		return nil, "", fmt.Errorf("loading Florence-2 model: %w", err)
+		return nil, "", fmt.Errorf("loading encoder-decoder VLM model: %w", err)
 	}
 
 	// Apply options

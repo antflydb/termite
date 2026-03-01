@@ -62,6 +62,9 @@ const (
 
 	donutCordRepo = "Xenova/donut-base-finetuned-cord-v2"
 	donutCordName = "Xenova/donut-base-finetuned-cord-v2"
+
+	moondream2ModelRepo = "Xenova/moondream2"
+	moondream2ModelName = "Xenova/moondream2"
 )
 
 
@@ -231,7 +234,7 @@ func TestTrOCRReader(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Run OCR
 	img := createTestImageWithText(t, "Hello", 384, 384)
@@ -257,7 +260,7 @@ func TestTrOCRExportedModel(t *testing.T) {
 	require.NoError(t, err, "Failed to create Reader")
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	img := createTestImageWithText(t, "Hello", 384, 384)
 	ctx := context.Background()
@@ -369,7 +372,7 @@ func TestDonutExportedModel(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Create test image and run with CORD prompt
 	testImg := image.NewRGBA(image.Rect(0, 0, 800, 1000))
@@ -455,7 +458,7 @@ func TestDocVQAWithPDFPage(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Ask questions
 	questions := []string{
@@ -510,7 +513,7 @@ func TestFlorence2WithPDFPage(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	ctx := context.Background()
 
@@ -607,7 +610,7 @@ func TestPix2StructDocVQA(t *testing.T) {
 	}
 	defer reader.Close()
 
-	t.Logf("Reader model type: %s", reader.ModelType())
+	t.Logf("Reader model path: %s", modelPath)
 
 	// Load test image
 	imgFile, err := os.Open(pageImagePath)
@@ -822,4 +825,83 @@ func TestApplyCharMapping(t *testing.T) {
 	t.Logf("Fixed:     %s", result)
 
 	assert.Equal(t, expectedPartial, result)
+}
+
+// =============================================================================
+// Moondream2 Tests
+// =============================================================================
+
+// TestMoondream2ModelDownload tests downloading and loading the Moondream2 model.
+func TestMoondream2ModelDownload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Moondream2 download test in short mode")
+	}
+
+	modelPath := ensureHuggingFaceModel(t, moondream2ModelName, moondream2ModelRepo, ModelTypeReader)
+
+	// Verify structural detection files
+	requiredFiles := []string{"config.json", "tokenizer.json"}
+	for _, file := range requiredFiles {
+		filePath := filepath.Join(modelPath, file)
+		_, err := os.Stat(filePath)
+		assert.NoError(t, err, "Missing required file: %s", file)
+	}
+
+	// Check for decoder-only VLM ONNX files (structural detection)
+	onnxDir := filepath.Join(modelPath, "onnx")
+	if _, err := os.Stat(onnxDir); err == nil {
+		visionEncoder := filepath.Join(onnxDir, "vision_encoder.onnx")
+		embedTokens := filepath.Join(onnxDir, "embed_tokens.onnx")
+		decoder := filepath.Join(onnxDir, "decoder_model_merged.onnx")
+
+		if fileExists(visionEncoder) && fileExists(embedTokens) && fileExists(decoder) {
+			t.Logf("Found decoder-only VLM ONNX models in %s", onnxDir)
+		}
+	}
+
+	// Verify structural detection identifies this as a decoder-only VLM
+	assert.True(t, pipelines.IsDecoderOnlyVLMModel(modelPath),
+		"Moondream2 should be detected as a decoder-only VLM model")
+
+	// Load and verify config
+	config, err := pipelines.LoadVision2SeqModelConfig(modelPath)
+	require.NoError(t, err, "Failed to load Vision2Seq model config")
+
+	t.Logf("Moondream2 config: hidden_size=%d, num_heads=%d, head_dim=%d",
+		config.HiddenSize, config.NumHeads, config.HeadDim)
+
+	assert.NotEmpty(t, config.EmbedTokensPath, "EmbedTokensPath should be set")
+}
+
+// TestMoondream2Reader tests Moondream2 inference using the Reader interface.
+func TestMoondream2Reader(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Moondream2 reader test in short mode")
+	}
+
+	modelPath := ensureHuggingFaceModel(t, moondream2ModelName, moondream2ModelRepo, ModelTypeReader)
+
+	reader, err := createReader(t, modelPath)
+	if err != nil {
+		t.Skipf("Could not create Moondream2 reader: %v", err)
+	}
+	defer reader.Close()
+
+	t.Logf("Reader model path: %s", modelPath)
+
+	// Create a simple test image
+	img := createTestImageWithText(t, "Hello", 378, 378)
+	ctx := context.Background()
+
+	// Moondream uses a natural language prompt
+	prompt := reading.MoondreamDescriptionPrompt("")
+	t.Logf("Running Moondream2 with prompt: %q", prompt)
+
+	results, err := reader.Read(ctx, []image.Image{img}, prompt, 128)
+	if err != nil {
+		t.Fatalf("Moondream2 inference failed: %v", err)
+	}
+
+	t.Logf("Moondream2 output: %q", results[0].Text)
+	assert.NotEmpty(t, results[0].Text, "Moondream2 should produce non-empty output")
 }

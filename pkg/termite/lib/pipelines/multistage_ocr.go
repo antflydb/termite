@@ -607,8 +607,8 @@ func (p *MultiStageOCRPipeline) determineOrder(ctx context.Context, regions []Te
 	return sorted, nil
 }
 
-// Close releases all pipeline resources following the Florence-2 multi-session
-// teardown pattern (florence2.go:550-585).
+// Close releases all pipeline resources following the encoder-decoder VLM
+// multi-session teardown pattern (florence2.go).
 func (p *MultiStageOCRPipeline) Close() error {
 	var errs []error
 

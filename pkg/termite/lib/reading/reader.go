@@ -28,25 +28,14 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// ModelType represents the type of Vision2Seq model for output parsing
-type ModelType string
+// OutputParser transforms raw model text output into a structured Result.
+// Each model family provides its own parser (e.g., DonutOutputParser, FlorenceOutputParser).
+type OutputParser func(text, prompt string) Result
 
-const (
-	// ModelTypeTrOCR is a pure OCR model (microsoft/trocr-*)
-	ModelTypeTrOCR ModelType = "trocr"
-	// ModelTypeDonut is a document understanding model (naver-clova-ix/donut-*)
-	ModelTypeDonut ModelType = "donut"
-	// ModelTypeFlorence is a multi-task vision model (microsoft/Florence-2-*)
-	ModelTypeFlorence ModelType = "florence"
-	// ModelTypePix2Struct is a visual question answering model (google/pix2struct-*)
-	ModelTypePix2Struct ModelType = "pix2struct"
-	// ModelTypeSurya is a multi-stage OCR model (vikp/surya_*)
-	ModelTypeSurya ModelType = "surya"
-	// ModelTypePaddleOCR is a multi-stage OCR model (PaddleOCR PP-OCRv4)
-	ModelTypePaddleOCR ModelType = "paddleocr"
-	// ModelTypeGeneric is used when the model type is unknown
-	ModelTypeGeneric ModelType = "generic"
-)
+// DefaultOutputParser returns the trimmed text as-is with no structured extraction.
+func DefaultOutputParser(text, prompt string) Result {
+	return Result{Text: strings.TrimSpace(text)}
+}
 
 // RecognizedRegion represents a text region with recognized text and bounding box.
 // Populated by multi-stage OCR models (Surya, PaddleOCR).
@@ -80,7 +69,7 @@ type Result struct {
 }
 
 // Reader provides OCR and document understanding for images.
-// It wraps Vision2Seq models (TrOCR, Donut, Florence-2) to extract text from images.
+// It wraps Vision2Seq models (TrOCR, Donut, Florence-2, Moondream) to extract text from images.
 type Reader interface {
 	// Read extracts text from the given images.
 	// The optional prompt parameter allows specifying a task prompt for document understanding models:
@@ -88,10 +77,12 @@ type Reader interface {
 	//   - Donut CORD: "<s_cord-v2>" for receipt parsing
 	//   - Donut DocVQA: "<s_docvqa><s_question>...</s_question><s_answer>" for visual QA
 	//   - Florence-2: "<OCR>" for text extraction, "<CAPTION>" for captioning
+	//   - Moondream: natural language prompt (e.g., "Describe this image in detail")
 	//
 	// maxTokens limits the generated output length (0 uses model default).
 	//
-	// Returns one Result per input image.
+	// Returns one Result per input image. For Moondream, Result.Fields contains
+	// structured output (mood, tags, possible_source) extracted from the JSON response.
 	Read(ctx context.Context, images []image.Image, prompt string, maxTokens int) ([]Result, error)
 
 	// Close releases model resources.
@@ -109,7 +100,7 @@ type PooledReader struct {
 	nextPipeline atomic.Uint64
 	logger       *zap.Logger
 	poolSize     int
-	modelType    ModelType
+	outputParser OutputParser
 	modelPath    string
 }
 
@@ -152,11 +143,10 @@ func NewPooledReader(
 		poolSize = min(runtime.NumCPU(), 4)
 	}
 
-	// Detect model type from path
-	modelType := detectModelType(cfg.ModelPath)
-	logger.Info("Detected reader model type",
-		zap.String("path", cfg.ModelPath),
-		zap.String("type", string(modelType)))
+	// Detect output parser from path
+	outputParser := detectOutputParser(cfg.ModelPath)
+	logger.Info("Detected reader output parser",
+		zap.String("path", cfg.ModelPath))
 
 	// Build pipeline options
 	var opts []pipelines.Vision2SeqPipelineOption
@@ -196,42 +186,30 @@ func NewPooledReader(
 		sem:       semaphore.NewWeighted(int64(poolSize)),
 		logger:    logger,
 		poolSize:  poolSize,
-		modelType: modelType,
-		modelPath: cfg.ModelPath,
+		outputParser: outputParser,
+		modelPath:    cfg.ModelPath,
 	}
 
 	logger.Info("Created pooled reader",
 		zap.Int("poolSize", poolSize),
-		zap.String("backend", string(backendType)),
-		zap.String("modelType", string(modelType)))
+		zap.String("backend", string(backendType)))
 
 	return reader, backendType, nil
 }
 
-// detectModelType determines the model type from the model path.
-func detectModelType(modelPath string) ModelType {
+// detectOutputParser selects the appropriate output parser based on the model path.
+func detectOutputParser(modelPath string) OutputParser {
 	pathLower := strings.ToLower(modelPath)
-
-	if strings.Contains(pathLower, "trocr") {
-		return ModelTypeTrOCR
+	switch {
+	case strings.Contains(pathLower, "donut"):
+		return DonutOutputParser
+	case strings.Contains(pathLower, "florence"):
+		return FlorenceOutputParser
+	case strings.Contains(pathLower, "moondream"):
+		return MoondreamOutputParser
+	default:
+		return DefaultOutputParser
 	}
-	if strings.Contains(pathLower, "donut") {
-		return ModelTypeDonut
-	}
-	if strings.Contains(pathLower, "florence") {
-		return ModelTypeFlorence
-	}
-	if strings.Contains(pathLower, "pix2struct") {
-		return ModelTypePix2Struct
-	}
-	if strings.Contains(pathLower, "surya") {
-		return ModelTypeSurya
-	}
-	if strings.Contains(pathLower, "paddleocr") || strings.Contains(pathLower, "ppocr") {
-		return ModelTypePaddleOCR
-	}
-
-	return ModelTypeGeneric
 }
 
 // Read extracts text from the given images using the Vision2Seq model.
@@ -286,37 +264,9 @@ func (r *PooledReader) Read(ctx context.Context, images []image.Image, prompt st
 	return results, nil
 }
 
-// parseOutput parses the raw model output based on model type.
+// parseOutput parses the raw model output using the injected output parser.
 func (r *PooledReader) parseOutput(text string, prompt string) Result {
-	result := Result{
-		Text: strings.TrimSpace(text),
-	}
-
-	switch r.modelType {
-	case ModelTypeDonut:
-		// Clean outer task tokens and parse structured fields
-		result.Text = DonutCleanOutput(text)
-		result.Fields = DonutParseFields(text)
-
-		// Handle DocVQA specifically
-		if strings.Contains(prompt, "<s_docvqa>") {
-			result.Text = DonutParseDocVQAAnswer(text)
-		}
-
-	case ModelTypeFlorence:
-		// Florence outputs are typically cleaner
-		result.Text = FlorenceParseOCR(text)
-
-	case ModelTypePix2Struct:
-		// Pix2Struct outputs direct answers as plain text
-		result.Text = strings.TrimSpace(text)
-
-	case ModelTypeTrOCR, ModelTypeGeneric:
-		// TrOCR and generic models output plain text
-		result.Text = strings.TrimSpace(text)
-	}
-
-	return result
+	return r.outputParser(text, prompt)
 }
 
 // Close releases all pipeline resources.
@@ -341,11 +291,6 @@ func (r *PooledReader) Close() error {
 		return fmt.Errorf("errors closing reader: %v", errs)
 	}
 	return nil
-}
-
-// ModelType returns the detected model type.
-func (r *PooledReader) ModelType() ModelType {
-	return r.modelType
 }
 
 // truncateString truncates a string to maxLen, adding "..." if truncated.
