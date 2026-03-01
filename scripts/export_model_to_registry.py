@@ -3,10 +3,8 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "optimum[onnxruntime]",
-#     "transformers>=4.40,<4.50",
+#     "transformers",
 #     "torch",
-#     "torchvision",
-#     "accelerate>=0.26.0",
 #     "boto3",
 #     "pillow",
 #     "onnx",
@@ -134,7 +132,7 @@ def get_exporter_for_model(model_type, model_id, output_dir, variants, capabilit
     from exporters import get_exporter
     return get_exporter(model_type, model_id, output_dir, variants, capabilities, **kwargs)
 
-ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader", "vlm"]
+ModelType = Literal["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]
 
 # Recognizer capabilities - these describe what extraction tasks the model supports
 # Used in manifest to advertise model capabilities to Termite
@@ -196,11 +194,6 @@ MODEL_TYPE_CONFIG = {
         "ort_class": None,  # Uses ORTModelForVision2Seq from optimum
         "default_model": "microsoft/trocr-base-printed",
         "dir_name": "readers",
-    },
-    "vlm": {
-        "ort_class": None,  # Uses custom export for vision-language models
-        "default_model": "vikhyatk/moondream2",
-        "dir_name": "vlm",
     },
 }
 
@@ -1483,45 +1476,6 @@ def export_reader_model(
     return output_dir
 
 
-def export_vlm_model(
-    model_id: str,
-    output_dir: Path,
-    variants: list[str] | None = None,
-    trust_remote_code: bool = True,
-) -> Path:
-    """
-    Export a Vision-Language Model (VLM) to ONNX format.
-
-    Currently supports Moondream models (SigLIP encoder + Phi-2 decoder).
-
-    Creates:
-      - vision_encoder.onnx: SigLIP vision encoder
-      - projection.onnx: Vision-to-text projection layer
-      - decoder_model.onnx: Phi-2 decoder
-
-    Args:
-        model_id: HuggingFace model ID (e.g., vikhyatk/moondream2)
-        output_dir: Directory to save the model
-        variants: List of variant types (not used currently)
-        trust_remote_code: Whether to trust remote code (required for moondream)
-    """
-    from exporters.moondream import MoondreamExporter
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"Exporting VLM model: {model_id}")
-    logger.info(f"Output: {output_dir}")
-
-    exporter = MoondreamExporter(
-        model_id=model_id,
-        output_dir=output_dir,
-        variants=variants,
-        trust_remote_code=trust_remote_code,
-    )
-
-    return exporter.export()
-
-
 def export_seq2seq_model(
     model_id: str,
     output_dir: Path,
@@ -2493,9 +2447,6 @@ def test_model(
     if model_type == "reader":
         return test_reader_model(model_dir)
 
-    if model_type == "vlm":
-        return test_vlm_model(model_dir)
-
     if recognizer_arch == "gliner":
         return test_gliner_model(model_dir)
 
@@ -2643,49 +2594,6 @@ def test_reader_model(model_dir: Path) -> bool:
 
     except Exception as e:
         logger.error(f"Test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_vlm_model(model_dir: Path) -> bool:
-    """Test a VLM model (Moondream)."""
-    import onnxruntime as ort
-    import numpy as np
-
-    try:
-        # Check for vision encoder
-        encoder_path = model_dir / "vision_encoder.onnx"
-        if not encoder_path.exists():
-            logger.error(f"vision_encoder.onnx not found in {model_dir}")
-            return False
-
-        logger.info("Loading VLM vision encoder...")
-        session = ort.InferenceSession(str(encoder_path), providers=["CPUExecutionProvider"])
-
-        # Get input info
-        inputs = session.get_inputs()
-        logger.info(f"  Vision encoder inputs: {[i.name for i in inputs]}")
-
-        # Test with dummy input (378x378 for Moondream2)
-        logger.info("Running vision encoder test...")
-        dummy_input = np.random.randn(1, 3, 378, 378).astype(np.float32)
-        outputs = session.run(None, {"pixel_values": dummy_input})
-        logger.info(f"  Vision encoder output shape: {outputs[0].shape}")
-
-        # Check for projection
-        projection_path = model_dir / "projection.onnx"
-        if projection_path.exists():
-            logger.info("Testing projection layer...")
-            proj_session = ort.InferenceSession(str(projection_path), providers=["CPUExecutionProvider"])
-            proj_inputs = proj_session.get_inputs()
-            logger.info(f"  Projection inputs: {[i.name for i in proj_inputs]}")
-
-        logger.info("VLM test passed!")
-        return True
-
-    except Exception as e:
-        logger.error(f"VLM test failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -3308,8 +3216,6 @@ def cmd_export(args):
             export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
         elif args.model_type == "reader":
             export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
-        elif args.model_type == "vlm":
-            export_vlm_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
         elif recognizer_arch == "gliner2":
             export_gliner2_model(model_id, model_dir, args.variants)
         elif recognizer_arch == "gliner":
@@ -3547,7 +3453,7 @@ Environment Variables:
     )
 
     # Export subcommands (one for each model type)
-    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader", "vlm"]:
+    for model_type in ["embedder", "reranker", "chunker", "recognizer", "rewriter", "generator", "classifier", "reader"]:
         export_parser = subparsers.add_parser(
             model_type,
             help=f"Export a {model_type} model to ONNX",
