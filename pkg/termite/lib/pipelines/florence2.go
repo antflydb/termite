@@ -671,6 +671,9 @@ func (m *encoderDecoderVLMModel) createPastKVTensor(name string, pastKV *backend
 
 // extractKVCache extracts the KV cache from decoder outputs.
 // Collects all present.* output tensors and stores them for the next step.
+// Encoder cross-attention KV tensors (present.N.encoder.*) are carried
+// forward from the previous step when the current decoder doesn't re-emit
+// them (the with-past decoder only outputs decoder self-attention KV).
 func (m *encoderDecoderVLMModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
 	tensors := make(map[string]backends.NamedTensor)
 	hasKVOutputs := false
@@ -689,6 +692,18 @@ func (m *encoderDecoderVLMModel) extractKVCache(outputs []backends.NamedTensor, 
 					Shape: shapeCopy,
 					Data:  dataCopy,
 				}
+			}
+		}
+	}
+
+	// Carry forward encoder cross-attention KV tensors from the previous
+	// step. The with-past decoder only outputs present.N.decoder.* tensors;
+	// without this the encoder KV computed on the first step would be lost.
+	if pastKV != nil && pastKV.Tensors != nil {
+		for name, tensor := range pastKV.Tensors {
+			if _, exists := tensors[name]; !exists && isEncoderKVTensor(name) {
+				tensors[name] = tensor
+				hasKVOutputs = true
 			}
 		}
 	}
