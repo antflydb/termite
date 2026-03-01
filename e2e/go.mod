@@ -35,8 +35,8 @@ require (
 	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
-	github.com/gomlx/go-coreml v0.0.0-20260222014031-24c2326d28c6 // indirect
-	github.com/gomlx/go-coreml/gomlx v0.0.0-20260222014031-24c2326d28c6 // indirect
+	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
+	github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e // indirect
 	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef // indirect
 	github.com/gomlx/go-xla v0.1.5-0.20260219173412-338774b2e7a7 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect

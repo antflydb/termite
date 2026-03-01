@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -587,6 +588,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		MaxChunks:         req.Config.MaxChunks,
 		WindowDurationMs:  req.Config.WindowDurationMs,
 		OverlapDurationMs: req.Config.OverlapDurationMs,
+		Threshold:         req.Config.Threshold,
 	}
 
 	var chunks []chunking.Chunk
@@ -612,7 +614,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 			if part, err := req.Input.AsContentPart(); err == nil {
 				// MediaContentPart — inline binary
 				if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
-					chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), mediaPart.Data, mediaPart.MimeType, mediaOpts)
+					chunks, err = ln.chunkMedia(r.Context(), mediaPart.Data, mediaPart.MimeType, internalConfig.Model, mediaOpts)
 					if err != nil {
 						ln.logger.Error("media chunking failed", zap.Error(err))
 						http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
@@ -642,7 +644,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 							http.Error(w, fmt.Sprintf("downloading content: %v", err), http.StatusBadRequest)
 							return
 						}
-						chunks, err = ln.mediaChunker.ChunkMedia(r.Context(), data, mimeType, mediaOpts)
+						chunks, err = ln.chunkMedia(r.Context(), data, mimeType, internalConfig.Model, mediaOpts)
 						if err != nil {
 							ln.logger.Error("media chunking failed", zap.Error(err))
 							http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
@@ -691,6 +693,26 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+// chunkMedia routes media chunking to the VAD chunker (for audio, when requested)
+// or falls back to the fixed-duration media chunker.
+func (ln *TermiteNode) chunkMedia(ctx context.Context, data []byte, mimeType, model string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
+	mimeNorm := strings.ToLower(strings.TrimSpace(mimeType))
+	isAudio := strings.HasPrefix(mimeNorm, "audio/")
+
+	if isAudio && ln.vadChunker != nil && model == ln.vadChunkerName {
+		switch {
+		case mimeNorm == "audio/wav" || mimeNorm == "audio/x-wav" || mimeNorm == "audio/wave":
+			return ln.vadChunker.ChunkAudio(ctx, data, opts)
+		case mimeNorm == "audio/mpeg" || mimeNorm == "audio/mp3":
+			return ln.vadChunker.ChunkMP3(ctx, data, opts)
+		default:
+			return nil, fmt.Errorf("VAD chunker does not support MIME type %q", mimeType)
+		}
+	}
+
+	return ln.mediaChunker.ChunkMedia(ctx, data, mimeType, opts)
 }
 
 // handleApiRerank handles reranking requests

@@ -392,7 +392,7 @@ func (m *ModelManifest) Validate() error {
 		if len(m.Backends) > 0 && !m.SupportsBackend("onnx") {
 			return fmt.Errorf("image embedders only support ONNX backend")
 		}
-	} else if m.HasCapability(CapabilityAudio) {
+	} else if m.HasCapability(CapabilityAudio) && m.Type == ModelTypeEmbedder {
 		// Audio embedders (CLAP) require audio_model.onnx + text_model.onnx
 		if !hasAudioOnnx || !hasTextOnnx {
 			return fmt.Errorf("audio embedder must include audio_model.onnx and text_model.onnx")
