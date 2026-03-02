@@ -496,7 +496,10 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 
 	// Add template hash annotation to trigger rolling updates when pod spec changes
 	// This ensures pods are recreated when tolerations, resources, etc. change
-	templateHash := computePodTemplateHash(&sts.Spec.Template)
+	templateHash, err := computePodTemplateHash(&sts.Spec.Template)
+	if err != nil {
+		return fmt.Errorf("compute pod template hash: %w", err)
+	}
 	if sts.Spec.Template.Annotations == nil {
 		sts.Spec.Template.Annotations = make(map[string]string)
 	}
@@ -528,7 +531,7 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 
 // computePodTemplateHash computes a hash of the pod template spec.
 // This is used to trigger rolling updates when the template changes.
-func computePodTemplateHash(template *corev1.PodTemplateSpec) string {
+func computePodTemplateHash(template *corev1.PodTemplateSpec) (string, error) {
 	// Create a copy without the hash annotation itself to avoid circular dependency
 	templateCopy := template.DeepCopy()
 	delete(templateCopy.Annotations, "termite.antfly.io/template-hash")
@@ -536,12 +539,11 @@ func computePodTemplateHash(template *corev1.PodTemplateSpec) string {
 	// Marshal to JSON for consistent hashing
 	data, err := json.Marshal(templateCopy.Spec)
 	if err != nil {
-		// Fallback to empty hash on error (shouldn't happen)
-		return ""
+		return "", fmt.Errorf("marshal pod template spec: %w", err)
 	}
 
 	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:8]) // Use first 8 bytes (16 hex chars)
+	return hex.EncodeToString(hash[:8]), nil // Use first 8 bytes (16 hex chars)
 }
 
 func (r *TermitePoolReconciler) reconcilePDB(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {

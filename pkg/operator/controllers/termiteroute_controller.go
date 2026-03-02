@@ -17,6 +17,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -62,7 +63,9 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if statusErr := r.Status().Update(ctx, route); statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
-		return ctrl.Result{}, nil
+		// Requeue with backoff to allow recovery if the user fixes the spec,
+		// consistent with TermitePool controller behavior.
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Validate referenced pools exist
@@ -71,12 +74,12 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Get(ctx, client.ObjectKey{Name: dest.Pool, Namespace: route.Namespace}, pool); err != nil {
 			if errors.IsNotFound(err) {
 				logger.Error(err, "Referenced pool not found", "pool", dest.Pool)
-				// Update status to indicate invalid configuration
 				route.Status.Active = false
 				if err := r.Status().Update(ctx, route); err != nil {
 					return ctrl.Result{}, err
 				}
-				return ctrl.Result{}, nil
+				// Pool may be created later — requeue to retry.
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
 			return ctrl.Result{}, err
 		}
