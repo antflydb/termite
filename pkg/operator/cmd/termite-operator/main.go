@@ -47,7 +47,10 @@ func init() {
 	utilruntime.Must(antflyaiv1alpha1.AddToScheme(scheme))
 }
 
-var cfgFile string
+var (
+	cfgFile string
+	initErr error // set by initConfig, checked in runOperator
+)
 
 func main() {
 	// Initialize viper for config file support
@@ -115,33 +118,24 @@ Examples:
 	cmd.Flags().String("termite-image", "antfly/termite:latest", "Default Termite container image")
 
 	// Bind flags to viper
-	mustBindFlag(cmd, "log-level", "log.level")
-	mustBindFlag(cmd, "log-style", "log.style")
-	mustBindFlag(cmd, "metrics-bind-address", "metrics_bind_address")
-	mustBindFlag(cmd, "health-probe-bind-address", "health_probe_bind_address")
-	mustBindFlag(cmd, "leader-elect", "leader_elect")
-	mustBindFlag(cmd, "termite-image", "termite_image")
+	_ = viper.BindPFlag("log.level", cmd.PersistentFlags().Lookup("log-level"))
+	_ = viper.BindPFlag("log.style", cmd.PersistentFlags().Lookup("log-style"))
+	_ = viper.BindPFlag("metrics_bind_address", cmd.Flags().Lookup("metrics-bind-address"))
+	_ = viper.BindPFlag("health_probe_bind_address", cmd.Flags().Lookup("health-probe-bind-address"))
+	_ = viper.BindPFlag("leader_elect", cmd.Flags().Lookup("leader-elect"))
+	_ = viper.BindPFlag("termite_image", cmd.Flags().Lookup("termite-image"))
 
 	return cmd
 }
 
-func mustBindFlag(cmd *cobra.Command, flagName, viperKey string) {
-	// Try local flags first, then persistent flags
-	flag := cmd.Flags().Lookup(flagName)
-	if flag == nil {
-		flag = cmd.PersistentFlags().Lookup(flagName)
-	}
-	if err := viper.BindPFlag(viperKey, flag); err != nil {
-		panic(err)
-	}
-}
-
 // initConfig reads in config file and ENV variables if set.
+// Errors are stored in initErr rather than calling os.Exit, so that Cobra's
+// error propagation is respected (RunE will return the error).
 func initConfig() {
 	if cfgFile != "" {
 		if _, err := os.Stat(cfgFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Config file not found: %s\n", cfgFile)
-			os.Exit(1)
+			initErr = fmt.Errorf("config file not found: %s", cfgFile)
+			return
 		}
 		viper.SetConfigFile(cfgFile)
 	} else {
@@ -161,12 +155,15 @@ func initConfig() {
 		fmt.Fprintf(os.Stderr, "Using config file: %s\n", viper.ConfigFileUsed())
 	} else if cfgFile != "" {
 		// Only error if user explicitly specified a config file
-		fmt.Fprintf(os.Stderr, "Error reading config file [%s]: %v\n", viper.ConfigFileUsed(), err)
-		os.Exit(1)
+		initErr = fmt.Errorf("error reading config file [%s]: %w", viper.ConfigFileUsed(), err)
 	}
 }
 
 func runOperator(cmd *cobra.Command, args []string) error {
+	if initErr != nil {
+		return initErr
+	}
+
 	metricsAddr := viper.GetString("metrics_bind_address")
 	probeAddr := viper.GetString("health_probe_bind_address")
 	enableLeaderElection := viper.GetBool("leader_elect")
