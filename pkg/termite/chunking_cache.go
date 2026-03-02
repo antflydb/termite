@@ -18,8 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"sync"
-	"sync/atomic"
+	"strconv"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/chunking"
@@ -28,19 +27,14 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 )
 
 // CachedChunker provides in-memory caching for chunking operations with model registry
 type CachedChunker struct {
-	registry        *ChunkerRegistry
-	fixedChunker    chunking.Chunker
-	memCache        *ttlcache.Cache[uint64, ChunkResult]
-	sfGroup         *singleflight.Group
-	singleflightHit *atomic.Uint64
-	logger          *zap.Logger
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
+	registry     *ChunkerRegistry
+	fixedChunker chunking.Chunker
+	cache        *ResultCache[ChunkResult]
+	logger       *zap.Logger
 }
 
 // ChunkResult stores chunking results with metadata
@@ -58,16 +52,12 @@ func NewCachedChunker(
 	poolSize int,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {
-	// Create memory cache with 2-minute TTL (same as embeddings)
-	cache := ttlcache.New(
-		ttlcache.WithTTL[uint64, ChunkResult](2 * time.Minute),
-	)
-	go cache.Start()
+	cache := NewResultCache[ChunkResult]("Chunking", 2*time.Minute, logger.Named("cache"))
 
 	// Create fixed chunker (always available as fallback)
 	fixedChunker, err := termchunking.NewFixedChunker(termchunking.DefaultFixedChunkerConfig())
 	if err != nil {
-		cache.Stop()
+		cache.Close()
 		return nil, fmt.Errorf("failed to create fixed chunker: %w", err)
 	}
 
@@ -83,28 +73,17 @@ func NewCachedChunker(
 		logger.Named("registry"),
 	)
 	if err != nil {
-		cache.Stop()
+		cache.Close()
 		_ = fixedChunker.Close()
 		return nil, fmt.Errorf("failed to create chunker registry: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	singleflightHit := &atomic.Uint64{}
-	singleflightHit.Store(0)
-
 	cc := &CachedChunker{
-		registry:        registry,
-		fixedChunker:    fixedChunker,
-		memCache:        cache,
-		sfGroup:         &singleflight.Group{},
-		singleflightHit: singleflightHit,
-		logger:          logger,
-		cancel:          cancel,
+		registry:     registry,
+		fixedChunker: fixedChunker,
+		cache:        cache,
+		logger:       logger,
 	}
-
-	// Start cache stats logger
-	cc.wg.Add(1)
-	go cc.logCacheStats(ctx)
 
 	// Log available models
 	models := registry.List()
@@ -127,7 +106,7 @@ type chunkConfig struct {
 	Threshold     float32 `json:"threshold"`
 }
 
-// Chunk performs chunking with two-tier caching
+// Chunk performs chunking with caching
 func (cc *CachedChunker) Chunk(ctx context.Context, text string, config chunkConfig) ([]chunking.Chunk, bool, error) {
 	if text == "" {
 		return nil, false, nil
@@ -137,9 +116,9 @@ func (cc *CachedChunker) Chunk(ctx context.Context, text string, config chunkCon
 	cacheKey := cc.computeCacheKey(text, config)
 
 	// Check memory cache
-	if item := cc.memCache.Get(cacheKey); item != nil {
+	if item := cc.cache.Cache().Get(cacheKey); item != nil {
 		cc.logger.Debug("Chunk cache hit (memory)",
-			zap.Uint64("cache_key", cacheKey),
+			zap.String("cache_key", cacheKey),
 			zap.String("model", item.Value().Model),
 			zap.Int("num_chunks", len(item.Value().Chunks)))
 		return item.Value().Chunks, true, nil
@@ -147,13 +126,13 @@ func (cc *CachedChunker) Chunk(ctx context.Context, text string, config chunkCon
 
 	// Cache miss: Use singleflight to deduplicate concurrent identical requests
 	cc.logger.Debug("Chunk cache miss, performing chunking",
-		zap.Uint64("cache_key", cacheKey),
+		zap.String("cache_key", cacheKey),
 		zap.Int("text_length", len(text)),
 		zap.String("model", config.Model))
 
-	v, err, shared := cc.sfGroup.Do(fmt.Sprintf("%d", cacheKey), func() (any, error) {
+	v, err, shared := cc.cache.SFGroup().Do(cacheKey, func() (any, error) {
 		// Double-check cache (another goroutine might have populated it)
-		if item := cc.memCache.Get(cacheKey); item != nil {
+		if item := cc.cache.Cache().Get(cacheKey); item != nil {
 			cc.logger.Debug("Chunk found in cache during singleflight")
 			return item.Value(), nil
 		}
@@ -171,10 +150,10 @@ func (cc *CachedChunker) Chunk(ctx context.Context, text string, config chunkCon
 		}
 
 		// Store in memory cache
-		cc.memCache.Set(cacheKey, result, ttlcache.DefaultTTL)
+		cc.cache.Cache().Set(cacheKey, result, ttlcache.DefaultTTL)
 
 		cc.logger.Info("Chunking completed and cached",
-			zap.Uint64("cache_key", cacheKey),
+			zap.String("cache_key", cacheKey),
 			zap.String("model", model),
 			zap.Int("num_chunks", len(chunks)),
 			zap.Int("text_length", len(text)))
@@ -183,7 +162,6 @@ func (cc *CachedChunker) Chunk(ctx context.Context, text string, config chunkCon
 	})
 
 	if shared {
-		cc.singleflightHit.Add(1)
 		cc.logger.Debug("Singleflight deduplication hit")
 	}
 
@@ -256,7 +234,7 @@ func (cc *CachedChunker) buildChunkOptions(config chunkConfig) chunking.ChunkOpt
 }
 
 // computeCacheKey generates a cache key from text and config
-func (cc *CachedChunker) computeCacheKey(text string, config chunkConfig) uint64 {
+func (cc *CachedChunker) computeCacheKey(text string, config chunkConfig) string {
 	// Create a deterministic key from config
 	configStr := fmt.Sprintf("%s:%d:%d:%s:%d:%.3f",
 		config.Model,
@@ -271,40 +249,7 @@ func (cc *CachedChunker) computeCacheKey(text string, config chunkConfig) uint64
 
 	// Combine config and text hash
 	combined := configStr + string(textHash[:])
-	return xxhash.Sum64String(combined)
-}
-
-// logCacheStats periodically logs cache statistics
-func (cc *CachedChunker) logCacheStats(ctx context.Context) {
-	defer cc.wg.Done()
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			metrics := cc.memCache.Metrics()
-			hitRate := float64(0)
-			if metrics.Hits+metrics.Misses > 0 {
-				hitRate = float64(metrics.Hits) / float64(metrics.Hits+metrics.Misses) * 100
-			}
-
-			if cc.memCache.Len() == 0 {
-				continue
-			}
-
-			cc.logger.Info("Chunking cache stats",
-				zap.Int("size", cc.memCache.Len()),
-				zap.Uint64("singleflight_hits", cc.singleflightHit.Load()),
-				zap.Uint64("cache_hits", metrics.Hits),
-				zap.Uint64("cache_misses", metrics.Misses),
-				zap.String("hit_rate_percent", fmt.Sprintf("%.2f", hitRate)))
-
-		case <-ctx.Done():
-			cc.logger.Info("Stopping chunking cache stats logger")
-			return
-		}
-	}
+	return strconv.FormatUint(xxhash.Sum64String(combined), 16)
 }
 
 // ListModels returns all available chunker models and strategies
@@ -317,9 +262,7 @@ func (cc *CachedChunker) ListModels() []string {
 
 // Close releases resources
 func (cc *CachedChunker) Close() error {
-	cc.cancel()
-	cc.wg.Wait() // Wait for logCacheStats goroutine to finish
-	cc.memCache.Stop()
+	cc.cache.Close()
 
 	if cc.registry != nil {
 		if err := cc.registry.Close(); err != nil {

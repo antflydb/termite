@@ -16,23 +16,35 @@ package termite
 
 import (
 	"context"
-	"encoding/binary"
+	"strconv"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/cespare/xxhash/v2"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 )
 
 // CachedSparseEmbedder wraps a SparseEmbedder with caching support.
 type CachedSparseEmbedder struct {
 	embedder embeddings.SparseEmbedder
 	model    string
-	cache    *ttlcache.Cache[string, []embeddings.SparseVector]
-	sfGroup  *singleflight.Group
+	cache    *ResultCache[[]embeddings.SparseVector]
 	logger   *zap.Logger
+}
+
+// NewCachedSparseEmbedder wraps a sparse embedder with caching
+func NewCachedSparseEmbedder(
+	embedder embeddings.SparseEmbedder,
+	model string,
+	cache *ResultCache[[]embeddings.SparseVector],
+	logger *zap.Logger,
+) *CachedSparseEmbedder {
+	return &CachedSparseEmbedder{
+		embedder: embedder,
+		model:    model,
+		cache:    cache,
+		logger:   logger,
+	}
 }
 
 // SparseEmbed generates sparse embeddings with caching and singleflight deduplication.
@@ -40,13 +52,18 @@ func (c *CachedSparseEmbedder) SparseEmbed(ctx context.Context, texts []string) 
 	key := c.cacheKey(texts)
 
 	// Check cache
-	if item := c.cache.Get(key); item != nil {
+	if item := c.cache.Cache().Get(key); item != nil {
 		RecordCacheHit("sparse_embedding")
 		return item.Value(), nil
 	}
 
-	// Singleflight deduplication
-	result, err, _ := c.sfGroup.Do(key, func() (any, error) {
+	// Shared singleflight deduplication
+	result, err, _ := c.cache.SFGroup().Do(key, func() (any, error) {
+		// Double-check cache (another goroutine may have populated it)
+		if item := c.cache.Cache().Get(key); item != nil {
+			return item.Value(), nil
+		}
+
 		RecordCacheMiss("sparse_embedding")
 
 		start := time.Now()
@@ -56,7 +73,7 @@ func (c *CachedSparseEmbedder) SparseEmbed(ctx context.Context, texts []string) 
 		}
 
 		RecordRequestDuration("sparse_embed", c.model, "200", time.Since(start).Seconds())
-		c.cache.Set(key, vecs, ttlcache.DefaultTTL)
+		c.cache.Cache().Set(key, vecs, 0)
 		return vecs, nil
 	})
 
@@ -74,47 +91,5 @@ func (c *CachedSparseEmbedder) cacheKey(texts []string) string {
 		_, _ = h.WriteString(text)
 		_, _ = h.WriteString("|")
 	}
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], h.Sum64())
-	return string(buf[:])
-}
-
-// SparseEmbeddingCache manages caching for sparse embedders.
-type SparseEmbeddingCache struct {
-	cache  *ttlcache.Cache[string, []embeddings.SparseVector]
-	logger *zap.Logger
-	cancel context.CancelFunc
-}
-
-// NewSparseEmbeddingCache creates a new sparse embedding cache.
-func NewSparseEmbeddingCache(logger *zap.Logger) *SparseEmbeddingCache {
-	cache := ttlcache.New(
-		ttlcache.WithTTL[string, []embeddings.SparseVector](EmbeddingCacheTTL),
-	)
-	go cache.Start()
-
-	_, cancel := context.WithCancel(context.Background())
-
-	return &SparseEmbeddingCache{
-		cache:  cache,
-		logger: logger,
-		cancel: cancel,
-	}
-}
-
-// WrapSparseEmbedder wraps a sparse embedder with caching.
-func (sc *SparseEmbeddingCache) WrapSparseEmbedder(embedder embeddings.SparseEmbedder, model string) *CachedSparseEmbedder {
-	return &CachedSparseEmbedder{
-		embedder: embedder,
-		model:    model,
-		cache:    sc.cache,
-		sfGroup:  &singleflight.Group{},
-		logger:   sc.logger.Named(model),
-	}
-}
-
-// Close stops the cache.
-func (sc *SparseEmbeddingCache) Close() {
-	sc.cancel()
-	sc.cache.Stop()
+	return strconv.FormatUint(h.Sum64(), 16)
 }

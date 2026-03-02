@@ -17,57 +17,43 @@ package termite
 import (
 	"context"
 	"encoding/binary"
-	"sync/atomic"
+	"strconv"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/cespare/xxhash/v2"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
 )
-
-// NERCacheTTL is the default TTL for cached NER results
-const NERCacheTTL = 2 * time.Minute
 
 // CachedNER wraps a NER model with caching support
 type CachedNER struct {
-	model   ner.Model
-	name    string
-	cache   *ttlcache.Cache[string, [][]ner.Entity]
-	sfGroup *singleflight.Group
-	logger  *zap.Logger
-
-	// Metrics
-	hits   atomic.Uint64
-	misses atomic.Uint64
-	sfHits atomic.Uint64
+	model  ner.Model
+	name   string
+	cache  *ResultCache[[][]ner.Entity]
+	logger *zap.Logger
 }
 
 // NewCachedNER wraps a NER model with caching
 func NewCachedNER(
 	model ner.Model,
 	name string,
-	cache *ttlcache.Cache[string, [][]ner.Entity],
+	cache *ResultCache[[][]ner.Entity],
 	logger *zap.Logger,
 ) *CachedNER {
 	return &CachedNER{
-		model:   model,
-		name:    name,
-		cache:   cache,
-		sfGroup: &singleflight.Group{},
-		logger:  logger,
+		model:  model,
+		name:   name,
+		cache:  cache,
+		logger: logger,
 	}
 }
 
 // Recognize extracts entities with caching support
 func (c *CachedNER) Recognize(ctx context.Context, texts []string) ([][]ner.Entity, error) {
-	// Generate cache key from model + texts hash
 	key := c.cacheKey(texts)
 
 	// Check cache first
-	if item := c.cache.Get(key); item != nil {
-		c.hits.Add(1)
+	if item := c.cache.Cache().Get(key); item != nil {
 		RecordCacheHit("ner")
 		c.logger.Debug("NER cache hit",
 			zap.String("model", c.name),
@@ -75,9 +61,13 @@ func (c *CachedNER) Recognize(ctx context.Context, texts []string) ([][]ner.Enti
 		return item.Value(), nil
 	}
 
-	// Use singleflight to deduplicate concurrent identical requests
-	result, err, shared := c.sfGroup.Do(key, func() (any, error) {
-		c.misses.Add(1)
+	// Use shared singleflight to deduplicate concurrent identical requests
+	result, err, shared := c.cache.SFGroup().Do(key, func() (any, error) {
+		// Double-check cache (another goroutine may have populated it)
+		if item := c.cache.Cache().Get(key); item != nil {
+			return item.Value(), nil
+		}
+
 		RecordCacheMiss("ner")
 
 		start := time.Now()
@@ -86,11 +76,9 @@ func (c *CachedNER) Recognize(ctx context.Context, texts []string) ([][]ner.Enti
 			return nil, err
 		}
 
-		// Record duration
 		RecordRequestDuration("ner", c.name, "200", time.Since(start).Seconds())
 
-		// Store in cache
-		c.cache.Set(key, entities, ttlcache.DefaultTTL)
+		c.cache.Cache().Set(key, entities, 0)
 
 		c.logger.Debug("NER completed and cached",
 			zap.String("model", c.name),
@@ -105,7 +93,6 @@ func (c *CachedNER) Recognize(ctx context.Context, texts []string) ([][]ner.Enti
 	}
 
 	if shared {
-		c.sfHits.Add(1)
 		c.logger.Debug("Singleflight hit for NER request",
 			zap.String("model", c.name))
 	}
@@ -117,120 +104,23 @@ func (c *CachedNER) Recognize(ctx context.Context, texts []string) ([][]ner.Enti
 func (c *CachedNER) cacheKey(texts []string) string {
 	h := xxhash.New()
 
-	// Include model name
 	_, _ = h.WriteString(c.name)
 	_, _ = h.WriteString("|")
 
-	// Hash each text
 	for i, text := range texts {
 		_, _ = h.WriteString("t")
-		// Use index to ensure order matters
-		_, _ = h.Write([]byte{byte(i >> 8), byte(i)})
+		var idxBuf [4]byte
+		binary.BigEndian.PutUint32(idxBuf[:], uint32(i))
+		_, _ = h.Write(idxBuf[:])
 		_, _ = h.WriteString(":")
 		_, _ = h.WriteString(text)
 		_, _ = h.WriteString("|")
 	}
 
-	// Convert uint64 hash to string key
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], h.Sum64())
-	return string(buf[:])
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // Close closes the underlying model
 func (c *CachedNER) Close() error {
 	return c.model.Close()
-}
-
-// Stats returns cache statistics for this NER model
-func (c *CachedNER) Stats() NERCacheStats {
-	return NERCacheStats{
-		Model:            c.name,
-		Hits:             c.hits.Load(),
-		Misses:           c.misses.Load(),
-		SingleflightHits: c.sfHits.Load(),
-	}
-}
-
-// NERCacheStats holds cache statistics for a NER model
-type NERCacheStats struct {
-	Model            string `json:"model"`
-	Hits             uint64 `json:"hits"`
-	Misses           uint64 `json:"misses"`
-	SingleflightHits uint64 `json:"singleflight_hits"`
-}
-
-// NERCache manages caching for multiple NER models
-type NERCache struct {
-	cache  *ttlcache.Cache[string, [][]ner.Entity]
-	logger *zap.Logger
-	cancel context.CancelFunc
-}
-
-// NewNERCache creates a new NER cache
-func NewNERCache(logger *zap.Logger) *NERCache {
-	cache := ttlcache.New(
-		ttlcache.WithTTL[string, [][]ner.Entity](NERCacheTTL),
-	)
-	go cache.Start()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	nc := &NERCache{
-		cache:  cache,
-		logger: logger,
-		cancel: cancel,
-	}
-
-	// Log cache stats periodically
-	go nc.logStats(ctx)
-
-	return nc
-}
-
-// WrapModel wraps a NER model with caching
-func (nc *NERCache) WrapModel(model ner.Model, name string) *CachedNER {
-	return NewCachedNER(model, name, nc.cache, nc.logger.Named(name))
-}
-
-// Close stops the cache
-func (nc *NERCache) Close() {
-	nc.cancel()
-	nc.cache.Stop()
-}
-
-// logStats logs cache statistics periodically
-func (nc *NERCache) logStats(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			metrics := nc.cache.Metrics()
-			if metrics.Hits > 0 || metrics.Misses > 0 {
-				hitRate := float64(0)
-				total := metrics.Hits + metrics.Misses
-				if total > 0 {
-					hitRate = float64(metrics.Hits) / float64(total) * 100
-				}
-				nc.logger.Info("NER cache stats",
-					zap.Uint64("hits", metrics.Hits),
-					zap.Uint64("misses", metrics.Misses),
-					zap.Float64("hit_rate_pct", hitRate),
-					zap.Int("items", nc.cache.Len()))
-			}
-		}
-	}
-}
-
-// Stats returns global cache statistics
-func (nc *NERCache) Stats() map[string]any {
-	metrics := nc.cache.Metrics()
-	return map[string]any{
-		"hits":   metrics.Hits,
-		"misses": metrics.Misses,
-		"items":  nc.cache.Len(),
-	}
 }

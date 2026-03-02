@@ -23,11 +23,15 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	mediachunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
+	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/reading"
+	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
 )
 
@@ -54,12 +58,13 @@ type TermiteNode struct {
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
 
-	// Caches for embeddings, reranking, NER, and reading
-	embeddingCache       *EmbeddingCache
-	sparseEmbeddingCache *SparseEmbeddingCache
-	rerankingCache       *RerankingCache
-	nerCache             *NERCache
-	readingCache         *ReadingCache
+	// Result caches for inference deduplication
+	embeddingCache       *ResultCache[[][]float32]
+	sparseEmbeddingCache *ResultCache[[]embeddings.SparseVector]
+	rerankingCache       *ResultCache[[]float32]
+	nerCache             *ResultCache[[][]ner.Entity]
+	readingCache         *ResultCache[[]reading.Result]
+	transcriptionCache   *ResultCache[*transcribing.Result]
 
 	// allowDownloads controls whether the dashboard shows model download commands
 	allowDownloads bool
@@ -490,21 +495,24 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		RequestTimeout:        requestTimeout,
 	}, zl.Named("queue"))
 
-	// Initialize caches for embeddings, reranking, NER, and reading
-	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
+	// Initialize result caches for inference deduplication
+	embeddingCache := NewResultCache[[][]float32]("Embedding", 2*time.Minute, zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
-	sparseEmbeddingCache := NewSparseEmbeddingCache(zl.Named("sparse-embedding-cache"))
+	sparseEmbeddingCache := NewResultCache[[]embeddings.SparseVector]("Sparse embedding", 2*time.Minute, zl.Named("sparse-embedding-cache"))
 	defer sparseEmbeddingCache.Close()
 
-	rerankingCache := NewRerankingCache(zl.Named("reranking-cache"))
+	rerankingCache := NewResultCache[[]float32]("Reranking", 2*time.Minute, zl.Named("reranking-cache"))
 	defer rerankingCache.Close()
 
-	nerCache := NewNERCache(zl.Named("ner-cache"))
+	nerCache := NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, zl.Named("ner-cache"))
 	defer nerCache.Close()
 
-	readingCache := NewReadingCache(zl.Named("reading-cache"))
+	readingCache := NewResultCache[[]reading.Result]("Reading", 5*time.Minute, zl.Named("reading-cache"))
 	defer readingCache.Close()
+
+	transcriptionCache := NewResultCache[*transcribing.Result]("Transcription", 2*time.Minute, zl.Named("transcription-cache"))
+	defer transcriptionCache.Close()
 
 	// Build S3 credentials from config (optional)
 	var s3Creds *s3.Credentials
@@ -535,6 +543,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,
+		transcriptionCache:   transcriptionCache,
 		allowDownloads:        config.AllowDownloads,
 
 		client: client,

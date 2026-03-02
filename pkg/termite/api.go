@@ -301,7 +301,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wrap embedder with caching for deduplicated requests
-	cachedEmbedder := ln.embeddingCache.WrapEmbedder(embedder, req.Model)
+	cachedEmbedder := NewCachedEmbedder(embedder, req.Model, ln.embeddingCache, ln.logger.Named(req.Model))
 
 	// Generate embeddings (with caching and singleflight deduplication)
 	embeds, err := cachedEmbedder.Embed(r.Context(), contents)
@@ -364,7 +364,7 @@ func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request,
 	defer ln.embedderRegistry.Release(req.Model)
 
 	// Wrap with caching
-	cachedSparse := ln.sparseEmbeddingCache.WrapSparseEmbedder(sparseEmbedder, req.Model)
+	cachedSparse := NewCachedSparseEmbedder(sparseEmbedder, req.Model, ln.sparseEmbeddingCache, ln.logger.Named(req.Model))
 
 	// Generate sparse embeddings
 	sparseVecs, err := cachedSparse.SparseEmbed(r.Context(), texts)
@@ -779,7 +779,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 	defer ln.rerankerRegistry.Release(req.Model)
 
 	// Wrap reranker with caching for deduplicated requests
-	cachedReranker := ln.rerankingCache.WrapReranker(reranker, req.Model)
+	cachedReranker := NewCachedReranker(reranker, req.Model, ln.rerankingCache, ln.logger.Named(req.Model))
 
 	// Rerank prompts (with caching and singleflight deduplication)
 	scores, err := cachedReranker.Rerank(r.Context(), req.Query, req.Prompts)
@@ -936,7 +936,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		}
 	} else {
 		// Standard NER model - wrap with caching for deduplicated requests
-		cachedModel := ln.nerCache.WrapModel(model, req.Model)
+		cachedModel := NewCachedNER(model, req.Model, ln.nerCache, ln.logger.Named(req.Model))
 
 		// Recognize entities (with caching and singleflight deduplication)
 		entities, err = cachedModel.Recognize(r.Context(), req.Texts)
@@ -2105,7 +2105,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wrap reader with caching for deduplicated requests
-	cachedReader := ln.readingCache.WrapReader(reader, req.Model)
+	cachedReader := NewCachedReader(reader, req.Model, ln.readingCache, ln.logger.Named(req.Model))
 
 	// Read images (with caching and singleflight deduplication)
 	results, err := cachedReader.Read(r.Context(), images, prompt, maxTokens)
@@ -2256,8 +2256,11 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 		opts.Language = req.Language
 	}
 
-	// Transcribe audio
-	result, err := transcriber.TranscribeWithOptions(r.Context(), audioData, opts)
+	// Wrap transcriber with caching for deduplicated requests
+	cachedTranscriber := NewCachedTranscriber(transcriber, req.Model, ln.transcriptionCache, ln.logger.Named(req.Model))
+
+	// Transcribe audio (with caching and singleflight deduplication)
+	result, err := cachedTranscriber.TranscribeWithOptions(r.Context(), audioData, opts)
 	if err != nil {
 		ln.logger.Error("transcription failed",
 			zap.String("model", req.Model),

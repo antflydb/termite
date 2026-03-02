@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 	"net/http/httptest"
 	"slices"
 	"sync/atomic"
@@ -189,7 +190,7 @@ func TestTermiteNode_HandleApiRerank_Success(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		rerankingCache: NewRerankingCache(logger.Named("reranking-cache")),
+		rerankingCache: NewResultCache[[]float32]("Reranking", 2*time.Minute, logger.Named("reranking-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -292,7 +293,7 @@ func TestTermiteNode_HandleApiRerank_InvalidRequest(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		rerankingCache: NewRerankingCache(logger.Named("reranking-cache")),
+		rerankingCache: NewResultCache[[]float32]("Reranking", 2*time.Minute, logger.Named("reranking-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -632,7 +633,7 @@ func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		nerCache: NewNERCache(logger.Named("ner-cache")),
+		nerCache: NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, logger.Named("ner-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -730,7 +731,7 @@ func TestTermiteNode_HandleApiNER_InvalidRequest(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		nerCache: NewNERCache(logger.Named("ner-cache")),
+		nerCache: NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, logger.Named("ner-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
