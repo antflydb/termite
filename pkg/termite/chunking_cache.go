@@ -24,17 +24,20 @@ import (
 	"github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/cespare/xxhash/v2"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
 
-// CachedChunker provides in-memory caching for chunking operations with model registry
+// CachedChunker provides in-memory caching for chunking operations with model registry.
+// It handles both text chunking and media chunking (audio, etc.) through a unified interface.
 type CachedChunker struct {
-	registry     *ChunkerRegistry
-	fixedChunker chunking.Chunker
-	cache        *ResultCache[ChunkResult]
-	logger       *zap.Logger
+	registry          *ChunkerRegistry
+	fixedChunker      chunking.Chunker
+	fixedMediaChunker *termchunking.FixedMediaChunker // Algorithmic fallback for media chunking
+	cache             *ResultCache[ChunkResult]
+	logger            *zap.Logger
 }
 
 // ChunkResult stores chunking results with metadata
@@ -44,12 +47,16 @@ type ChunkResult struct {
 	CachedAt time.Time        `json:"cached_at"`
 }
 
-// NewCachedChunker creates a new cached chunker with model registry support
-// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime)
+// NewCachedChunker creates a new cached chunker with model registry support.
+// If sessionManager is provided, it will be used to obtain sessions for model loading (required for ONNX Runtime).
+// mediaKeepAlive controls the TTL for media chunker models (audio, etc.); text chunkers use eager loading.
+// maxLoadedModels limits how many models can be loaded simultaneously (0 = unlimited).
 func NewCachedChunker(
 	modelsDir string,
 	sessionManager *backends.SessionManager,
 	poolSize int,
+	mediaKeepAlive time.Duration,
+	maxLoadedModels uint64,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {
 	cache := NewResultCache[ChunkResult]("Chunking", 2*time.Minute, logger.Named("cache"))
@@ -62,12 +69,15 @@ func NewCachedChunker(
 	}
 
 	// Create model registry with session manager
-	// Note: chunker registry uses eager loading (KeepAlive=0) since chunkers are always needed
+	// Text chunkers use eager loading (KeepAlive=0) since they're always needed.
+	// Media chunkers use the provided keepAlive for lazy loading with TTL.
 	registry, err := NewChunkerRegistry(
 		ChunkerConfig{
-			ModelsDir: modelsDir,
-			KeepAlive: 0,        // Eager loading - chunkers are always needed
-			PoolSize:  poolSize, // Number of concurrent pipelines per model
+			ModelsDir:       modelsDir,
+			KeepAlive:       0,              // Eager loading for text chunkers
+			MediaKeepAlive:  mediaKeepAlive, // Lazy loading for media chunkers
+			MaxLoadedModels: maxLoadedModels,
+			PoolSize:        poolSize, // Number of concurrent pipelines per model
 		},
 		sessionManager,
 		logger.Named("registry"),
@@ -79,10 +89,11 @@ func NewCachedChunker(
 	}
 
 	cc := &CachedChunker{
-		registry:     registry,
-		fixedChunker: fixedChunker,
-		cache:        cache,
-		logger:       logger,
+		registry:          registry,
+		fixedChunker:      fixedChunker,
+		fixedMediaChunker: termchunking.NewFixedMediaChunker(),
+		cache:             cache,
+		logger:            logger,
 	}
 
 	// Log available models
@@ -185,11 +196,12 @@ func (cc *CachedChunker) performChunking(ctx context.Context, text string, confi
 
 	// Try to get ONNX model from registry first (if not a built-in fixed model)
 	if !isFixedModel {
-		if chunker, err := cc.registry.Get(model); err == nil {
+		if chunker, err := cc.registry.Acquire(model); err == nil {
 			cc.logger.Debug("Using ONNX model from registry",
 				zap.String("model", model))
 
 			chunks, err = chunker.Chunk(ctx, text, opts)
+			cc.registry.Release(model)
 			if err != nil {
 				cc.logger.Warn("ONNX model failed, falling back to fixed-bert-tokenizer",
 					zap.String("model", model),
@@ -258,6 +270,37 @@ func (cc *CachedChunker) ListModels() []string {
 	// Add built-in strategies
 	all := append([]string{termchunking.ModelFixedBert, termchunking.ModelFixedBPE}, models...)
 	return all
+}
+
+// ChunkMedia routes media chunking to a model-based media chunker from the registry
+// (if a model name is specified and available), or falls back to the fixed-duration
+// algorithmic media chunker.
+func (cc *CachedChunker) ChunkMedia(ctx context.Context, data []byte, mimeType, model string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
+	// Try model-based media chunker from registry
+	if model != "" {
+		chunker, err := cc.registry.AcquireMedia(model)
+		if err == nil {
+			defer cc.registry.Release(model)
+			return chunker.ChunkMedia(ctx, data, mimeType, opts)
+		}
+		cc.logger.Debug("Model-based media chunker not available, falling back to fixed",
+			zap.String("model", model),
+			zap.Error(err))
+	}
+
+	// Fall back to algorithmic media chunker
+	return cc.fixedMediaChunker.ChunkMedia(ctx, data, mimeType, opts)
+}
+
+// ListWithCapabilities returns a map of all model names to their capabilities,
+// including both text and media chunker models from the registry.
+func (cc *CachedChunker) ListWithCapabilities() map[string][]string {
+	return cc.registry.ListWithCapabilities()
+}
+
+// HasCapability checks if a model has a specific capability (e.g., audio).
+func (cc *CachedChunker) HasCapability(modelName string, capability modelregistry.Capability) bool {
+	return cc.registry.HasCapability(modelName, capability)
 }
 
 // Close releases resources

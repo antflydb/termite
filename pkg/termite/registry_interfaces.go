@@ -156,26 +156,34 @@ type TranscriberRegistryInterface interface {
 }
 
 // ChunkerInterface defines the interface for chunking services.
+// It handles both text chunking and media chunking (audio, etc.) through a unified interface.
 // This enables testing with mock implementations.
 type ChunkerInterface interface {
 	// Chunk splits text into chunks using the specified configuration
 	// Returns chunks, cache hit status, and any error
 	Chunk(ctx context.Context, text string, config chunkConfig) ([]chunking.Chunk, bool, error)
+	// ChunkMedia splits binary media content into chunks, using a model-based chunker
+	// if available, or falling back to algorithmic chunking.
+	ChunkMedia(ctx context.Context, data []byte, mimeType, model string, opts chunking.ChunkOptions) ([]chunking.Chunk, error)
 	// ListModels returns all available chunker model names
 	ListModels() []string
+	// ListWithCapabilities returns a map of model name to capabilities
+	ListWithCapabilities() map[string][]string
+	// HasCapability checks if a model has a specific capability (e.g., audio)
+	HasCapability(modelName string, capability modelregistry.Capability) bool
 	// Close shuts down the chunker and releases resources
 	Close() error
 }
 
 // Ensure concrete types implement the interfaces
 var (
-	_ EmbedderRegistryInterface    = (*EmbedderRegistry)(nil)
-	_ RerankerRegistryInterface    = (*RerankerRegistry)(nil)
-	_ NERRegistryInterface         = (*NERRegistry)(nil)
-	_ GeneratorRegistryInterface   = (*GeneratorRegistry)(nil)
-	_ Seq2SeqRegistryInterface     = (*Seq2SeqRegistry)(nil)
-	_ ClassifierRegistryInterface  = (*ClassifierRegistry)(nil)
-	_ ReaderRegistryInterface      = (*ReaderRegistry)(nil)
-	_ TranscriberRegistryInterface = (*TranscriberRegistry)(nil)
-	_ ChunkerInterface             = (*CachedChunker)(nil)
+	_ EmbedderRegistryInterface        = (*EmbedderRegistry)(nil)
+	_ RerankerRegistryInterface        = (*RerankerRegistry)(nil)
+	_ NERRegistryInterface             = (*NERRegistry)(nil)
+	_ GeneratorRegistryInterface       = (*GeneratorRegistry)(nil)
+	_ Seq2SeqRegistryInterface         = (*Seq2SeqRegistry)(nil)
+	_ ClassifierRegistryInterface      = (*ClassifierRegistry)(nil)
+	_ ReaderRegistryInterface          = (*ReaderRegistry)(nil)
+	_ TranscriberRegistryInterface     = (*TranscriberRegistry)(nil)
+	_ ChunkerInterface                 = (*CachedChunker)(nil)
 )

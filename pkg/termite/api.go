@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -41,6 +40,7 @@ import (
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
@@ -154,7 +154,13 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.node.chunker != nil {
-		resp.Chunkers = stringsToModelInfoMap(t.node.chunker.ListModels())
+		// Built-in models (always available, no capabilities)
+		resp.Chunkers[termchunking.ModelFixedBert] = ModelInfo{}
+		resp.Chunkers[termchunking.ModelFixedBPE] = ModelInfo{}
+		// Registry models (text + media chunkers with capabilities)
+		for name, caps := range t.node.chunker.ListWithCapabilities() {
+			resp.Chunkers[name] = ModelInfo{Capabilities: caps}
+		}
 	}
 
 	if t.node.embedderRegistry != nil {
@@ -695,24 +701,10 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// chunkMedia routes media chunking to the VAD chunker (for audio, when requested)
-// or falls back to the fixed-duration media chunker.
+// chunkMedia delegates media chunking to the unified chunker, which handles
+// model-based and algorithmic fallback internally.
 func (ln *TermiteNode) chunkMedia(ctx context.Context, data []byte, mimeType, model string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
-	mimeNorm := strings.ToLower(strings.TrimSpace(mimeType))
-	isAudio := strings.HasPrefix(mimeNorm, "audio/")
-
-	if isAudio && ln.vadChunker != nil && model == ln.vadChunkerName {
-		switch {
-		case mimeNorm == "audio/wav" || mimeNorm == "audio/x-wav" || mimeNorm == "audio/wave":
-			return ln.vadChunker.ChunkAudio(ctx, data, opts)
-		case mimeNorm == "audio/mpeg" || mimeNorm == "audio/mp3":
-			return ln.vadChunker.ChunkMP3(ctx, data, opts)
-		default:
-			return nil, fmt.Errorf("VAD chunker does not support MIME type %q", mimeType)
-		}
-	}
-
-	return ln.mediaChunker.ChunkMedia(ctx, data, mimeType, opts)
+	return ln.chunker.ChunkMedia(ctx, data, mimeType, model, opts)
 }
 
 // handleApiRerank handles reranking requests
