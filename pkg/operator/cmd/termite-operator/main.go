@@ -253,9 +253,11 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// webhooksEnabled returns true unless ENABLE_WEBHOOKS is explicitly set to
-// "false" or "0" (case-insensitive).
+// webhooksEnabled returns true only when ENABLE_WEBHOOKS is explicitly set to
+// "true" or "1" (case-insensitive). Defaults to false so that local development
+// with `make run` works without TLS certs. In-cluster deployments should set
+// ENABLE_WEBHOOKS=true in the manager Deployment.
 func webhooksEnabled() bool {
 	v := strings.ToLower(os.Getenv("ENABLE_WEBHOOKS"))
-	return v != "false" && v != "0"
+	return v == "true" || v == "1"
 }

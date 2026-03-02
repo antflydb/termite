@@ -13,6 +13,12 @@ webhooks:
         path: /validate-antfly-io-v1alpha1-termitepool
     failurePolicy: Fail
     name: vtermitepool.kb.io
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - termite-system
     rules:
       - apiGroups:
           - antfly.io
@@ -21,7 +27,6 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - termitepools
     sideEffects: None
@@ -34,6 +39,12 @@ webhooks:
         path: /validate-antfly-io-v1alpha1-termiteroute
     failurePolicy: Fail
     name: vtermiteroute.kb.io
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - termite-system
     rules:
       - apiGroups:
           - antfly.io
@@ -42,7 +53,6 @@ webhooks:
         operations:
           - CREATE
           - UPDATE
-          - DELETE
         resources:
           - termiteroutes
     sideEffects: None
