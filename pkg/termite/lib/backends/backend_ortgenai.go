@@ -199,15 +199,15 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 
 		var tokenCount int
 		for delta := range outputChan {
-			tokenCount++
-			if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
-				genCancel()
-				break
-			}
 			select {
 			case <-ctx.Done():
 				return
 			case tokenChan <- GenerativeToken{Token: delta.Token, Index: delta.Sequence}:
+			}
+			tokenCount++
+			if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
+				genCancel()
+				break
 			}
 		}
 

@@ -185,21 +185,7 @@ func NewPooledGenerativeSessionGenerator(
 
 	logger.Info("Successfully created pooled generative sessions", zap.Int("count", poolSize))
 
-	// Try to load tool parser from genai_config.json
-	var toolParser ToolParser
-	var toolCallFormat string
-	if format := readToolCallFormat(modelPath); format != "" {
-		if parser, err := GetToolParser(format, modelPath); err == nil && parser != nil {
-			toolParser = parser
-			toolCallFormat = format
-			logger.Info("Loaded tool parser from model config",
-				zap.String("format", toolCallFormat))
-		} else if err != nil {
-			logger.Warn("Failed to load tool parser",
-				zap.String("format", format),
-				zap.Error(err))
-		}
-	}
+	toolParser, toolCallFormat := loadToolParserFromConfig(modelPath, logger)
 
 	return &PooledGenerativeSessionGenerator{
 		sessions:       sessions,
@@ -362,6 +348,27 @@ func toBackendOptions(opts GenerateOptions) *backends.GenerativeOptions {
 		TopK:        opts.TopK,
 		StopTokens:  opts.StopTokens,
 	}
+}
+
+// loadToolParserFromConfig attempts to load a tool parser from genai_config.json.
+// Returns nil parser and empty format if no tool_call_format is configured.
+func loadToolParserFromConfig(modelPath string, logger *zap.Logger) (ToolParser, string) {
+	format := readToolCallFormat(modelPath)
+	if format == "" {
+		return nil, ""
+	}
+	parser, err := GetToolParser(format, modelPath)
+	if err != nil {
+		logger.Warn("Failed to load tool parser",
+			zap.String("format", format),
+			zap.Error(err))
+		return nil, ""
+	}
+	if parser != nil {
+		logger.Info("Loaded tool parser from model config",
+			zap.String("format", format))
+	}
+	return parser, format
 }
 
 // genaiConfigToolFormat holds the tool_call_format from genai_config.json.

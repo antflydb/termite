@@ -70,21 +70,7 @@ func NewEngineGenerator(modelPath string, factory backends.GenerativeSessionFact
 
 	contextLength := backends.ReadContextLength(modelPath)
 
-	// Try to load tool parser from genai_config.json
-	var toolParser ToolParser
-	var toolCallFormat string
-	if format := readToolCallFormat(modelPath); format != "" {
-		if parser, parseErr := GetToolParser(format, modelPath); parseErr == nil && parser != nil {
-			toolParser = parser
-			toolCallFormat = format
-			logger.Info("Loaded tool parser from model config",
-				zap.String("format", toolCallFormat))
-		} else if parseErr != nil {
-			logger.Warn("Failed to load tool parser",
-				zap.String("format", format),
-				zap.Error(parseErr))
-		}
-	}
+	toolParser, toolCallFormat := loadToolParserFromConfig(modelPath, logger)
 
 	logger.Info("Created EngineGenerator with continuous batching",
 		zap.String("modelPath", modelPath),
@@ -219,15 +205,15 @@ func (g *EngineGenerator) GenerateStream(ctx context.Context, messages []Message
 			if delta.EOSReached {
 				break
 			}
-			tokenCount++
-			if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
-				genCancel()
-				break
-			}
 			select {
 			case <-ctx.Done():
 				return
 			case tokenChan <- TokenDelta{Token: delta.Token, Index: delta.Sequence}:
+			}
+			tokenCount++
+			if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
+				genCancel()
+				break
 			}
 		}
 
@@ -283,8 +269,6 @@ func (g *EngineGenerator) Close() error {
 func (g *EngineGenerator) getFallbackSession() (backends.GenerativeSession, error) {
 	g.fallbackOnce.Do(func() {
 		g.logger.Info("Lazily creating fallback session for multimodal requests")
-		g.fallbackMu.Lock()
-		defer g.fallbackMu.Unlock()
 		g.fallbackSession, g.fallbackErr = g.fallbackFactory.CreateGenerativeSession(g.modelPath)
 	})
 	g.fallbackMu.Lock()
