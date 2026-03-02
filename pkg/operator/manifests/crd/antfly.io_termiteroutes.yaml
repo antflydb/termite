@@ -368,6 +368,12 @@ spec:
                   route
                 format: int64
                 type: integer
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed by the controller.
+                  Used to skip validation when the spec has not changed.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

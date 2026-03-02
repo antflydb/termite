@@ -33,11 +33,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -57,6 +59,7 @@ type TermitePoolReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	TermiteImage string
+	Recorder     events.EventRecorder
 
 	// validationAttempts tracks consecutive validation failure counts per pool
 	// (namespace/name -> int). Reset on successful validation.
@@ -100,16 +103,29 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if needsValidation {
 		if err := r.validatePool(pool); err != nil {
 			logger.Error(err, "TermitePool validation failed")
+			meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+				Type:    antflyaiv1alpha1.TypeConfigurationValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  antflyaiv1alpha1.ReasonValidationFailed,
+				Message: err.Error(),
+			})
 			if pool.Status.Phase != antflyaiv1alpha1.TermitePoolPhaseDegraded {
 				pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseDegraded
-				if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
-					logger.Error(updateErr, "Failed to update status after validation error")
-				}
 			}
+			if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status after validation error")
+			}
+			r.Recorder.Eventf(pool, nil, corev1.EventTypeWarning, antflyaiv1alpha1.ReasonValidationFailed, antflyaiv1alpha1.ReasonValidationFailed, "Validation failed: %s", err.Error())
 			attempt := r.incrementValidationAttempts(poolKey)
 			return ctrl.Result{RequeueAfter: calculateBackoff(attempt - 1)}, nil
 		}
 		r.resetValidationAttempts(poolKey)
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:    antflyaiv1alpha1.TypeConfigurationValid,
+			Status:  metav1.ConditionTrue,
+			Reason:  antflyaiv1alpha1.ReasonValidationPassed,
+			Message: "Configuration is valid",
+		})
 	}
 
 	// 1. Create or update the headless Service
@@ -759,17 +775,10 @@ func calculateBackoff(attempt int) time.Duration {
 }
 
 func (r *TermitePoolReconciler) incrementValidationAttempts(key string) int {
-	for {
-		val, loaded := r.validationAttempts.LoadOrStore(key, 1)
-		if !loaded {
-			return 1
-		}
-		oldCount := val.(int)
-		newCount := oldCount + 1
-		if r.validationAttempts.CompareAndSwap(key, oldCount, newCount) {
-			return newCount
-		}
-	}
+	val, _ := r.validationAttempts.LoadOrStore(key, 0)
+	count := val.(int) + 1
+	r.validationAttempts.Store(key, count)
+	return count
 }
 
 func (r *TermitePoolReconciler) resetValidationAttempts(key string) {

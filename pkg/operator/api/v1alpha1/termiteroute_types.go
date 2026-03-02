@@ -258,6 +258,11 @@ type TermiteRouteStatus struct {
 	// Active indicates if the route is currently active
 	Active bool `json:"active,omitempty"`
 
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// Used to skip validation when the spec has not changed.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
 	// MatchedRequests is the total requests matched by this route
 	MatchedRequests int64 `json:"matchedRequests,omitempty"`
 

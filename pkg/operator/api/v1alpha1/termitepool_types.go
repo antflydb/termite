@@ -451,6 +451,13 @@ const (
 	TermitePoolPhaseDegraded TermitePoolPhase = "Degraded"
 )
 
+// Condition type and reason constants for TermitePool and TermiteRoute status.
+const (
+	TypeConfigurationValid = "ConfigurationValid"
+	ReasonValidationPassed = "ValidationPassed"
+	ReasonValidationFailed = "ValidationFailed"
+)
+
 // TermitePoolStatus defines the observed state of TermitePool
 type TermitePoolStatus struct {
 	// Phase is the current phase of the pool

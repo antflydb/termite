@@ -209,14 +209,16 @@ func runOperator(cmd *cobra.Command, args []string) error {
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		TermiteImage: termiteImage,
+		Recorder:     mgr.GetEventRecorder("termitepool-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create TermitePool controller: %w", err)
 	}
 
 	// Setup TermiteRoute controller
 	if err := (&controllers.TermiteRouteReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("termiteroute-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create TermiteRoute controller: %w", err)
 	}
