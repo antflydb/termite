@@ -218,6 +218,26 @@ type RouteRateLimiting struct {
 	PerModel bool `json:"perModel,omitempty"`
 }
 
+// RetryCondition defines a condition that triggers a retry
+type RetryCondition string
+
+const (
+	RetryOn5xx               RetryCondition = "5xx"
+	RetryOnReset             RetryCondition = "reset"
+	RetryOnConnectFailure    RetryCondition = "connect-failure"
+	RetryOnRetriable4xx      RetryCondition = "retriable-4xx"
+	RetryOnRefusedStream     RetryCondition = "refused-stream"
+	RetryOnCancelled         RetryCondition = "cancelled"
+	RetryOnDeadlineExceeded  RetryCondition = "deadline-exceeded"
+	RetryOnResourceExhausted RetryCondition = "resource-exhausted"
+)
+
+// ValidRetryConditions contains all valid retry condition values.
+var ValidRetryConditions = []RetryCondition{
+	RetryOn5xx, RetryOnReset, RetryOnConnectFailure, RetryOnRetriable4xx,
+	RetryOnRefusedStream, RetryOnCancelled, RetryOnDeadlineExceeded, RetryOnResourceExhausted,
+}
+
 // RouteRetry configures retry behavior
 type RouteRetry struct {
 	// Attempts is the max retry attempts
@@ -230,7 +250,7 @@ type RouteRetry struct {
 
 	// RetryOn specifies which errors trigger retries
 	// +optional
-	RetryOn []string `json:"retryOn,omitempty"` // e.g., "5xx", "reset", "connect-failure"
+	RetryOn []RetryCondition `json:"retryOn,omitempty"`
 }
 
 // TermiteRouteStatus defines the observed state of TermiteRoute

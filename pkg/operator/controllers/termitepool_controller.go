@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -56,6 +57,10 @@ type TermitePoolReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	TermiteImage string
+
+	// validationAttempts tracks consecutive validation failure counts per pool
+	// (namespace/name -> int). Reset on successful validation.
+	validationAttempts sync.Map
 }
 
 // +kubebuilder:rbac:groups=antfly.io,resources=termitepools,verbs=get;list;watch;create;update;patch;delete
@@ -77,6 +82,7 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	pool := &antflyaiv1alpha1.TermitePool{}
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		if errors.IsNotFound(err) {
+			r.validationAttempts.Delete(req.String())
 			logger.Info("TermitePool not found, ignoring")
 			return ctrl.Result{}, nil
 		}
@@ -85,16 +91,25 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("Reconciling TermitePool", "name", pool.Name)
 
+	poolKey := req.String()
+
 	// 0. Validate configuration (fallback when webhook is disabled)
-	if err := r.validatePool(pool); err != nil {
-		logger.Error(err, "TermitePool validation failed")
-		// Update status to reflect validation error
-		pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseDegraded
-		if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status after validation error")
+	// Generation guard: skip if spec unchanged since last successful validation.
+	needsValidation := pool.Status.ObservedGeneration != pool.Generation ||
+		pool.Status.Phase == antflyaiv1alpha1.TermitePoolPhaseDegraded
+	if needsValidation {
+		if err := r.validatePool(pool); err != nil {
+			logger.Error(err, "TermitePool validation failed")
+			if pool.Status.Phase != antflyaiv1alpha1.TermitePoolPhaseDegraded {
+				pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseDegraded
+				if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
+					logger.Error(updateErr, "Failed to update status after validation error")
+				}
+			}
+			attempt := r.incrementValidationAttempts(poolKey)
+			return ctrl.Result{RequeueAfter: calculateBackoff(attempt - 1)}, nil
 		}
-		// Requeue with backoff
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		r.resetValidationAttempts(poolKey)
 	}
 
 	// 1. Create or update the headless Service
@@ -688,26 +703,77 @@ func (r *TermitePoolReconciler) applyGKEPodSpec(podTemplate *corev1.PodTemplateS
 func (r *TermitePoolReconciler) updateStatus(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
 	// Get StatefulSet to read replica status
 	sts := &appsv1.StatefulSet{}
+
+	newPhase := antflyaiv1alpha1.TermitePoolPhasePending
+	var ready, total, desired int32
+
 	if err := r.Get(ctx, types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}, sts); err != nil {
 		if !errors.IsNotFound(err) {
 			return err
 		}
-		pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhasePending
 	} else {
-		pool.Status.Replicas.Ready = sts.Status.ReadyReplicas
-		pool.Status.Replicas.Total = sts.Status.Replicas
-		pool.Status.Replicas.Desired = *sts.Spec.Replicas
+		ready = sts.Status.ReadyReplicas
+		total = sts.Status.Replicas
+		desired = *sts.Spec.Replicas
 
-		if sts.Status.ReadyReplicas == *sts.Spec.Replicas {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseRunning
-		} else if sts.Status.ReadyReplicas > 0 {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseScaling
-		} else {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhasePending
+		if ready == desired {
+			newPhase = antflyaiv1alpha1.TermitePoolPhaseRunning
+		} else if ready > 0 {
+			newPhase = antflyaiv1alpha1.TermitePoolPhaseScaling
 		}
 	}
 
+	// Skip update if nothing changed
+	if pool.Status.Phase == newPhase &&
+		pool.Status.Replicas.Ready == ready &&
+		pool.Status.Replicas.Total == total &&
+		pool.Status.Replicas.Desired == desired &&
+		pool.Status.ObservedGeneration == pool.Generation {
+		return nil
+	}
+
+	pool.Status.Phase = newPhase
+	pool.Status.Replicas.Ready = ready
+	pool.Status.Replicas.Total = total
+	pool.Status.Replicas.Desired = desired
+	pool.Status.ObservedGeneration = pool.Generation
+
 	return r.Status().Update(ctx, pool)
+}
+
+// calculateBackoff calculates exponential backoff duration for validation failures.
+// Schedule: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
+func calculateBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	// Cap to avoid int overflow (1<<63 wraps negative).
+	if attempt > 6 {
+		return 60 * time.Second
+	}
+	delay := time.Duration(1<<attempt) * time.Second
+	if delay > 60*time.Second {
+		return 60 * time.Second
+	}
+	return delay
+}
+
+func (r *TermitePoolReconciler) incrementValidationAttempts(key string) int {
+	for {
+		val, loaded := r.validationAttempts.LoadOrStore(key, 1)
+		if !loaded {
+			return 1
+		}
+		oldCount := val.(int)
+		newCount := oldCount + 1
+		if r.validationAttempts.CompareAndSwap(key, oldCount, newCount) {
+			return newCount
+		}
+	}
+}
+
+func (r *TermitePoolReconciler) resetValidationAttempts(key string) {
+	r.validationAttempts.Delete(key)
 }
 
 func (r *TermitePoolReconciler) labels(pool *antflyaiv1alpha1.TermitePool) map[string]string {

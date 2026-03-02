@@ -17,7 +17,7 @@ package controllers
 
 import (
 	"context"
-	"time"
+	"sync"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,7 +31,8 @@ import (
 // TermiteRouteReconciler reconciles a TermiteRoute object
 type TermiteRouteReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	validationAttempts sync.Map
 }
 
 // +kubebuilder:rbac:groups=antfly.io,resources=termiteroutes,verbs=get;list;watch;create;update;patch;delete
@@ -41,12 +42,14 @@ type TermiteRouteReconciler struct {
 // Reconcile handles TermiteRoute reconciliation
 func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	key := req.String()
 
 	// Fetch the TermiteRoute
 	route := &antflyaiv1alpha1.TermiteRoute{}
 	if err := r.Get(ctx, req.NamespacedName, route); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("TermiteRoute not found, ignoring")
+			r.validationAttempts.Delete(key)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -59,13 +62,14 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// enforced by the admission webhook.
 	if err := route.ValidateTermiteRoute(); err != nil {
 		logger.Error(err, "TermiteRoute validation failed")
-		route.Status.Active = false
-		if statusErr := r.Status().Update(ctx, route); statusErr != nil {
-			return ctrl.Result{}, statusErr
+		attempt := r.incrementValidationAttempts(key)
+		if route.Status.Active {
+			route.Status.Active = false
+			if statusErr := r.Status().Update(ctx, route); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
 		}
-		// Requeue with backoff to allow recovery if the user fixes the spec,
-		// consistent with TermitePool controller behavior.
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: calculateBackoff(attempt - 1)}, nil
 	}
 
 	// Validate referenced pools exist
@@ -74,21 +78,26 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		if err := r.Get(ctx, client.ObjectKey{Name: dest.Pool, Namespace: route.Namespace}, pool); err != nil {
 			if errors.IsNotFound(err) {
 				logger.Error(err, "Referenced pool not found", "pool", dest.Pool)
-				route.Status.Active = false
-				if err := r.Status().Update(ctx, route); err != nil {
-					return ctrl.Result{}, err
+				attempt := r.incrementValidationAttempts(key)
+				if route.Status.Active {
+					route.Status.Active = false
+					if err := r.Status().Update(ctx, route); err != nil {
+						return ctrl.Result{}, err
+					}
 				}
-				// Pool may be created later — requeue to retry.
-				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: calculateBackoff(attempt - 1)}, nil
 			}
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Route is valid, mark as active
-	route.Status.Active = true
-	if err := r.Status().Update(ctx, route); err != nil {
-		return ctrl.Result{}, err
+	r.validationAttempts.Delete(key)
+	if !route.Status.Active {
+		route.Status.Active = true
+		if err := r.Status().Update(ctx, route); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// The actual route configuration is applied by the proxy
@@ -96,6 +105,13 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// The operator's role is primarily validation and status management.
 
 	return ctrl.Result{}, nil
+}
+
+func (r *TermiteRouteReconciler) incrementValidationAttempts(key string) int {
+	val, _ := r.validationAttempts.LoadOrStore(key, 0)
+	count := val.(int) + 1
+	r.validationAttempts.Store(key, count)
+	return count
 }
 
 // SetupWithManager sets up the controller with the Manager

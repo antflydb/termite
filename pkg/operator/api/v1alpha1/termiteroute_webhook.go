@@ -17,6 +17,7 @@ package v1alpha1
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -238,19 +239,13 @@ func (r *TermiteRoute) validateRetry() error {
 	}
 
 	// Validate retryOn values
-	validRetryOn := map[string]bool{
-		"5xx":                true,
-		"reset":              true,
-		"connect-failure":    true,
-		"retriable-4xx":      true,
-		"refused-stream":     true,
-		"cancelled":          true,
-		"deadline-exceeded":  true,
-		"resource-exhausted": true,
-	}
 	for _, condition := range retry.RetryOn {
-		if !validRetryOn[condition] {
-			return fmt.Errorf("invalid retry condition '%s'. Valid values: 5xx, reset, connect-failure, retriable-4xx, refused-stream, cancelled, deadline-exceeded, resource-exhausted", condition)
+		if !slices.Contains(ValidRetryConditions, condition) {
+			names := make([]string, len(ValidRetryConditions))
+			for i, c := range ValidRetryConditions {
+				names[i] = string(c)
+			}
+			return fmt.Errorf("invalid retry condition '%s'. Valid values: %s", condition, strings.Join(names, ", "))
 		}
 	}
 

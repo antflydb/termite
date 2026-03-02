@@ -526,7 +526,7 @@ func (in *RouteRetry) DeepCopyInto(out *RouteRetry) {
 	}
 	if in.RetryOn != nil {
 		in, out := &in.RetryOn, &out.RetryOn
-		*out = make([]string, len(*in))
+		*out = make([]RetryCondition, len(*in))
 		copy(*out, *in)
 	}
 }

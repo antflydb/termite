@@ -200,6 +200,8 @@ spec:
                   retryOn:
                     description: RetryOn specifies which errors trigger retries
                     items:
+                      description: RetryCondition defines a condition that triggers
+                        a retry
                       type: string
                     type: array
                 type: object
