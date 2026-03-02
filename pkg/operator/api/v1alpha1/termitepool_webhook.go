@@ -23,28 +23,25 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// ValidateCreate validates the pool configuration when creating a new pool
+// ValidateCreate validates the pool configuration when creating a new pool.
+// Called by controller fallback when webhooks are disabled.
 func (r *TermitePool) ValidateCreate() error {
-	return r.validateTermitePool()
+	return r.ValidateTermitePool()
 }
 
-// ValidateUpdate validates the pool configuration when updating an existing pool
+// ValidateUpdate validates the pool configuration when updating an existing pool.
+// Called by controller fallback when webhooks are disabled (note: controllers cannot
+// provide the old object, so this is only called by the deprecated webhook interface).
 func (r *TermitePool) ValidateUpdate(old runtime.Object) error {
 	oldPool := old.(*TermitePool)
-	if err := r.validateImmutability(oldPool); err != nil {
+	if err := r.ValidateImmutability(oldPool); err != nil {
 		return err
 	}
-	return r.validateTermitePool()
+	return r.ValidateTermitePool()
 }
 
-// ValidateDelete validates pool deletion (no validation needed)
-func (r *TermitePool) ValidateDelete() error {
-	// No validation needed for delete operations
-	return nil
-}
-
-// validateTermitePool performs all validation checks
-func (r *TermitePool) validateTermitePool() error {
+// ValidateTermitePool performs all validation checks
+func (r *TermitePool) ValidateTermitePool() error {
 	var allErrors []string
 
 	if err := r.validateGKEConfig(); err != nil {
@@ -271,8 +268,8 @@ func (r *TermitePool) validateReplicaCounts() error {
 	return nil
 }
 
-// validateImmutability validates that immutable fields haven't changed
-func (r *TermitePool) validateImmutability(old *TermitePool) error {
+// ValidateImmutability validates that immutable fields haven't changed
+func (r *TermitePool) ValidateImmutability(old *TermitePool) error {
 	var errors []string
 
 	// Check if both old and new have GKE config

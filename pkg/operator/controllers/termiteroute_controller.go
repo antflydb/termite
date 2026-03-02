@@ -53,6 +53,18 @@ func (r *TermiteRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	logger.Info("Reconciling TermiteRoute", "name", route.Name)
 
+	// Validate configuration (fallback when webhook is disabled).
+	// Note: immutability checks require the old object and are only
+	// enforced by the admission webhook.
+	if err := route.ValidateTermiteRoute(); err != nil {
+		logger.Error(err, "TermiteRoute validation failed")
+		route.Status.Active = false
+		if statusErr := r.Status().Update(ctx, route); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Validate referenced pools exist
 	for _, dest := range route.Spec.Route {
 		pool := &antflyaiv1alpha1.TermitePool{}

@@ -23,9 +23,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
+	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -93,7 +94,7 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
 		// Requeue with backoff
-		return ctrl.Result{RequeueAfter: 30 * 1e9}, nil
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// 1. Create or update the headless Service
@@ -121,7 +122,7 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: 30 * 1e9}, nil // Requeue after 30 seconds
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil // Requeue after 30 seconds
 }
 
 func (r *TermitePoolReconciler) reconcileService(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
@@ -158,9 +159,12 @@ func (r *TermitePoolReconciler) reconcileService(ctx context.Context, pool *antf
 		return err
 	}
 
-	// Update if needed
-	existing.Spec.Ports = svc.Spec.Ports
-	return r.Update(ctx, existing)
+	// Only update if ports changed
+	if !reflect.DeepEqual(existing.Spec.Ports, svc.Spec.Ports) {
+		existing.Spec.Ports = svc.Spec.Ports
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 func (r *TermitePoolReconciler) reconcileConfigMap(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
@@ -215,8 +219,12 @@ func (r *TermitePoolReconciler) reconcileConfigMap(ctx context.Context, pool *an
 		return err
 	}
 
-	existing.Data = cm.Data
-	return r.Update(ctx, existing)
+	// Only update if data changed
+	if !reflect.DeepEqual(existing.Data, cm.Data) {
+		existing.Data = cm.Data
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 // generateCompleteConfig merges user-provided config with auto-generated settings
@@ -503,10 +511,19 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 		return err
 	}
 
-	// Update relevant fields
-	existing.Spec.Replicas = sts.Spec.Replicas
-	existing.Spec.Template = sts.Spec.Template
-	return r.Update(ctx, existing)
+	// Only update if replicas or template changed.
+	// Compare template-hash annotations rather than full template specs to avoid
+	// false positives from API server defaulting (e.g. added default fields).
+	replicasChanged := !reflect.DeepEqual(existing.Spec.Replicas, sts.Spec.Replicas)
+	existingHash := existing.Spec.Template.Annotations["termite.antfly.io/template-hash"]
+	desiredHash := sts.Spec.Template.Annotations["termite.antfly.io/template-hash"]
+	templateChanged := existingHash != desiredHash
+	if replicasChanged || templateChanged {
+		existing.Spec.Replicas = sts.Spec.Replicas
+		existing.Spec.Template = sts.Spec.Template
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 // computePodTemplateHash computes a hash of the pod template spec.
@@ -839,79 +856,11 @@ func (r *TermitePoolReconciler) addProbes(sts *appsv1.StatefulSet, pool *antflya
 	}
 }
 
-// validatePool performs controller-level validation (fallback when webhook is disabled)
+// validatePool performs controller-level validation (fallback when webhook is disabled).
+// Note: immutability checks require the old object and are only enforced by the
+// admission webhook.
 func (r *TermitePoolReconciler) validatePool(pool *antflyaiv1alpha1.TermitePool) error {
-	// Validate GKE config
-	if pool.Spec.GKE != nil {
-		gke := pool.Spec.GKE
-
-		// Validate compute class requires Autopilot
-		if gke.AutopilotComputeClass != "" && !gke.Autopilot {
-			return fmt.Errorf("spec.gke.autopilotComputeClass is set but spec.gke.autopilot=false; compute classes only work with GKE Autopilot clusters")
-		}
-
-		// Validate compute class enum (only if non-empty)
-		if gke.AutopilotComputeClass != "" {
-			validClasses := map[string]bool{
-				"Accelerator": true, "Balanced": true, "Performance": true,
-				"Scale-Out": true, "autopilot": true, "autopilot-spot": true,
-			}
-			if !validClasses[gke.AutopilotComputeClass] {
-				return fmt.Errorf("invalid GKE Autopilot compute class '%s'", gke.AutopilotComputeClass)
-			}
-		}
-
-		// Validate no conflicting settings (spot + autopilot)
-		// Exception: TPU workloads CAN use hardware.spot=true even in Autopilot mode
-		// because TPU provisioning doesn't use compute class (node selectors drive it)
-		isTPUWorkload := strings.Contains(pool.Spec.Hardware.Accelerator, "tpu")
-		if gke.Autopilot && pool.Spec.Hardware.Spot && !isTPUWorkload {
-			return fmt.Errorf("spec.hardware.spot=true conflicts with spec.gke.autopilot=true; use gke.autopilotComputeClass='autopilot-spot' instead")
-		}
-	}
-
-	// Validate EKS config
-	if pool.Spec.EKS != nil && pool.Spec.EKS.Enabled {
-		eks := pool.Spec.EKS
-		// Validate IRSA role ARN format if specified
-		if eks.IRSARoleARN != "" {
-			irsaPattern := regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:iam::\d{12}:role/.+$`)
-			if !irsaPattern.MatchString(eks.IRSARoleARN) {
-				return fmt.Errorf("invalid IRSA role ARN format: '%s'", eks.IRSARoleARN)
-			}
-		}
-		// Validate instance types format
-		for _, instanceType := range eks.InstanceTypes {
-			if instanceType == "" {
-				return fmt.Errorf("spec.eks.instanceTypes contains an empty string")
-			}
-			instancePattern := regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+$`)
-			if !instancePattern.MatchString(instanceType) {
-				return fmt.Errorf("invalid instance type format: '%s'", instanceType)
-			}
-		}
-	}
-
-	// Validate no conflicting cloud providers
-	gkeEnabled := pool.Spec.GKE != nil && pool.Spec.GKE.Autopilot
-	eksEnabled := pool.Spec.EKS != nil && pool.Spec.EKS.Enabled
-	if gkeEnabled && eksEnabled {
-		return fmt.Errorf("both spec.gke.autopilot=true and spec.eks.enabled=true are set; a pool cannot be configured for both GKE and EKS simultaneously")
-	}
-
-	// Validate replica counts
-	if pool.Spec.Replicas.Min < 0 {
-		return fmt.Errorf("spec.replicas.min must be >= 0, got %d", pool.Spec.Replicas.Min)
-	}
-	if pool.Spec.Replicas.Max <= 0 {
-		return fmt.Errorf("spec.replicas.max must be > 0, got %d", pool.Spec.Replicas.Max)
-	}
-	if pool.Spec.Replicas.Min > pool.Spec.Replicas.Max {
-		return fmt.Errorf("spec.replicas.min (%d) cannot be greater than spec.replicas.max (%d)",
-			pool.Spec.Replicas.Min, pool.Spec.Replicas.Max)
-	}
-
-	return nil
+	return pool.ValidateTermitePool()
 }
 
 // applySchedulingConstraints applies user-specified scheduling constraints to the pod template.

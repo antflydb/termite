@@ -1,0 +1,32 @@
+namespace: termite-system
+
+resources:
+  - ../manager
+  - ../webhook
+  - ../certmanager
+
+patches:
+  - path: manager_webhook_patch.yaml
+
+replacements:
+  # Patch the cert-manager Certificate dnsNames with the actual namespace.
+  # Kustomize's namespace transformer only rewrites metadata.namespace,
+  # not arbitrary spec fields like dnsNames.
+  - source:
+      kind: Certificate
+      group: cert-manager.io
+      version: v1
+      name: termite-operator-serving-cert
+      fieldPath: metadata.namespace
+    targets:
+      - select:
+          kind: Certificate
+          group: cert-manager.io
+          version: v1
+          name: termite-operator-serving-cert
+        fieldPaths:
+          - spec.dnsNames.0
+          - spec.dnsNames.1
+        options:
+          delimiter: '.'
+          index: 1

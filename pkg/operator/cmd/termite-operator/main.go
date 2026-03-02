@@ -33,6 +33,8 @@ import (
 
 	antflyaiv1alpha1 "github.com/antflydb/termite/pkg/operator/api/v1alpha1"
 	"github.com/antflydb/termite/pkg/operator/controllers"
+	webhookv1alpha1 "github.com/antflydb/termite/pkg/operator/internal/webhook/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 var (
@@ -183,7 +185,7 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	// Convert zap logger to logr for controller-runtime
 	ctrl.SetLogger(zapr.NewLogger(zapLogger))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgrOpts := ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
@@ -191,7 +193,16 @@ func runOperator(cmd *cobra.Command, args []string) error {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "termite-operator.antfly.io",
-	})
+	}
+
+	// Configure webhook server when webhooks are enabled
+	if webhooksEnabled() {
+		mgrOpts.WebhookServer = webhook.NewServer(webhook.Options{
+			Port: 9443,
+		})
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
 		return fmt.Errorf("unable to start manager: %w", err)
 	}
@@ -211,6 +222,13 @@ func runOperator(cmd *cobra.Command, args []string) error {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create TermiteRoute controller: %w", err)
+	}
+
+	// Setup webhooks
+	if webhooksEnabled() {
+		if err := webhookv1alpha1.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create webhooks: %w", err)
+		}
 	}
 
 	// Setup health checks
@@ -233,4 +251,11 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// webhooksEnabled returns true unless ENABLE_WEBHOOKS is explicitly set to
+// "false" or "0" (case-insensitive).
+func webhooksEnabled() bool {
+	v := strings.ToLower(os.Getenv("ENABLE_WEBHOOKS"))
+	return v != "false" && v != "0"
 }

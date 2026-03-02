@@ -22,23 +22,21 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// ValidateCreate validates the TermiteRoute configuration when creating a new route
+// ValidateCreate validates the TermiteRoute configuration when creating a new route.
+// Called by controller fallback when webhooks are disabled.
 func (r *TermiteRoute) ValidateCreate() error {
-	return r.validateTermiteRoute()
+	return r.ValidateTermiteRoute()
 }
 
-// ValidateUpdate validates the TermiteRoute configuration when updating an existing route
+// ValidateUpdate validates the TermiteRoute configuration when updating an existing route.
+// Called by controller fallback when webhooks are disabled (note: controllers cannot
+// provide the old object, so this is only called by the deprecated webhook interface).
 func (r *TermiteRoute) ValidateUpdate(old runtime.Object) error {
-	return r.validateTermiteRoute()
+	return r.ValidateTermiteRoute()
 }
 
-// ValidateDelete validates route deletion (no validation needed)
-func (r *TermiteRoute) ValidateDelete() error {
-	return nil
-}
-
-// validateTermiteRoute performs all validation checks
-func (r *TermiteRoute) validateTermiteRoute() error {
+// ValidateTermiteRoute performs all validation checks
+func (r *TermiteRoute) ValidateTermiteRoute() error {
 	var allErrors []string
 
 	if err := r.validateRouteDestinations(); err != nil {
