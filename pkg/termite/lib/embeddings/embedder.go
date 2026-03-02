@@ -37,14 +37,10 @@ import (
 var _ embeddings.Embedder = (*PooledEmbedder)(nil)
 
 // DefaultEmbeddingBatchSize is the default batch size for embedding inference.
-//
-// The ONNX Runtime CoreML Execution Provider cannot handle batch sizes > 1 for embedding models.
-// This is specific to the CoreML EP bridge layer - pure ONNX Runtime CPU handles batching fine.
-// With CoreML, any batch size > 1 causes: "Error executing model: Unable to compute the prediction
-// using a neural network model (error code: -1)".
-//
-// See batch_test.go for validation of this limitation.
-const DefaultEmbeddingBatchSize = 1
+// The ONNX Runtime and GoMLX backends both handle batching fine.
+// CoreML runs through GoMLX/go-coreml (not the ONNX Runtime CoreML EP bridge),
+// so the old batch_size=1 workaround no longer applies.
+const DefaultEmbeddingBatchSize = 32
 
 // pipelineSet holds the pipelines for one pool slot.
 // Any combination of pipelines can be present: text-only models have only text,

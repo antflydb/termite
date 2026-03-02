@@ -200,7 +200,7 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 		var tokenCount int
 		for delta := range outputChan {
 			tokenCount++
-			if maxOutputTokens > 0 && tokenCount > maxOutputTokens {
+			if maxOutputTokens > 0 && tokenCount >= maxOutputTokens {
 				genCancel()
 				break
 			}
@@ -236,37 +236,54 @@ func (s *onnxGenerativeSession) Close() error {
 	return nil
 }
 
-// createOrtgenaiSession creates an ortgenai session.
-func createOrtgenaiSession(modelPath string) (*ortgenai.Session, error) {
-	// Set library path if needed
+// InitOrtgenaiForModel sets library path, initializes the ortgenai environment,
+// and ensures required config files (config.json, chat_template.jinja) exist.
+func InitOrtgenaiForModel(modelPath string) error {
 	if genaiPath := getGenAILibraryPath(); genaiPath != "" {
 		ortgenai.SetSharedLibraryPath(genaiPath)
 	}
-
-	// Initialize ortgenai environment
 	if err := ortgenai.InitializeEnvironment(); err != nil {
 		if !strings.Contains(err.Error(), "already") {
-			return nil, fmt.Errorf("initializing ortgenai environment: %w", err)
+			return fmt.Errorf("initializing ortgenai environment: %w", err)
 		}
 	}
-
-	// Ensure config.json exists - ortgenai requires it even if genai_config.json is present
 	if err := ensureHuggingFaceConfig(modelPath); err != nil {
-		return nil, fmt.Errorf("ensuring config.json: %w", err)
+		return fmt.Errorf("ensuring config.json: %w", err)
 	}
-
-	// Ensure chat_template.jinja exists - ortgenai requires it for chat models
 	if err := ensureChatTemplate(modelPath); err != nil {
-		return nil, fmt.Errorf("ensuring chat_template.jinja: %w", err)
+		return fmt.Errorf("ensuring chat_template.jinja: %w", err)
 	}
+	return nil
+}
 
-	// Create session
+// createOrtgenaiSession creates an ortgenai session.
+func createOrtgenaiSession(modelPath string) (*ortgenai.Session, error) {
+	if err := InitOrtgenaiForModel(modelPath); err != nil {
+		return nil, err
+	}
 	session, err := ortgenai.CreateSession(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating ortgenai session: %w", err)
 	}
-
 	return session, nil
+}
+
+// CreateOrtgenaiEngine creates an ortgenai Engine for continuous batching.
+func CreateOrtgenaiEngine(modelPath string) (*ortgenai.Engine, error) {
+	if err := InitOrtgenaiForModel(modelPath); err != nil {
+		return nil, err
+	}
+	engine, err := ortgenai.CreateEngine(modelPath)
+	if err != nil {
+		return nil, fmt.Errorf("creating ortgenai engine: %w", err)
+	}
+	return engine, nil
+}
+
+// ReadContextLength reads the context_length from genai_config.json.
+// Returns 0 if not found or error.
+func ReadContextLength(modelPath string) int {
+	return readContextLength(modelPath)
 }
 
 // ensureHuggingFaceConfig generates a minimal config.json from genai_config.json if missing.

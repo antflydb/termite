@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/knights-analytics/ortgenai"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
@@ -60,6 +61,22 @@ func LoadGenerator(
 		genFactory, bt, factoryErr := sessionManager.GetGenerativeSessionFactoryForModel(modelBackends)
 		if factoryErr != nil {
 			return nil, "", fmt.Errorf("getting generative session factory: %w", factoryErr)
+		}
+
+		// Try Engine API for continuous batching (available in ORT GenAI >= 0.9.1).
+		// The factory is passed so a fallback session can handle multimodal requests.
+		if ortgenai.IsEngineApiAvailable() {
+			logger.Debug("Engine API available, trying EngineGenerator",
+				zap.String("modelPath", modelPath))
+
+			engineGen, engineErr := NewEngineGenerator(modelPath, genFactory, logger)
+			if engineErr == nil {
+				logger.Info("Loaded generator using Engine (continuous batching)",
+					zap.String("modelPath", modelPath))
+				return engineGen, backends.BackendONNX, nil
+			}
+			logger.Warn("Engine creation failed, falling back to session pool",
+				zap.Error(engineErr))
 		}
 
 		genGenerator, genErr := NewPooledGenerativeSessionGenerator(modelPath, poolSize, genFactory, logger)
