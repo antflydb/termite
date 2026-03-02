@@ -78,8 +78,8 @@ func LoadMultiStageMetadata(modelPath string) (*MultiStageMetadata, error) {
 
 // LoadMultiStageOCRPipeline loads a multi-stage OCR pipeline from a model directory.
 // It reads termite_metadata.json to determine which stages to load, following the
-// Florence-2 pattern of cascading session creation with cleanup on error
-// (florence2.go:85-155).
+// encoder-decoder VLM pattern of cascading session creation with cleanup on error
+// (florence2.go).
 func LoadMultiStageOCRPipeline(
 	modelPath string,
 	sessionManager *backends.SessionManager,

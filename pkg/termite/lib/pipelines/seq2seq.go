@@ -734,6 +734,8 @@ func mapPastToPresent(inputName string) string {
 // extractKVCache extracts the KV-cache from decoder outputs.
 // For BART/REBEL models, this stores all present.* tensors which will be
 // passed as past_key_values.* inputs to subsequent decoder steps.
+// Encoder cross-attention KV tensors are carried forward from the previous
+// step when the current decoder doesn't re-emit them.
 func (m *seq2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
 	// Collect all present_key_values or present.* outputs
 	tensors := make(map[string]backends.NamedTensor)
@@ -754,6 +756,17 @@ func (m *seq2SeqModel) extractKVCache(outputs []backends.NamedTensor, batchSize 
 					Shape: shapeCopy,
 					Data:  dataCopy,
 				}
+			}
+		}
+	}
+
+	// Carry forward encoder cross-attention KV tensors from the previous
+	// step when the with-past decoder doesn't re-emit them.
+	if pastKV != nil && pastKV.Tensors != nil {
+		for name, tensor := range pastKV.Tensors {
+			if _, exists := tensors[name]; !exists && isEncoderKVTensor(name) {
+				tensors[name] = tensor
+				hasKVOutputs = true
 			}
 		}
 	}

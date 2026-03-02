@@ -47,6 +47,12 @@ type Vision2SeqModelConfig struct {
 	DecoderFirstStepPath string // decoder_model.onnx (no past KV inputs)
 	DecoderWithPastPath  string // decoder_with_past_model.onnx (with past KV inputs)
 
+	// Optional embed_tokens path (decoder-only VLMs like Moondream2)
+	EmbedTokensPath string
+
+	// Optional projection layer path (legacy Moondream2 layouts)
+	ProjectionPath string
+
 	// Decoder configuration
 	DecoderConfig *backends.DecoderConfig
 
@@ -109,6 +115,12 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 		"decoder_with_past.onnx",
 	})
 
+	// Find embed_tokens ONNX file (decoder-only VLMs like Moondream2)
+	embedTokensPath := FindONNXFile(modelPath, []string{"embed_tokens.onnx"})
+
+	// Find projection ONNX file (if present, legacy Moondream2 layouts)
+	projectionPath := FindONNXFile(modelPath, []string{"projection.onnx"})
+
 	// Load model configuration from config.json
 	rawConfig, err := loadRawVision2SeqConfig(modelPath)
 	if err != nil {
@@ -138,7 +150,7 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 		numHeads = FirstNonZero(text.DecoderAttentionHeads, 12) // Florence-2 default is 12
 		hiddenSize = FirstNonZero(text.DModel, 768)
 	} else {
-		numLayers = FirstNonZero(rawConfig.DecoderLayers, rawConfig.NumDecoderLayers, 6)
+		numLayers = FirstNonZero(rawConfig.DecoderLayers, rawConfig.NumDecoderLayers, rawConfig.NumHiddenLayers, 6)
 		numHeads = FirstNonZero(rawConfig.DecoderAttentionHeads, rawConfig.NumAttentionHeads, rawConfig.DecoderNumHeads, 8)
 		hiddenSize = FirstNonZero(rawConfig.DecoderHiddenSize, rawConfig.HiddenSize, 768)
 	}
@@ -150,6 +162,8 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 		DecoderPath:          decoderPath,
 		DecoderFirstStepPath: decoderFirstStepPath,
 		DecoderWithPastPath:  decoderWithPastPath,
+		EmbedTokensPath:      embedTokensPath,
+		ProjectionPath:       projectionPath,
 		DecoderConfig:        decoderConfig,
 		ImageConfig:          imageConfig,
 		NumLayers:            numLayers,
@@ -160,7 +174,20 @@ func LoadVision2SeqModelConfig(modelPath string) (*Vision2SeqModelConfig, error)
 }
 
 // IsVision2SeqModel checks if a model path contains a Vision2Seq model.
+// This includes standard encoder-decoder models, encoder-decoder VLMs
+// (Florence-2), and decoder-only VLMs (Moondream2).
 func IsVision2SeqModel(path string) bool {
+	// Check for decoder-only VLM (vision_encoder + embed_tokens, no encoder_model)
+	if IsDecoderOnlyVLMModel(path) {
+		return true
+	}
+
+	// Check for encoder-decoder VLM (vision_encoder + embed_tokens + encoder_model + decoder)
+	if IsEncoderDecoderVLMModel(path) {
+		return true
+	}
+
+	// Standard Vision2Seq (encoder + decoder)
 	encoderPath := FindONNXFile(path, []string{
 		"encoder.onnx",
 		"encoder_model.onnx",
@@ -194,6 +221,7 @@ type rawVision2SeqConfig struct {
 	DecoderAttentionHeads int `json:"decoder_attention_heads"`
 	DecoderHiddenSize     int `json:"d_model"`
 	NumDecoderLayers      int `json:"num_decoder_layers"`
+	NumHiddenLayers       int `json:"num_hidden_layers"` // GPT-style models (Moondream2/Phi-2)
 	NumAttentionHeads     int `json:"num_attention_heads"`
 	DecoderNumHeads       int `json:"decoder_num_heads"`
 	HiddenSize            int `json:"hidden_size"`
@@ -242,6 +270,7 @@ type rawVision2SeqConfig struct {
 		DecoderAttentionHeads int   `json:"decoder_attention_heads"`
 		DModel                int   `json:"d_model"`
 	} `json:"text_config"`
+
 }
 
 // rawPreprocessorConfig represents preprocessor_config.json
@@ -256,6 +285,10 @@ type rawPreprocessorConfig struct {
 }
 
 // loadRawVision2SeqConfig loads the model configuration from config.json.
+// Some models (e.g., Moondream2) nest architecture parameters under a
+// model-specific key (phi_config, llm_config, etc.) instead of at the top level.
+// This function promotes those nested fields so the rest of the config pipeline
+// can read them from standard top-level positions.
 func loadRawVision2SeqConfig(path string) (*rawVision2SeqConfig, error) {
 	configPath := filepath.Join(path, "config.json")
 	data, err := os.ReadFile(configPath)
@@ -263,12 +296,88 @@ func loadRawVision2SeqConfig(path string) (*rawVision2SeqConfig, error) {
 		return nil, fmt.Errorf("reading config.json: %w", err)
 	}
 
+	// First pass: promote architecture fields from nested config objects.
+	// Models like Moondream2 store decoder parameters under "phi_config",
+	// while other models may use "llm_config", "language_config", etc.
+	// We detect any nested object containing standard architecture fields
+	// (hidden_size, num_hidden_layers, etc.) and merge them into the top level.
+	data = promoteNestedArchConfig(data)
+
 	var config rawVision2SeqConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("parsing config.json: %w", err)
 	}
 
 	return &config, nil
+}
+
+// architectureFields are the standard field names that identify a nested
+// config object as containing model architecture parameters.
+var architectureFields = []string{
+	"hidden_size", "num_hidden_layers", "num_attention_heads", "vocab_size",
+}
+
+// promoteNestedArchConfig finds nested JSON objects containing architecture
+// fields and promotes those fields to the top level. This handles models that
+// nest their decoder/LLM config under a model-specific key (phi_config,
+// llm_config, language_config, etc.) without requiring explicit knowledge
+// of each key name.
+func promoteNestedArchConfig(data []byte) []byte {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return data
+	}
+
+	// Check if top-level already has architecture fields
+	if _, hasHiddenSize := raw["hidden_size"]; hasHiddenSize {
+		return data
+	}
+	if _, hasNumLayers := raw["num_hidden_layers"]; hasNumLayers {
+		return data
+	}
+
+	// Look for a nested object containing architecture fields
+	for key, val := range raw {
+		// Skip known non-architecture keys
+		switch key {
+		case "decoder", "encoder", "text_config", "vision_config", "decoder_config", "encoder_config":
+			continue
+		}
+
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(val, &nested); err != nil {
+			continue
+		}
+
+		// Count how many architecture fields this nested object has
+		matches := 0
+		for _, field := range architectureFields {
+			if _, ok := nested[field]; ok {
+				matches++
+			}
+		}
+
+		// Require at least 2 matching fields to avoid false positives
+		if matches < 2 {
+			continue
+		}
+
+		// Promote nested fields to the top level (don't overwrite existing)
+		for nestedKey, nestedVal := range nested {
+			if _, exists := raw[nestedKey]; !exists {
+				raw[nestedKey] = nestedVal
+			}
+		}
+
+		// Only promote from the first matching nested config
+		break
+	}
+
+	promoted, err := json.Marshal(raw)
+	if err != nil {
+		return data
+	}
+	return promoted
 }
 
 // loadPreprocessorConfig loads preprocessor_config.json if it exists.
@@ -387,14 +496,20 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 	numHeads := FirstNonZero(cfg.DecoderAttentionHeads, cfg.NumAttentionHeads, cfg.DecoderNumHeads, 8)
 	hiddenSize := FirstNonZero(cfg.DecoderHiddenSize, cfg.HiddenSize, 768)
 
+	// Fall back to BOS token if decoder_start_token_id is not set (e.g., Moondream2/Phi-2)
+	decoderStartTokenID := cfg.DecoderStartTokenID
+	if decoderStartTokenID == 0 && cfg.BOSTokenID != 0 {
+		decoderStartTokenID = cfg.BOSTokenID
+	}
+
 	return &backends.DecoderConfig{
 		VocabSize:           cfg.VocabSize,
 		MaxLength:           maxLength,
 		EOSTokenID:          eosTokenID,
 		BOSTokenID:          cfg.BOSTokenID,
 		PadTokenID:          cfg.PadTokenID,
-		DecoderStartTokenID: cfg.DecoderStartTokenID,
-		NumLayers:           FirstNonZero(cfg.DecoderLayers, cfg.NumDecoderLayers, 6),
+		DecoderStartTokenID: decoderStartTokenID,
+		NumLayers:           FirstNonZero(cfg.DecoderLayers, cfg.NumDecoderLayers, cfg.NumHiddenLayers, 6),
 		NumHeads:            numHeads,
 		HeadDim:             hiddenSize / numHeads,
 	}
@@ -748,6 +863,25 @@ func (m *vision2SeqModel) runDecoder(ctx context.Context, inputs *backends.Model
 // buildDecoderInputsForSession creates the input tensors for the specified decoder session.
 // This allows using different sessions for first step (no KV-cache) and subsequent steps.
 func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session, inputIDs []int64, batchSize, seqLen int, encoderOutput *backends.EncoderOutput, pastKV *backends.KVCache) ([]backends.NamedTensor, error) {
+	return buildDecoderInputs(session, inputIDs, batchSize, seqLen, encoderOutput, pastKV, m.config.NumHeads, m.config.HeadDim)
+}
+
+// buildDecoderInputs creates input tensors for a decoder session based on the
+// session's declared input requirements. It handles input_ids, encoder hidden
+// states (under various names: encoder_hidden_states, encoder_outputs, or
+// inputs_embeds), attention masks, use_cache_branch, and past key/value tensors.
+//
+// For models without KV-cache support (like Moondream2's Phi-2 decoder),
+// pass nil for pastKV. The function only creates KV tensors for inputs that
+// the session actually expects.
+func buildDecoderInputs(
+	session backends.Session,
+	inputIDs []int64,
+	batchSize, seqLen int,
+	encoderOutput *backends.EncoderOutput,
+	pastKV *backends.KVCache,
+	numHeads, headDim int,
+) ([]backends.NamedTensor, error) {
 	var inputs []backends.NamedTensor
 
 	// Get decoder input names from the specified session
@@ -759,21 +893,39 @@ func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session,
 
 	// Add input_ids
 	inputs = append(inputs, backends.NamedTensor{
-		Name:  m.getDecoderInputIDsName(inputNames),
+		Name:  GetDecoderInputIDsName(inputNames),
 		Shape: []int64{int64(batchSize), int64(seqLen)},
 		Data:  inputIDs,
 	})
 
-	// Add encoder hidden states
-	if inputNames["encoder_hidden_states"] || inputNames["encoder_outputs"] {
+	// Add encoder hidden states under whichever name the session expects.
+	// Standard models use encoder_hidden_states or encoder_outputs;
+	// Moondream2 uses inputs_embeds as a fallback.
+	if inputNames["encoder_hidden_states"] || inputNames["encoder_outputs"] || inputNames["inputs_embeds"] {
 		name := "encoder_hidden_states"
-		if inputNames["encoder_outputs"] {
+		if inputNames["encoder_outputs"] && !inputNames["encoder_hidden_states"] {
 			name = "encoder_outputs"
+		}
+		if inputNames["inputs_embeds"] && !inputNames["encoder_hidden_states"] && !inputNames["encoder_outputs"] {
+			name = "inputs_embeds"
 		}
 		inputs = append(inputs, backends.NamedTensor{
 			Name:  name,
 			Shape: []int64{int64(encoderOutput.Shape[0]), int64(encoderOutput.Shape[1]), int64(encoderOutput.Shape[2])},
 			Data:  encoderOutput.HiddenStates,
+		})
+	}
+
+	// Add decoder attention mask if the session expects it
+	if inputNames["attention_mask"] {
+		mask := make([]int64, batchSize*seqLen)
+		for i := range mask {
+			mask[i] = 1
+		}
+		inputs = append(inputs, backends.NamedTensor{
+			Name:  "attention_mask",
+			Shape: []int64{int64(batchSize), int64(seqLen)},
+			Data:  mask,
 		})
 	}
 
@@ -792,10 +944,8 @@ func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session,
 	}
 
 	// Add use_cache_branch if needed
-	// Check the input data type to determine whether to use bool or float
 	if inputNames["use_cache_branch"] {
-		// Find the expected data type for use_cache_branch
-		var useCacheDataType backends.DataType = backends.DataTypeBool // default to bool
+		var useCacheDataType backends.DataType = backends.DataTypeBool
 		for _, info := range inputInfo {
 			if info.Name == "use_cache_branch" {
 				useCacheDataType = info.DataType
@@ -815,7 +965,6 @@ func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session,
 				Data:  useCache,
 			})
 		} else {
-			// Default to bool
 			inputs = append(inputs, backends.NamedTensor{
 				Name:  "use_cache_branch",
 				Shape: []int64{1},
@@ -824,22 +973,36 @@ func (m *vision2SeqModel) buildDecoderInputsForSession(session backends.Session,
 		}
 	}
 
-	// Add past_key_values inputs if needed
-	// Encoder KV tensors need to have sequence length matching encoder output
+	// Add past_key_values inputs if the session expects them.
+	// For models without KV-cache (like Moondream2), no past_key_values
+	// inputs will be declared and this loop is a no-op.
 	encoderSeqLen := encoderOutput.Shape[1]
+	if numHeads == 0 {
+		numHeads = 8
+	}
+	if headDim == 0 {
+		headDim = 64
+	}
 	for _, info := range inputInfo {
 		if IsPastKeyValueInput(info.Name) {
-			tensor := m.createPastKVTensor(info.Name, pastKV, batchSize, encoderSeqLen)
-			inputs = append(inputs, tensor)
+			var kvSeqLen int
+			if pastKV != nil && pastKV.SeqLen > 0 {
+				if isEncoderKVTensor(info.Name) {
+					kvSeqLen = encoderSeqLen
+				} else {
+					kvSeqLen = pastKV.SeqLen
+				}
+			}
+			size := batchSize * numHeads * kvSeqLen * headDim
+			inputs = append(inputs, backends.NamedTensor{
+				Name:  info.Name,
+				Shape: []int64{int64(batchSize), int64(numHeads), int64(kvSeqLen), int64(headDim)},
+				Data:  make([]float32, size),
+			})
 		}
 	}
 
 	return inputs, nil
-}
-
-// getDecoderInputIDsName returns the name for decoder input IDs.
-func (m *vision2SeqModel) getDecoderInputIDsName(inputNames map[string]bool) string {
-	return GetDecoderInputIDsName(inputNames)
 }
 
 // isEncoderKVTensor returns true if the tensor name indicates it's for encoder cross-attention.
@@ -847,48 +1010,6 @@ func isEncoderKVTensor(name string) bool {
 	// Encoder KV tensors typically have ".encoder." in their name
 	// e.g., "past_key_values.0.encoder.key" vs "past_key_values.0.decoder.key"
 	return strings.Contains(name, ".encoder.")
-}
-
-// createPastKVTensor creates a tensor for past key/value cache.
-// On the first step (when pastKV is nil), both encoder and decoder KV tensors
-// should have sequence length 0, matching transformers.js behavior.
-// The model will compute cross-attention KV from encoder_hidden_states and
-// output them as present.*.encoder.* tensors.
-func (m *vision2SeqModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int, encoderSeqLen int) backends.NamedTensor {
-	numHeads := m.config.NumHeads
-	headDim := m.config.HeadDim
-
-	// Use defaults if config values are 0 (shouldn't happen but be safe)
-	if numHeads == 0 {
-		numHeads = 8
-	}
-	if headDim == 0 {
-		headDim = 64
-	}
-
-	// Determine sequence length based on whether we have past KV cache
-	var seqLen int
-	if pastKV != nil && pastKV.SeqLen > 0 {
-		// We have past KV cache - use appropriate sequence lengths
-		if isEncoderKVTensor(name) {
-			seqLen = encoderSeqLen
-		} else {
-			seqLen = pastKV.SeqLen
-		}
-	} else {
-		// First step - use 0 sequence length for empty tensors
-		// This tells the model to compute everything from encoder_hidden_states
-		seqLen = 0
-	}
-
-	// Create tensor with appropriate shape
-	size := batchSize * numHeads * seqLen * headDim
-	data := make([]float32, size)
-	return backends.NamedTensor{
-		Name:  name,
-		Shape: []int64{int64(batchSize), int64(numHeads), int64(seqLen), int64(headDim)},
-		Data:  data,
-	}
 }
 
 // extractKVCache extracts the KV-cache from decoder outputs.
@@ -1012,7 +1133,7 @@ func (p *Vision2SeqPipeline) RunWithPrompt(ctx context.Context, img image.Image,
 	// For Florence-2, the prompt is already in the encoder, so just use decoder start token
 	// For other models, the prompt goes to the decoder
 	var startTokens []int32
-	if p.isFlorence2Model() {
+	if p.isEncoderDecoderVLMModel() {
 		startTokens = []int32{p.DecoderConfig.DecoderStartTokenID}
 	} else {
 		startTokens = p.GetStartTokens(prompt)
@@ -1135,7 +1256,7 @@ func (p *Vision2SeqPipeline) encodeImageWithPrompt(ctx context.Context, img imag
 
 	// Tokenize prompt if provided and this is a Florence-2 model
 	var promptTokenIDs [][]int32
-	if prompt != "" && p.isFlorence2Model() {
+	if prompt != "" && p.isEncoderDecoderVLMModel() {
 		tokens := p.Tokenizer.Encode(prompt)
 		promptTokenIDs = [][]int32{IntToInt32(tokens)}
 	}
@@ -1143,9 +1264,15 @@ func (p *Vision2SeqPipeline) encodeImageWithPrompt(ctx context.Context, img imag
 	return p.encodePixelsWithPrompt(ctx, pixels, promptTokenIDs)
 }
 
-// isFlorence2Model checks if the underlying model is a Florence-2 model.
-func (p *Vision2SeqPipeline) isFlorence2Model() bool {
-	_, ok := p.Model.(*florence2Model)
+// isEncoderDecoderVLMModel checks if the underlying model is an encoder-decoder VLM.
+func (p *Vision2SeqPipeline) isEncoderDecoderVLMModel() bool {
+	_, ok := p.Model.(*encoderDecoderVLMModel)
+	return ok
+}
+
+// isDecoderOnlyVLMModel checks if the underlying model is a decoder-only VLM.
+func (p *Vision2SeqPipeline) isDecoderOnlyVLMModel() bool {
+	_, ok := p.Model.(*decoderOnlyVLMModel)
 	return ok
 }
 
@@ -1185,14 +1312,22 @@ func LoadVision2SeqPipeline(
 		return nil, "", fmt.Errorf("getting session factory: %w", err)
 	}
 
-	// Load the model - check for Florence-2 architecture
+	// Load the model - check for specific architectures
 	var model backends.Model
-	if IsFlorence2Model(modelPath) {
-		model, err = LoadFlorence2Model(modelPath, factory)
+	if IsDecoderOnlyVLMModel(modelPath) {
+		// Decoder-only VLM: vision_encoder + embed_tokens + decoder (e.g., Moondream2)
+		model, err = LoadDecoderOnlyVLMModel(modelPath, factory)
 		if err != nil {
-			return nil, "", fmt.Errorf("loading Florence-2 model: %w", err)
+			return nil, "", fmt.Errorf("loading decoder-only VLM model: %w", err)
+		}
+	} else if IsEncoderDecoderVLMModel(modelPath) {
+		// Encoder-decoder VLM: vision_encoder + embed_tokens + encoder_model + decoder
+		model, err = LoadEncoderDecoderVLMModel(modelPath, factory)
+		if err != nil {
+			return nil, "", fmt.Errorf("loading encoder-decoder VLM model: %w", err)
 		}
 	} else {
+		// Standard Vision2Seq: encoder + decoder (TrOCR, Donut, etc.)
 		model, err = LoadVision2SeqModel(modelPath, factory)
 		if err != nil {
 			return nil, "", fmt.Errorf("loading model: %w", err)
