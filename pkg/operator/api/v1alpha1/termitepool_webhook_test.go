@@ -160,6 +160,17 @@ func TestValidateTermitePool_GKEAndEKSConflict(t *testing.T) {
 	}
 }
 
+func TestValidateTermitePool_GKENonAutopilotAndEKSConflict(t *testing.T) {
+	pool := validPool()
+	pool.Spec.GKE = &GKEConfig{Autopilot: false}
+	pool.Spec.EKS = &EKSConfig{Enabled: true}
+
+	err := pool.ValidateTermitePool()
+	if err == nil {
+		t.Error("expected error for non-Autopilot GKE + EKS conflict")
+	}
+}
+
 func TestValidateImmutability_AutopilotChange(t *testing.T) {
 	old := validPool()
 	old.Spec.GKE = &GKEConfig{Autopilot: true, AutopilotComputeClass: "Balanced"}
@@ -244,11 +255,49 @@ func TestValidateEKS_InvalidInstanceType(t *testing.T) {
 	pool := validPool()
 	pool.Spec.EKS = &EKSConfig{
 		Enabled:       true,
-		InstanceTypes: []string{"invalid-type"},
+		InstanceTypes: []string{"INVALID"},
 	}
 
 	err := pool.ValidateTermitePool()
 	if err == nil {
 		t.Error("expected error for invalid instance type format")
+	}
+}
+
+func TestValidateEKS_HyphenatedInstanceTypes(t *testing.T) {
+	validTypes := []string{"u-6tb1.56xlarge", "mac2-m2.metal", "m5.large", "c5.xlarge", "p3dn.24xlarge"}
+	for _, it := range validTypes {
+		t.Run(it, func(t *testing.T) {
+			pool := validPool()
+			pool.Spec.EKS = &EKSConfig{
+				Enabled:       true,
+				InstanceTypes: []string{it},
+			}
+
+			if err := pool.ValidateTermitePool(); err != nil {
+				t.Errorf("expected no error for instance type %s, got: %v", it, err)
+			}
+		})
+	}
+}
+
+func TestValidateEKS_ClearlyInvalidInstanceTypes(t *testing.T) {
+	invalidTypes := []string{"INVALID", "m5", ".large", ""}
+	for _, it := range invalidTypes {
+		name := it
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			pool := validPool()
+			pool.Spec.EKS = &EKSConfig{
+				Enabled:       true,
+				InstanceTypes: []string{it},
+			}
+
+			if err := pool.ValidateTermitePool(); err == nil {
+				t.Errorf("expected error for instance type %q, got nil", it)
+			}
+		})
 	}
 }

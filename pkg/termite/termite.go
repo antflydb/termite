@@ -17,6 +17,7 @@ package termite
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -559,25 +560,31 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	addDashboardRoutes(rootMux)
 
 	srv := &http.Server{
-		Addr:        u.Host,
 		Handler:     corsMiddleware(rootMux),
 		ReadTimeout: 540 * time.Second,
+	}
+
+	// Bind the socket before starting the server goroutine so readyC is only
+	// closed after the port is actually listening.
+	ln, err := net.Listen("tcp", u.Host)
+	if err != nil {
+		zl.Fatal("Failed to bind address", zap.String("address", u.Host), zap.Error(err))
+	}
+
+	// Signal readiness now that the socket is bound
+	if readyC != nil {
+		close(readyC)
 	}
 
 	// Start server in goroutine
 	serverErr := make(chan error, 1)
 	go func() {
-		zl.Info("Termite's api server starting", zap.String("address", config.ApiUrl))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		zl.Info("Termite's api server starting", zap.String("address", ln.Addr().String()))
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
 		close(serverErr)
 	}()
-
-	// Signal readiness after server starts
-	if readyC != nil {
-		close(readyC)
-	}
 
 	// Wait for context cancellation or server error
 	select {

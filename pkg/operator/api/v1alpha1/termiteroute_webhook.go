@@ -22,6 +22,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// timeFormatPattern matches HH:MM time format (00:00 - 23:59).
+var timeFormatPattern = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
+
 // ValidateCreate validates the TermiteRoute configuration when creating a new route.
 // Called by controller fallback when webhooks are disabled.
 func (r *TermiteRoute) ValidateCreate() error {
@@ -73,7 +76,6 @@ func (r *TermiteRoute) validateRouteDestinations() error {
 		return fmt.Errorf("spec.route must have at least one destination")
 	}
 
-	totalWeight := int32(0)
 	poolNames := make(map[string]bool)
 
 	for i, dest := range r.Spec.Route {
@@ -93,19 +95,7 @@ func (r *TermiteRoute) validateRouteDestinations() error {
 		if dest.Weight < 0 || dest.Weight > 100 {
 			return fmt.Errorf("spec.route[%d].weight must be between 0 and 100, got %d", i, dest.Weight)
 		}
-
-		totalWeight += dest.Weight
 	}
-
-	// Warn if weights don't sum to 100 (when no conditions present)
-	unconditionalRoutes := 0
-	for _, dest := range r.Spec.Route {
-		if dest.Condition == nil {
-			unconditionalRoutes++
-		}
-	}
-	// Note: When unconditionalRoutes > 0 && totalWeight != 100 && unconditionalRoutes == len(r.Spec.Route),
-	// we accept it without warning - weights are normalized by the proxy.
 
 	return nil
 }
@@ -170,14 +160,11 @@ func (r *TermiteRoute) validateMatch() error {
 
 // validateTimeWindow validates time window configuration
 func validateTimeWindow(tw *TimeWindowMatch) error {
-	// Validate time format (HH:MM)
-	timeRegex := regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
-
-	if tw.Start != "" && !timeRegex.MatchString(tw.Start) {
+	if tw.Start != "" && !timeFormatPattern.MatchString(tw.Start) {
 		return fmt.Errorf("start time '%s' is not in HH:MM format", tw.Start)
 	}
 
-	if tw.End != "" && !timeRegex.MatchString(tw.End) {
+	if tw.End != "" && !timeFormatPattern.MatchString(tw.End) {
 		return fmt.Errorf("end time '%s' is not in HH:MM format", tw.End)
 	}
 

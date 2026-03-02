@@ -48,6 +48,7 @@ type EngineGenerator struct {
 	toolCallFormat string
 
 	// Lazy-initialized fallback session for multimodal (image) requests.
+	fallbackMu      sync.Mutex
 	fallbackOnce    sync.Once
 	fallbackSession backends.GenerativeSession
 	fallbackFactory backends.GenerativeSessionFactory
@@ -269,6 +270,8 @@ func (g *EngineGenerator) Close() error {
 		g.engine.Destroy()
 		g.engine = nil
 	}
+	g.fallbackMu.Lock()
+	defer g.fallbackMu.Unlock()
 	if g.fallbackSession != nil {
 		g.fallbackSession.Close()
 		g.fallbackSession = nil
@@ -280,8 +283,12 @@ func (g *EngineGenerator) Close() error {
 func (g *EngineGenerator) getFallbackSession() (backends.GenerativeSession, error) {
 	g.fallbackOnce.Do(func() {
 		g.logger.Info("Lazily creating fallback session for multimodal requests")
+		g.fallbackMu.Lock()
+		defer g.fallbackMu.Unlock()
 		g.fallbackSession, g.fallbackErr = g.fallbackFactory.CreateGenerativeSession(g.modelPath)
 	})
+	g.fallbackMu.Lock()
+	defer g.fallbackMu.Unlock()
 	return g.fallbackSession, g.fallbackErr
 }
 
