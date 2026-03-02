@@ -139,14 +139,13 @@ var _ StreamingGenerator = (*PooledGenerativeSessionGenerator)(nil)
 // PooledGenerativeSessionGenerator wraps multiple GenerativeSessions for concurrent generation.
 // It adapts the backends.GenerativeSession interface to the generation.Generator interface.
 type PooledGenerativeSessionGenerator struct {
-	sessions       []backends.GenerativeSession
-	sem            *semaphore.Weighted
-	nextSession    atomic.Uint64
-	logger         *zap.Logger
-	poolSize       int
-	modelPath      string
-	toolParser     ToolParser
-	toolCallFormat string
+	sessions    []backends.GenerativeSession
+	sem         *semaphore.Weighted
+	nextSession atomic.Uint64
+	logger      *zap.Logger
+	poolSize    int
+	modelPath   string
+	toolSupport
 }
 
 // NewPooledGenerativeSessionGenerator creates a new pooled generator using GenerativeSessionFactory.
@@ -188,13 +187,15 @@ func NewPooledGenerativeSessionGenerator(
 	toolParser, toolCallFormat := loadToolParserFromConfig(modelPath, logger)
 
 	return &PooledGenerativeSessionGenerator{
-		sessions:       sessions,
-		sem:            semaphore.NewWeighted(int64(poolSize)),
-		logger:         logger,
-		poolSize:       poolSize,
-		modelPath:      modelPath,
-		toolParser:     toolParser,
-		toolCallFormat: toolCallFormat,
+		sessions:  sessions,
+		sem:       semaphore.NewWeighted(int64(poolSize)),
+		logger:    logger,
+		poolSize:  poolSize,
+		modelPath: modelPath,
+		toolSupport: toolSupport{
+			toolParser:     toolParser,
+			toolCallFormat: toolCallFormat,
+		},
 	}, nil
 }
 
@@ -249,49 +250,10 @@ func (p *PooledGenerativeSessionGenerator) GenerateStream(ctx context.Context, m
 		return nil, nil, err
 	}
 
-	// Adapt backend channels to generation channels
-	tokenChan := make(chan TokenDelta)
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer p.sem.Release(1)
-		defer close(tokenChan)
-		defer close(errChan)
-
-		for token := range backendTokenChan {
-			select {
-			case <-ctx.Done():
-				return
-			case tokenChan <- TokenDelta{Token: token.Token, Index: token.Index}:
-			}
-		}
-
-		for err := range backendErrChan {
-			if err != nil {
-				select {
-				case errChan <- err:
-				default:
-				}
-			}
-		}
-	}()
-
+	tokenChan, errChan := adaptBackendStream(ctx, backendTokenChan, backendErrChan, func() {
+		p.sem.Release(1)
+	})
 	return tokenChan, errChan, nil
-}
-
-// SupportsTools returns true if this generator supports tool calling.
-func (p *PooledGenerativeSessionGenerator) SupportsTools() bool {
-	return p.toolParser != nil
-}
-
-// ToolParser returns the tool parser for this generator.
-func (p *PooledGenerativeSessionGenerator) ToolParser() ToolParser {
-	return p.toolParser
-}
-
-// ToolCallFormat returns the tool call format name.
-func (p *PooledGenerativeSessionGenerator) ToolCallFormat() string {
-	return p.toolCallFormat
 }
 
 // Close releases resources.
@@ -348,6 +310,45 @@ func toBackendOptions(opts GenerateOptions) *backends.GenerativeOptions {
 		TopK:        opts.TopK,
 		StopTokens:  opts.StopTokens,
 	}
+}
+
+// adaptBackendStream bridges backend streaming channels to generation channels.
+// The optional onDone callback runs when the goroutine finishes (e.g., semaphore release).
+func adaptBackendStream(
+	ctx context.Context,
+	backendTokenChan <-chan backends.GenerativeToken,
+	backendErrChan <-chan error,
+	onDone func(),
+) (<-chan TokenDelta, <-chan error) {
+	tokenChan := make(chan TokenDelta)
+	errChan := make(chan error, 1)
+
+	go func() {
+		if onDone != nil {
+			defer onDone()
+		}
+		defer close(tokenChan)
+		defer close(errChan)
+
+		for token := range backendTokenChan {
+			select {
+			case <-ctx.Done():
+				return
+			case tokenChan <- TokenDelta{Token: token.Token, Index: token.Index}:
+			}
+		}
+
+		for err := range backendErrChan {
+			if err != nil {
+				select {
+				case errChan <- err:
+				default:
+				}
+			}
+		}
+	}()
+
+	return tokenChan, errChan
 }
 
 // loadToolParserFromConfig attempts to load a tool parser from genai_config.json.

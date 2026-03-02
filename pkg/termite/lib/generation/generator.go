@@ -35,14 +35,13 @@ var _ StreamingGenerator = (*PooledPipelineGenerator)(nil)
 // PooledPipelineGenerator manages multiple TextGenerationPipelines for concurrent text generation.
 // Each request acquires a pipeline slot via semaphore, enabling true parallelism.
 type PooledPipelineGenerator struct {
-	pipelines      []*pipelines.TextGenerationPipeline
-	sem            *semaphore.Weighted
-	nextPipeline   atomic.Uint64
-	logger         *zap.Logger
-	poolSize       int
-	modelPath      string
-	toolParser     ToolParser
-	toolCallFormat string
+	pipelines    []*pipelines.TextGenerationPipeline
+	sem          *semaphore.Weighted
+	nextPipeline atomic.Uint64
+	logger       *zap.Logger
+	poolSize     int
+	modelPath    string
+	toolSupport
 }
 
 // PooledPipelineGeneratorConfig holds configuration for creating a PooledPipelineGenerator.
@@ -162,13 +161,15 @@ func NewPooledPipelineGenerator(
 		zap.String("backend", string(backendType)))
 
 	return &PooledPipelineGenerator{
-		pipelines:      pipelineSlice,
-		sem:            semaphore.NewWeighted(int64(poolSize)),
-		logger:         logger,
-		poolSize:       poolSize,
-		modelPath:      cfg.ModelPath,
-		toolParser:     toolParser,
-		toolCallFormat: toolCallFormat,
+		pipelines: pipelineSlice,
+		sem:       semaphore.NewWeighted(int64(poolSize)),
+		logger:    logger,
+		poolSize:  poolSize,
+		modelPath: cfg.ModelPath,
+		toolSupport: toolSupport{
+			toolParser:     toolParser,
+			toolCallFormat: toolCallFormat,
+		},
 	}, backendType, nil
 }
 
@@ -377,21 +378,6 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 	}()
 
 	return tokenChan, errChan, nil
-}
-
-// SupportsTools returns true if this generator supports tool calling.
-func (p *PooledPipelineGenerator) SupportsTools() bool {
-	return p.toolParser != nil
-}
-
-// ToolParser returns the tool parser for this generator, or nil if not supported.
-func (p *PooledPipelineGenerator) ToolParser() ToolParser {
-	return p.toolParser
-}
-
-// ToolCallFormat returns the tool call format name (e.g., "functiongemma").
-func (p *PooledPipelineGenerator) ToolCallFormat() string {
-	return p.toolCallFormat
 }
 
 // Close releases resources.

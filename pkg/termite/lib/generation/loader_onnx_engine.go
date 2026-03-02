@@ -18,6 +18,7 @@ package generation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -40,12 +41,11 @@ var _ StreamingGenerator = (*EngineGenerator)(nil)
 // because the Engine C API only supports token-based inputs (OgaRequestAddTokens),
 // not named tensors (OgaGenerator_SetInputs) needed for processed image data.
 type EngineGenerator struct {
-	engine         *ortgenai.Engine
-	logger         *zap.Logger
-	modelPath      string
-	contextLength  int
-	toolParser     ToolParser
-	toolCallFormat string
+	engine        *ortgenai.Engine
+	logger        *zap.Logger
+	modelPath     string
+	contextLength int
+	toolSupport
 
 	// Lazy-initialized fallback session for multimodal (image) requests.
 	fallbackMu      sync.Mutex
@@ -82,8 +82,10 @@ func NewEngineGenerator(modelPath string, factory backends.GenerativeSessionFact
 		logger:          logger,
 		modelPath:       modelPath,
 		contextLength:   contextLength,
-		toolParser:      toolParser,
-		toolCallFormat:  toolCallFormat,
+		toolSupport: toolSupport{
+			toolParser:     toolParser,
+			toolCallFormat: toolCallFormat,
+		},
 	}, nil
 }
 
@@ -147,7 +149,7 @@ func (g *EngineGenerator) Generate(ctx context.Context, messages []Message, opts
 
 	// Check for errors (ignore context.Canceled since we may have cancelled intentionally).
 	for err := range errChan {
-		if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			return nil, fmt.Errorf("generation error: %w", err)
 		}
 	}
@@ -222,7 +224,7 @@ func (g *EngineGenerator) GenerateStream(ctx context.Context, messages []Message
 		}
 
 		for err := range ortErrChan {
-			if err != nil && !strings.Contains(err.Error(), "context canceled") {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				select {
 				case errChan <- err:
 				default:
@@ -232,21 +234,6 @@ func (g *EngineGenerator) GenerateStream(ctx context.Context, messages []Message
 	}()
 
 	return tokenChan, errChan, nil
-}
-
-// SupportsTools returns true if this generator supports tool calling.
-func (g *EngineGenerator) SupportsTools() bool {
-	return g.toolParser != nil
-}
-
-// ToolParser returns the tool parser for this generator.
-func (g *EngineGenerator) ToolParser() ToolParser {
-	return g.toolParser
-}
-
-// ToolCallFormat returns the tool call format name.
-func (g *EngineGenerator) ToolCallFormat() string {
-	return g.toolCallFormat
 }
 
 // Close releases resources.
@@ -265,20 +252,23 @@ func (g *EngineGenerator) Close() error {
 	return nil
 }
 
-// getFallbackSession lazily creates and returns the fallback GenerativeSession.
-func (g *EngineGenerator) getFallbackSession() (backends.GenerativeSession, error) {
+// getFallbackSessionLocked lazily creates and returns the fallback GenerativeSession.
+// The caller must hold fallbackMu.
+func (g *EngineGenerator) getFallbackSessionLocked() (backends.GenerativeSession, error) {
 	g.fallbackOnce.Do(func() {
 		g.logger.Info("Lazily creating fallback session for multimodal requests")
 		g.fallbackSession, g.fallbackErr = g.fallbackFactory.CreateGenerativeSession(g.modelPath)
 	})
-	g.fallbackMu.Lock()
-	defer g.fallbackMu.Unlock()
 	return g.fallbackSession, g.fallbackErr
 }
 
 // generateWithFallback delegates a multimodal Generate call to the fallback session.
+// Holds fallbackMu for the full duration to prevent Close() from destroying the session mid-call.
 func (g *EngineGenerator) generateWithFallback(ctx context.Context, messages []Message, opts GenerateOptions) (*GenerateResult, error) {
-	session, err := g.getFallbackSession()
+	g.fallbackMu.Lock()
+	defer g.fallbackMu.Unlock()
+
+	session, err := g.getFallbackSessionLocked()
 	if err != nil {
 		return nil, fmt.Errorf("creating fallback session: %w", err)
 	}
@@ -299,9 +289,13 @@ func (g *EngineGenerator) generateWithFallback(ctx context.Context, messages []M
 }
 
 // generateStreamWithFallback delegates a multimodal GenerateStream call to the fallback session.
+// Holds fallbackMu until the stream completes to prevent Close() from destroying the session.
 func (g *EngineGenerator) generateStreamWithFallback(ctx context.Context, messages []Message, opts GenerateOptions) (<-chan TokenDelta, <-chan error, error) {
-	session, err := g.getFallbackSession()
+	g.fallbackMu.Lock()
+
+	session, err := g.getFallbackSessionLocked()
 	if err != nil {
+		g.fallbackMu.Unlock()
 		return nil, nil, fmt.Errorf("creating fallback session: %w", err)
 	}
 
@@ -310,34 +304,12 @@ func (g *EngineGenerator) generateStreamWithFallback(ctx context.Context, messag
 
 	backendTokenChan, backendErrChan, err := session.GenerateStream(ctx, backendMsgs, backendOpts)
 	if err != nil {
+		g.fallbackMu.Unlock()
 		return nil, nil, err
 	}
 
-	tokenChan := make(chan TokenDelta)
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer close(tokenChan)
-		defer close(errChan)
-
-		for token := range backendTokenChan {
-			select {
-			case <-ctx.Done():
-				return
-			case tokenChan <- TokenDelta{Token: token.Token, Index: token.Index}:
-			}
-		}
-
-		for err := range backendErrChan {
-			if err != nil {
-				select {
-				case errChan <- err:
-				default:
-				}
-			}
-		}
-	}()
-
+	// Release fallbackMu when the stream goroutine completes.
+	tokenChan, errChan := adaptBackendStream(ctx, backendTokenChan, backendErrChan, g.fallbackMu.Unlock)
 	return tokenChan, errChan, nil
 }
 

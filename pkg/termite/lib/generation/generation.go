@@ -38,6 +38,17 @@ type ToolSupporter interface {
 	ToolCallFormat() string
 }
 
+// toolSupport provides a reusable ToolSupporter implementation.
+// Embed this in generator structs to satisfy the ToolSupporter interface.
+type toolSupport struct {
+	toolParser     ToolParser
+	toolCallFormat string
+}
+
+func (t *toolSupport) SupportsTools() bool    { return t.toolParser != nil }
+func (t *toolSupport) ToolParser() ToolParser { return t.toolParser }
+func (t *toolSupport) ToolCallFormat() string  { return t.toolCallFormat }
+
 // Message represents a chat message with optional multimodal content.
 type Message struct {
 	Role    string        `json:"role"`

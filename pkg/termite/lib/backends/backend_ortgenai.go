@@ -19,6 +19,7 @@ package backends
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -145,7 +146,7 @@ func (s *onnxGenerativeSession) Generate(ctx context.Context, messages []Generat
 
 	// Check for errors (ignore context.Canceled since we may have cancelled intentionally)
 	for err := range errChan {
-		if err != nil && !strings.Contains(err.Error(), "context canceled") {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			return nil, fmt.Errorf("generation error: %w", err)
 		}
 	}
@@ -216,7 +217,7 @@ func (s *onnxGenerativeSession) GenerateStream(ctx context.Context, messages []G
 		}
 
 		for err := range ortErrChan {
-			if err != nil && !strings.Contains(err.Error(), "context canceled") {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				select {
 				case errChan <- err:
 				default:
