@@ -246,8 +246,86 @@ type ModelManifest struct {
 	// Valid values: "onnx", "xla", "go"
 	// If empty, all backends are supported (default).
 	Backends []string `json:"backends,omitempty"`
+	// SessionOptions declares backend-specific session configuration for this model.
+	// Used by GoMLX-based backends to resolve ONNX If nodes statically and
+	// to override fixed input dimensions that should be dynamic.
+	SessionOptions *ManifestSessionOptions `json:"session_options,omitempty"`
 	// Provenance tracks where/when the model was obtained
 	Provenance *ModelProvenance `json:"provenance,omitempty"`
+}
+
+// ManifestSessionOptions declares backend-specific session options for a model.
+// These are applied when creating inference sessions, allowing models to declare
+// their own requirements (e.g., compile-time constants, dynamic axes) without
+// hardcoding them in the runner.
+type ManifestSessionOptions struct {
+	// InputConstants maps input names to compile-time constant values.
+	// On GoMLX-based backends, these inputs are baked into the computation graph,
+	// enabling static resolution of ONNX If node conditions.
+	InputConstants map[string]any `json:"input_constants,omitempty"`
+	// DynamicAxes overrides fixed input dimensions to be treated as dynamic.
+	DynamicAxes []ManifestDynamicAxis `json:"dynamic_axes,omitempty"`
+}
+
+// ManifestDynamicAxis specifies that a fixed input dimension should be dynamic.
+type ManifestDynamicAxis struct {
+	// InputName is the ONNX input name (e.g., "input")
+	InputName string `json:"input_name"`
+	// Axis is the dimension index to override (e.g., 0 for batch)
+	Axis int `json:"axis"`
+	// ParamName is the symbolic name for the dynamic dimension (e.g., "batch")
+	ParamName string `json:"param_name"`
+}
+
+// UnmarshalJSON custom-decodes ManifestSessionOptions to ensure JSON integer
+// values in InputConstants are stored as int64 (not float64). Go's default
+// json.Unmarshal into map[string]any produces float64 for all numbers, but
+// backends need int64 for integer constants (e.g., sample rate).
+func (o *ManifestSessionOptions) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		InputConstants map[string]json.RawMessage `json:"input_constants,omitempty"`
+		DynamicAxes    []ManifestDynamicAxis       `json:"dynamic_axes,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	o.DynamicAxes = raw.DynamicAxes
+	if len(raw.InputConstants) > 0 {
+		o.InputConstants = make(map[string]any, len(raw.InputConstants))
+		for k, v := range raw.InputConstants {
+			raw := strings.TrimSpace(string(v))
+			// Only try int64 when the raw token has no decimal point or exponent,
+			// so that "1.0" stays float64 and only "1" becomes int64.
+			if !strings.ContainsAny(raw, ".eE") {
+				var i int64
+				if err := json.Unmarshal(v, &i); err == nil {
+					o.InputConstants[k] = i
+					continue
+				}
+			}
+			// Try float64
+			var f float64
+			if err := json.Unmarshal(v, &f); err == nil {
+				o.InputConstants[k] = f
+				continue
+			}
+			// Try string
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil {
+				o.InputConstants[k] = s
+				continue
+			}
+			// Try bool
+			var b bool
+			if err := json.Unmarshal(v, &b); err == nil {
+				o.InputConstants[k] = b
+				continue
+			}
+			// Fallback: store raw
+			o.InputConstants[k] = string(v)
+		}
+	}
+	return nil
 }
 
 // VariantEntry can be either a single ModelFile or an array of ModelFiles.

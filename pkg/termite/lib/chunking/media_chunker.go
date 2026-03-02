@@ -55,20 +55,35 @@ type CloseableMediaChunker interface {
 	io.Closer
 }
 
+// normalizeAudioMIME classifies a MIME string as "wav", "mp3", or "" (unsupported).
+func normalizeAudioMIME(mimeType string) string {
+	m := strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case m == "audio/wav" || m == "audio/x-wav" || m == "audio/wave":
+		return "wav"
+	case m == "audio/mpeg" || m == "audio/mp3":
+		return "mp3"
+	}
+	return ""
+}
+
 // ChunkMedia dispatches to the appropriate chunker based on MIME type.
 func (m *FixedMediaChunker) ChunkMedia(ctx context.Context, data []byte, mimeType string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("empty media data")
 	}
 
-	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
-
-	switch {
-	case mimeType == "audio/wav" || mimeType == "audio/x-wav" || mimeType == "audio/wave":
+	switch normalizeAudioMIME(mimeType) {
+	case "wav":
 		return m.audio.ChunkAudio(ctx, data, opts)
-	case mimeType == "audio/mpeg" || mimeType == "audio/mp3":
+	case "mp3":
 		return m.audio.ChunkMP3(ctx, data, opts)
-	case mimeType == "image/gif":
+	}
+
+	// Non-audio types
+	mime := strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case mime == "image/gif":
 		return m.gif.ChunkGIF(ctx, data, opts)
 	default:
 		return nil, fmt.Errorf("unsupported media type for chunking: %s", mimeType)

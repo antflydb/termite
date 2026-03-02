@@ -11,7 +11,7 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260301002911-7bda42e89b87
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260302070729-e25bf6f18ec6
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
@@ -32,7 +32,7 @@ require (
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.22.4 // indirect
-	github.com/go-openapi/swag/jsonname v0.25.4 // indirect
+	github.com/go-openapi/swag/jsonname v0.25.5 // indirect
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
