@@ -59,14 +59,66 @@ var knownVariants = []string{"f32", "f16", "bf16", "i8", "i8-st", "i4"}
 // parseModelRef parses a model reference like "bge-small-en-v1.5-i8" into
 // name ("bge-small-en-v1.5") and variant ("i8"). If no known variant suffix
 // is found, returns the original ref with empty variant.
+// For owner-qualified refs like "owner/model-i8", the variant is stripped
+// only from the model name portion after the "/".
 func parseModelRef(ref string) (name, variant string) {
+	// For owner-qualified refs, only strip variant from the name portion
+	prefix := ""
+	target := ref
+	if idx := strings.Index(ref, "/"); idx != -1 {
+		prefix = ref[:idx+1]
+		target = ref[idx+1:]
+	}
+
 	for _, v := range knownVariants {
 		suffix := "-" + v
-		if before, ok := strings.CutSuffix(ref, suffix); ok {
-			return before, v
+		if before, ok := strings.CutSuffix(target, suffix); ok {
+			return prefix + before, v
 		}
 	}
 	return ref, ""
+}
+
+// resolveModelName resolves a bare model name (without owner prefix) to its
+// fully qualified owner/name form by looking it up in the registry index.
+// If the name already contains "/", it is returned unchanged.
+// For legacy models with no owner, the bare name is returned as-is.
+func resolveModelName(ctx context.Context, client *modelregistry.Client, name string) (string, error) {
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+
+	index, err := client.FetchIndex(ctx)
+	if err != nil {
+		return "", fmt.Errorf("fetching registry index: %w", err)
+	}
+
+	var matches []string
+	var fullPathMatch bool
+	for _, m := range index.Models {
+		if m.Name == name {
+			if m.Owner != "" {
+				matches = append(matches, m.Owner+"/"+m.Name)
+			} else {
+				fullPathMatch = true
+			}
+		}
+	}
+
+	switch {
+	case len(matches) == 1 && !fullPathMatch:
+		return matches[0], nil
+	case len(matches) > 1, len(matches) == 1 && fullPathMatch:
+		if fullPathMatch {
+			matches = append(matches, name)
+		}
+		return "", fmt.Errorf("ambiguous model name %q, specify owner explicitly: %s", name, strings.Join(matches, ", "))
+	case fullPathMatch:
+		// Legacy model with no owner — pass bare name through
+		return name, nil
+	default:
+		return "", fmt.Errorf("model %q not found in registry", name)
+	}
 }
 
 // PullFromRegistry pulls a model from the Antfly model registry.
@@ -90,6 +142,16 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 		modelregistry.WithBaseURL(opts.RegistryURL),
 		modelregistry.WithProgressHandler(PrintProgress),
 	)
+
+	// Resolve bare model names to owner/name using the registry index
+	resolved, err := resolveModelName(ctx, client, modelName)
+	if err != nil {
+		return err
+	}
+	if resolved != modelName {
+		fmt.Printf("Resolved %s -> %s\n", modelName, resolved)
+	}
+	modelName = resolved
 
 	fmt.Printf("Fetching manifest for %s...\n", modelName)
 	manifest, err := client.FetchManifest(ctx, modelName)
@@ -273,8 +335,13 @@ func ListRemoteModels(opts ListOptions) error {
 			desc = desc[:47] + "..."
 		}
 
+		displayName := model.Name
+		if model.Owner != "" {
+			displayName = model.Owner + "/" + model.Name
+		}
+
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			model.Name,
+			displayName,
 			model.Type,
 			FormatBytes(model.Size),
 			variantsStr,
