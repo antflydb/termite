@@ -12,7 +12,7 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260302070729-e25bf6f18ec6
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260303003844-110c235df183
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
