@@ -257,7 +257,7 @@ func ParseBackendPriority(priority []string) ([]BackendSpec, error) {
 	specs := make([]BackendSpec, 0, len(priority))
 	for _, s := range priority {
 		// Split on commas to handle env vars like TERMITE_BACKEND_PRIORITY="onnx,xla,go"
-		for _, part := range strings.Split(s, ",") {
+		for part := range strings.SplitSeq(s, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

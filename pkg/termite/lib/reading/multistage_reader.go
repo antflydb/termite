@@ -186,4 +186,3 @@ func (r *MultiStageReader) Close() error {
 	r.logger.Info("Closing multi-stage reader")
 	return r.pipeline.Close()
 }
-

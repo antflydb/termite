@@ -279,11 +279,8 @@ func (r *ChunkerRegistry) discoverModels() error {
 		// Check if this model has media capabilities (e.g., audio)
 		hasMediaCap := false
 		if dm.Manifest != nil {
-			for _, cap := range mediaCapabilities {
-				if dm.Manifest.HasCapability(cap) {
-					hasMediaCap = true
-					break
-				}
+			if slices.ContainsFunc(mediaCapabilities, dm.Manifest.HasCapability) {
+				hasMediaCap = true
 			}
 		}
 

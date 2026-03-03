@@ -182,10 +182,10 @@ func NewPooledReader(
 	}
 
 	reader := &PooledReader{
-		pipelines: pipelineSlice,
-		sem:       semaphore.NewWeighted(int64(poolSize)),
-		logger:    logger,
-		poolSize:  poolSize,
+		pipelines:    pipelineSlice,
+		sem:          semaphore.NewWeighted(int64(poolSize)),
+		logger:       logger,
+		poolSize:     poolSize,
 		outputParser: outputParser,
 		modelPath:    cfg.ModelPath,
 	}

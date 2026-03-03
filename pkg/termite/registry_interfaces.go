@@ -177,13 +177,13 @@ type ChunkerInterface interface {
 
 // Ensure concrete types implement the interfaces
 var (
-	_ EmbedderRegistryInterface        = (*EmbedderRegistry)(nil)
-	_ RerankerRegistryInterface        = (*RerankerRegistry)(nil)
-	_ NERRegistryInterface             = (*NERRegistry)(nil)
-	_ GeneratorRegistryInterface       = (*GeneratorRegistry)(nil)
-	_ Seq2SeqRegistryInterface         = (*Seq2SeqRegistry)(nil)
-	_ ClassifierRegistryInterface      = (*ClassifierRegistry)(nil)
-	_ ReaderRegistryInterface          = (*ReaderRegistry)(nil)
-	_ TranscriberRegistryInterface     = (*TranscriberRegistry)(nil)
-	_ ChunkerInterface                 = (*CachedChunker)(nil)
+	_ EmbedderRegistryInterface    = (*EmbedderRegistry)(nil)
+	_ RerankerRegistryInterface    = (*RerankerRegistry)(nil)
+	_ NERRegistryInterface         = (*NERRegistry)(nil)
+	_ GeneratorRegistryInterface   = (*GeneratorRegistry)(nil)
+	_ Seq2SeqRegistryInterface     = (*Seq2SeqRegistry)(nil)
+	_ ClassifierRegistryInterface  = (*ClassifierRegistry)(nil)
+	_ ReaderRegistryInterface      = (*ReaderRegistry)(nil)
+	_ TranscriberRegistryInterface = (*TranscriberRegistry)(nil)
+	_ ChunkerInterface             = (*CachedChunker)(nil)
 )

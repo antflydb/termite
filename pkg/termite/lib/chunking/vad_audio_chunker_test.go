@@ -131,7 +131,7 @@ func TestMergeVADFrames_MinSilenceMerging(t *testing.T) {
 func TestMergeVADFrames_MinSilence_KeepsSeparate(t *testing.T) {
 	// Two speech regions separated by a long silence gap (20 frames = 640ms)
 	probs := make([]float32, 35)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		probs[i] = 0.9
 	}
 	for i := 25; i < 30; i++ {

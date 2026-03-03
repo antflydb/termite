@@ -389,7 +389,7 @@ func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request,
 	case "application/json":
 		// JSON response with sparse_embeddings field
 		resp := EmbedResponse{
-			Model: req.Model,
+			Model:            req.Model,
 			SparseEmbeddings: make([]SparseVector, len(sparseVecs)),
 		}
 		for i, sv := range sparseVecs {
@@ -1197,13 +1197,13 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 		zap.Int("total_fields", totalFields))
 
 	// Convert internal ExtractionResult to API response format
-	apiResults := make([]map[string][]map[string]interface{}, len(results))
+	apiResults := make([]map[string][]map[string]any, len(results))
 	for i, result := range results {
-		apiResult := make(map[string][]map[string]interface{})
+		apiResult := make(map[string][]map[string]any)
 		for structName, instances := range result {
-			apiInstances := make([]map[string]interface{}, len(instances))
+			apiInstances := make([]map[string]any, len(instances))
 			for j, instance := range instances {
-				apiInstance := make(map[string]interface{})
+				apiInstance := make(map[string]any)
 				for fieldName, fieldValue := range instance {
 					switch v := fieldValue.(type) {
 					case ner.ExtractedFieldValue:
@@ -1243,10 +1243,10 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 // `int` with `omitzero`, which silently drops offset 0 during marshalling.
 // Using *int pointers here ensures offset 0 is serialized correctly.
 type extractFieldValueJSON struct {
-	Value string   `json:"value"`
-	Score float32  `json:"score,omitempty"`
-	Start *int     `json:"start,omitempty"`
-	End   *int     `json:"end,omitempty"`
+	Value string  `json:"value"`
+	Score float32 `json:"score,omitempty"`
+	Start *int    `json:"start,omitempty"`
+	End   *int    `json:"end,omitempty"`
 }
 
 // convertFieldValue converts an internal ExtractedFieldValue to the response type.

@@ -46,10 +46,7 @@ func ResizeKeepAspect(img image.Image, targetH, maxW int) image.Image {
 	}
 
 	// Compute target width maintaining aspect ratio
-	targetW := int(float64(srcW) * float64(targetH) / float64(srcH))
-	if targetW > maxW {
-		targetW = maxW
-	}
+	targetW := min(int(float64(srcW)*float64(targetH)/float64(srcH)), maxW)
 	if targetW <= 0 {
 		targetW = 1
 	}

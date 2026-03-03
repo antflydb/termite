@@ -521,11 +521,11 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
-		sparseEmbeddingCache: sparseEmbeddingCache,
+		sparseEmbeddingCache:  sparseEmbeddingCache,
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,
-		transcriptionCache:   transcriptionCache,
+		transcriptionCache:    transcriptionCache,
 		allowDownloads:        config.AllowDownloads,
 
 		client: client,
@@ -615,4 +615,3 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 	zl.Info("HTTP server stopped")
 }
-

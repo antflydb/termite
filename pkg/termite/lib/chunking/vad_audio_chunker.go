@@ -349,10 +349,7 @@ func MergeVADFrames(probs []float32, frameSizeSamples, sampleRate int, config VA
 		}
 		// Split into sub-segments
 		for start := seg.StartSample; start < seg.EndSample; start += maxSamples {
-			end := start + maxSamples
-			if end > seg.EndSample {
-				end = seg.EndSample
-			}
+			end := min(start+maxSamples, seg.EndSample)
 			result = append(result, SpeechSegment{
 				StartSample: start,
 				EndSample:   end,

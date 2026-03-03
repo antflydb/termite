@@ -59,8 +59,8 @@ func FindConnectedComponents(mask []bool, width, height, minArea int) []Componen
 	}
 
 	// First pass: connect adjacent foreground pixels
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			idx := y*width + x
 			if !mask[idx] {
 				continue
@@ -79,8 +79,8 @@ func FindConnectedComponents(mask []bool, width, height, minArea int) []Componen
 
 	// Second pass: collect component bounding boxes
 	components := make(map[int]*ComponentRect)
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			idx := y*width + x
 			if !mask[idx] {
 				continue

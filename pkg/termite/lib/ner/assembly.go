@@ -203,10 +203,7 @@ func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLen
 	// Calculate gaps between consecutive spans
 	gaps := make([]int, len(spans)-1)
 	for i := 0; i < len(spans)-1; i++ {
-		gap := spans[i+1].Start - spans[i].End
-		if gap < 0 {
-			gap = 0
-		}
+		gap := max(spans[i+1].Start-spans[i].End, 0)
 		gaps[i] = gap
 	}
 
@@ -243,7 +240,7 @@ func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLen
 	var clusters [][]pipelines.GLiNERExtractedSpan
 	currentCluster := []pipelines.GLiNERExtractedSpan{spans[0]}
 
-	for i := 0; i < len(gaps); i++ {
+	for i := range gaps {
 		if gaps[i] > threshold {
 			clusters = append(clusters, currentCluster)
 			currentCluster = []pipelines.GLiNERExtractedSpan{spans[i+1]}
@@ -335,4 +332,3 @@ func medianInt(values []int) int {
 	}
 	return sorted[mid]
 }
-

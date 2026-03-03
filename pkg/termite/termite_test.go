@@ -20,11 +20,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 	"net/http/httptest"
 	"slices"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
@@ -438,9 +438,6 @@ func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
 	return m.Acquire(modelName)
 }
 
-
-
-
 // MockEmbedderRegistry implements EmbedderRegistryInterface for testing
 type MockEmbedderRegistry struct {
 	models map[string]embeddings.Embedder
@@ -494,14 +491,14 @@ func TestTermiteNode_ListModels_IncludesAllRegistries(t *testing.T) {
 		logger: logger,
 		rerankerRegistry: &MockRerankerRegistry{
 			models: map[string]reranking.Model{
-				"reranker-1":               mockReranker,
-				"antfly-builtin-reranker":  mockReranker,
+				"reranker-1":              mockReranker,
+				"antfly-builtin-reranker": mockReranker,
 			},
 		},
 		embedderRegistry: &MockEmbedderRegistry{
 			models: map[string]embeddings.Embedder{
-				"embedder-1":               mockEmbedder,
-				"antfly-builtin-embedder":  mockEmbedder,
+				"embedder-1":              mockEmbedder,
+				"antfly-builtin-embedder": mockEmbedder,
 			},
 		},
 		nerRegistry: &MockNERRegistry{
@@ -599,7 +596,6 @@ func TestTermiteNode_ListModels_OnlyRerankers(t *testing.T) {
 	assert.Empty(t, resp.Embedders)
 	assert.Empty(t, resp.Recognizers)
 }
-
 
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)

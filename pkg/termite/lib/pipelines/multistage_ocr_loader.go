@@ -27,9 +27,9 @@ import (
 // MultiStageMetadata describes the stages in a multi-stage OCR model.
 // This is read from termite_metadata.json in the model directory.
 type MultiStageMetadata struct {
-	ModelType    string                     `json:"model_type"`
-	PipelineType string                    `json:"pipeline_type"`
-	Stages       map[string]StageMetadata  `json:"stages"`
+	ModelType    string                   `json:"model_type"`
+	PipelineType string                   `json:"pipeline_type"`
+	Stages       map[string]StageMetadata `json:"stages"`
 }
 
 // StageMetadata describes a single stage in a multi-stage model.

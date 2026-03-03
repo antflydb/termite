@@ -307,10 +307,10 @@ func TestTrimModelOutput(t *testing.T) {
 	t.Run("trim LastHiddenState batch and seq", func(t *testing.T) {
 		output := &ModelOutput{
 			LastHiddenState: [][][]float32{
-				{{1, 2}, {3, 4}, {0, 0}},       // seq=3 (padded from 2)
-				{{5, 6}, {7, 8}, {0, 0}},       // seq=3
-				{{0, 0}, {0, 0}, {0, 0}},       // batch padding
-				{{0, 0}, {0, 0}, {0, 0}},       // batch padding
+				{{1, 2}, {3, 4}, {0, 0}}, // seq=3 (padded from 2)
+				{{5, 6}, {7, 8}, {0, 0}}, // seq=3
+				{{0, 0}, {0, 0}, {0, 0}}, // batch padding
+				{{0, 0}, {0, 0}, {0, 0}}, // batch padding
 			},
 		}
 		got := trimModelOutput(output, 2, 2)

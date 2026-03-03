@@ -95,7 +95,7 @@ func TestLongTextTruncation(t *testing.T) {
 	// Build a text that tokenizes to well over MaxSequenceLength (512) tokens.
 	// Repeating a sentence many times ensures we exceed the limit.
 	var longText string
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		longText += "The quick brown fox jumps over the lazy dog. "
 	}
 

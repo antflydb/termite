@@ -47,7 +47,7 @@ type toolSupport struct {
 
 func (t *toolSupport) SupportsTools() bool    { return t.toolParser != nil }
 func (t *toolSupport) ToolParser() ToolParser { return t.toolParser }
-func (t *toolSupport) ToolCallFormat() string  { return t.toolCallFormat }
+func (t *toolSupport) ToolCallFormat() string { return t.toolCallFormat }
 
 // Message represents a chat message with optional multimodal content.
 type Message struct {

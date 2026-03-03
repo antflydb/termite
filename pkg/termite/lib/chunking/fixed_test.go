@@ -126,7 +126,7 @@ func TestFixedChunker_ParagraphSplitting(t *testing.T) {
 func TestFixedChunker_MaxChunksLimit(t *testing.T) {
 	// Build text that would produce many chunks.
 	var sections []string
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		sections = append(sections, strings.Repeat("token ", 10))
 	}
 	text := strings.Join(sections, "\n\n")
@@ -165,7 +165,7 @@ func TestFixedChunker_PerRequestOverrides(t *testing.T) {
 
 	// Build text that fits in 500 tokens but not in 15.
 	var sections []string
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sections = append(sections, strings.Repeat("word ", 10))
 	}
 	text := strings.Join(sections, "\n\n")
@@ -378,7 +378,7 @@ func TestFixedChunker_OversizedSectionWithNewlines(t *testing.T) {
 func TestFixedChunker_OversizedSectionWithSentences(t *testing.T) {
 	// A single block with sentence boundaries but no newlines.
 	var sentences []string
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		sentences = append(sentences, strings.Repeat("alpha ", 5))
 	}
 	text := strings.Join(sentences, ". ") + "."
@@ -400,7 +400,7 @@ func TestFixedChunker_OversizedSectionWithSentences(t *testing.T) {
 func TestFixedChunker_OverlapWithOversizedSections(t *testing.T) {
 	// Verify overlap still works correctly after the flattening fix.
 	var sections []string
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		sections = append(sections, strings.Repeat("overlap ", 10))
 	}
 	text := strings.Join(sections, "\n\n")
@@ -636,7 +636,7 @@ func TestFixedChunker_OverlapOffsetValidity(t *testing.T) {
 	// Even with overlap enabled, chunk offsets should be valid positions in
 	// the original text (offsets point to non-overlap content).
 	var sections []string
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		sections = append(sections, "Section number "+strings.Repeat("word ", 10))
 	}
 	text := strings.Join(sections, "\n\n")

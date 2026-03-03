@@ -284,7 +284,7 @@ type ManifestDynamicAxis struct {
 func (o *ManifestSessionOptions) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		InputConstants map[string]json.RawMessage `json:"input_constants,omitempty"`
-		DynamicAxes    []ManifestDynamicAxis       `json:"dynamic_axes,omitempty"`
+		DynamicAxes    []ManifestDynamicAxis      `json:"dynamic_axes,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
