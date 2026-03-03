@@ -17,6 +17,7 @@ package ner
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -340,11 +341,8 @@ func EntitySimilarity(a, b string) float64 {
 	if len(shortTokens) > 0 && len(longTokens) > 0 {
 		matched := 0
 		for _, st := range shortTokens {
-			for _, lt := range longTokens {
-				if st == lt {
-					matched++
-					break
-				}
+			if slices.Contains(longTokens, st) {
+				matched++
 			}
 		}
 		if matched == len(shortTokens) {
@@ -373,10 +371,7 @@ func JaroWinkler(s1, s2 string) float64 {
 
 	// Winkler modification: boost for common prefix (up to 4 chars).
 	prefixLen := 0
-	maxPrefix := 4
-	if len(s1) < maxPrefix {
-		maxPrefix = len(s1)
-	}
+	maxPrefix := min(len(s1), 4)
 	if len(s2) < maxPrefix {
 		maxPrefix = len(s2)
 	}
@@ -401,10 +396,7 @@ func jaroSimilarity(s1, s2 string) float64 {
 	len2 := len(s2)
 
 	// Maximum matching distance.
-	maxDist := int(math.Floor(float64(max(len1, len2))/2.0)) - 1
-	if maxDist < 0 {
-		maxDist = 0
-	}
+	maxDist := max(int(math.Floor(float64(max(len1, len2))/2.0))-1, 0)
 
 	s1Matches := make([]bool, len1)
 	s2Matches := make([]bool, len2)
@@ -413,7 +405,7 @@ func jaroSimilarity(s1, s2 string) float64 {
 	transpositions := 0
 
 	// Find matching characters.
-	for i := 0; i < len1; i++ {
+	for i := range len1 {
 		start := max(0, i-maxDist)
 		end := min(len2, i+maxDist+1)
 
@@ -434,7 +426,7 @@ func jaroSimilarity(s1, s2 string) float64 {
 
 	// Count transpositions.
 	k := 0
-	for i := 0; i < len1; i++ {
+	for i := range len1 {
 		if !s1Matches[i] {
 			continue
 		}

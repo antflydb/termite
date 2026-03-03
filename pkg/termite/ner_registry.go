@@ -612,7 +612,6 @@ func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.C
 	return slices.Contains(caps, string(capability))
 }
 
-
 // Preload loads specified models at startup to avoid first-request latency
 func (r *NERRegistry) Preload(modelNames []string) error {
 	if len(modelNames) == 0 {

@@ -451,10 +451,23 @@ const (
 	TermitePoolPhaseDegraded TermitePoolPhase = "Degraded"
 )
 
+// Condition type and reason constants for TermitePool and TermiteRoute status.
+const (
+	TypeConfigurationValid = "ConfigurationValid"
+	ReasonValidationPassed = "ValidationPassed"
+	ReasonValidationFailed = "ValidationFailed"
+)
+
 // TermitePoolStatus defines the observed state of TermitePool
 type TermitePoolStatus struct {
 	// Phase is the current phase of the pool
 	Phase TermitePoolPhase `json:"phase,omitempty"`
+
+	// ObservedGeneration is the most recent generation observed by the controller.
+	// Used to skip expensive validation when the spec has not changed since
+	// the last successful reconciliation.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Replicas shows replica counts
 	Replicas ReplicaStatus `json:"replicas,omitempty"`

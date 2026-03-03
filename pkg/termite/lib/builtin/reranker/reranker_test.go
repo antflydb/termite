@@ -84,7 +84,7 @@ func TestLongTextTruncation(t *testing.T) {
 
 	// Build documents that tokenize to well over MaxSequenceLength tokens.
 	var longDoc string
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		longDoc += "The quick brown fox jumps over the lazy dog. "
 	}
 

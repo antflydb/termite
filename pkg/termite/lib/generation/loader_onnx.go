@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/knights-analytics/ortgenai"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
@@ -60,6 +61,22 @@ func LoadGenerator(
 		genFactory, bt, factoryErr := sessionManager.GetGenerativeSessionFactoryForModel(modelBackends)
 		if factoryErr != nil {
 			return nil, "", fmt.Errorf("getting generative session factory: %w", factoryErr)
+		}
+
+		// Try Engine API for continuous batching (available in ORT GenAI >= 0.9.1).
+		// The factory is passed so a fallback session can handle multimodal requests.
+		if ortgenai.IsEngineApiAvailable() {
+			logger.Debug("Engine API available, trying EngineGenerator",
+				zap.String("modelPath", modelPath))
+
+			engineGen, engineErr := NewEngineGenerator(modelPath, genFactory, logger)
+			if engineErr == nil {
+				logger.Info("Loaded generator using Engine (continuous batching)",
+					zap.String("modelPath", modelPath))
+				return engineGen, backends.BackendONNX, nil
+			}
+			logger.Warn("Engine creation failed, falling back to session pool",
+				zap.Error(engineErr))
 		}
 
 		genGenerator, genErr := NewPooledGenerativeSessionGenerator(modelPath, poolSize, genFactory, logger)
@@ -122,14 +139,13 @@ var _ StreamingGenerator = (*PooledGenerativeSessionGenerator)(nil)
 // PooledGenerativeSessionGenerator wraps multiple GenerativeSessions for concurrent generation.
 // It adapts the backends.GenerativeSession interface to the generation.Generator interface.
 type PooledGenerativeSessionGenerator struct {
-	sessions       []backends.GenerativeSession
-	sem            *semaphore.Weighted
-	nextSession    atomic.Uint64
-	logger         *zap.Logger
-	poolSize       int
-	modelPath      string
-	toolParser     ToolParser
-	toolCallFormat string
+	sessions    []backends.GenerativeSession
+	sem         *semaphore.Weighted
+	nextSession atomic.Uint64
+	logger      *zap.Logger
+	poolSize    int
+	modelPath   string
+	toolSupport
 }
 
 // NewPooledGenerativeSessionGenerator creates a new pooled generator using GenerativeSessionFactory.
@@ -168,30 +184,18 @@ func NewPooledGenerativeSessionGenerator(
 
 	logger.Info("Successfully created pooled generative sessions", zap.Int("count", poolSize))
 
-	// Try to load tool parser from genai_config.json
-	var toolParser ToolParser
-	var toolCallFormat string
-	if format := readToolCallFormat(modelPath); format != "" {
-		if parser, err := GetToolParser(format, modelPath); err == nil && parser != nil {
-			toolParser = parser
-			toolCallFormat = format
-			logger.Info("Loaded tool parser from model config",
-				zap.String("format", toolCallFormat))
-		} else if err != nil {
-			logger.Warn("Failed to load tool parser",
-				zap.String("format", format),
-				zap.Error(err))
-		}
-	}
+	toolParser, toolCallFormat := loadToolParserFromConfig(modelPath, logger)
 
 	return &PooledGenerativeSessionGenerator{
-		sessions:       sessions,
-		sem:            semaphore.NewWeighted(int64(poolSize)),
-		logger:         logger,
-		poolSize:       poolSize,
-		modelPath:      modelPath,
-		toolParser:     toolParser,
-		toolCallFormat: toolCallFormat,
+		sessions:  sessions,
+		sem:       semaphore.NewWeighted(int64(poolSize)),
+		logger:    logger,
+		poolSize:  poolSize,
+		modelPath: modelPath,
+		toolSupport: toolSupport{
+			toolParser:     toolParser,
+			toolCallFormat: toolCallFormat,
+		},
 	}, nil
 }
 
@@ -246,49 +250,10 @@ func (p *PooledGenerativeSessionGenerator) GenerateStream(ctx context.Context, m
 		return nil, nil, err
 	}
 
-	// Adapt backend channels to generation channels
-	tokenChan := make(chan TokenDelta)
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer p.sem.Release(1)
-		defer close(tokenChan)
-		defer close(errChan)
-
-		for token := range backendTokenChan {
-			select {
-			case <-ctx.Done():
-				return
-			case tokenChan <- TokenDelta{Token: token.Token, Index: token.Index}:
-			}
-		}
-
-		for err := range backendErrChan {
-			if err != nil {
-				select {
-				case errChan <- err:
-				default:
-				}
-			}
-		}
-	}()
-
+	tokenChan, errChan := adaptBackendStream(ctx, backendTokenChan, backendErrChan, func() {
+		p.sem.Release(1)
+	})
 	return tokenChan, errChan, nil
-}
-
-// SupportsTools returns true if this generator supports tool calling.
-func (p *PooledGenerativeSessionGenerator) SupportsTools() bool {
-	return p.toolParser != nil
-}
-
-// ToolParser returns the tool parser for this generator.
-func (p *PooledGenerativeSessionGenerator) ToolParser() ToolParser {
-	return p.toolParser
-}
-
-// ToolCallFormat returns the tool call format name.
-func (p *PooledGenerativeSessionGenerator) ToolCallFormat() string {
-	return p.toolCallFormat
 }
 
 // Close releases resources.
@@ -345,6 +310,66 @@ func toBackendOptions(opts GenerateOptions) *backends.GenerativeOptions {
 		TopK:        opts.TopK,
 		StopTokens:  opts.StopTokens,
 	}
+}
+
+// adaptBackendStream bridges backend streaming channels to generation channels.
+// The optional onDone callback runs when the goroutine finishes (e.g., semaphore release).
+func adaptBackendStream(
+	ctx context.Context,
+	backendTokenChan <-chan backends.GenerativeToken,
+	backendErrChan <-chan error,
+	onDone func(),
+) (<-chan TokenDelta, <-chan error) {
+	tokenChan := make(chan TokenDelta)
+	errChan := make(chan error, 1)
+
+	go func() {
+		if onDone != nil {
+			defer onDone()
+		}
+		defer close(tokenChan)
+		defer close(errChan)
+
+		for token := range backendTokenChan {
+			select {
+			case <-ctx.Done():
+				return
+			case tokenChan <- TokenDelta{Token: token.Token, Index: token.Index}:
+			}
+		}
+
+		for err := range backendErrChan {
+			if err != nil {
+				select {
+				case errChan <- err:
+				default:
+				}
+			}
+		}
+	}()
+
+	return tokenChan, errChan
+}
+
+// loadToolParserFromConfig attempts to load a tool parser from genai_config.json.
+// Returns nil parser and empty format if no tool_call_format is configured.
+func loadToolParserFromConfig(modelPath string, logger *zap.Logger) (ToolParser, string) {
+	format := readToolCallFormat(modelPath)
+	if format == "" {
+		return nil, ""
+	}
+	parser, err := GetToolParser(format, modelPath)
+	if err != nil {
+		logger.Warn("Failed to load tool parser",
+			zap.String("format", format),
+			zap.Error(err))
+		return nil, ""
+	}
+	if parser != nil {
+		logger.Info("Loaded tool parser from model config",
+			zap.String("format", format))
+	}
+	return parser, format
 }
 
 // genaiConfigToolFormat holds the tool_call_format from genai_config.json.

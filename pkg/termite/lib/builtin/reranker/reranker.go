@@ -130,10 +130,7 @@ func (r *BuiltinReranker) RerankTexts(_ context.Context, query string, prompts [
 	pairs := make([]pairTokens, batchSize)
 
 	// Budget for document tokens: total limit minus special tokens ([CLS], 2x[SEP]) and query.
-	docBudget := MaxSequenceLength - 3 - len(queryIDs)
-	if docBudget < 1 {
-		docBudget = 1
-	}
+	docBudget := max(MaxSequenceLength-3-len(queryIDs), 1)
 
 	for i, doc := range prompts {
 		docIDs := r.tok.Encode(doc)

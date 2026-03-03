@@ -86,12 +86,14 @@ var _ = BeforeSuite(func() {
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		TermiteImage: "antfly/termite:test",
+		Recorder:     mgr.GetEventRecorder("termitepool-controller"),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = (&TermiteRouteReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("termiteroute-controller"),
 	}).SetupWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 

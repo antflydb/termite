@@ -212,7 +212,7 @@ func TestConvertAnthropicMessages(t *testing.T) {
 
 	t.Run("with system prompt", func(t *testing.T) {
 		req := anthropicRequest{
-			System:   stdjson.RawMessage(`"Be helpful"`),
+			System: stdjson.RawMessage(`"Be helpful"`),
 			Messages: []anthropicMessage{
 				{Role: "user", Content: stdjson.RawMessage(`"Hello"`)},
 			},
@@ -623,10 +623,10 @@ func parseSSEEvents(t *testing.T, body string) []sseEvent {
 	var currentEvent sseEvent
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "event: ") {
-			currentEvent.eventType = strings.TrimPrefix(line, "event: ")
-		} else if strings.HasPrefix(line, "data: ") {
-			currentEvent.data = strings.TrimPrefix(line, "data: ")
+		if after, ok := strings.CutPrefix(line, "event: "); ok {
+			currentEvent.eventType = after
+		} else if after, ok := strings.CutPrefix(line, "data: "); ok {
+			currentEvent.data = after
 		} else if line == "" && currentEvent.eventType != "" {
 			events = append(events, currentEvent)
 			currentEvent = sseEvent{}

@@ -40,9 +40,9 @@ func TestJaroWinkler_Empty(t *testing.T) {
 
 func TestJaroWinkler_SimilarStrings(t *testing.T) {
 	tests := []struct {
-		s1, s2  string
-		minSim  float64
-		maxSim  float64
+		s1, s2 string
+		minSim float64
+		maxSim float64
 	}{
 		{"elon musk", "elon musk", 1.0, 1.0},
 		{"spacex", "spacex inc", 0.85, 1.0},
@@ -73,12 +73,12 @@ func TestJaroWinkler_Symmetry(t *testing.T) {
 
 func TestEntitySimilarity_Containment(t *testing.T) {
 	tests := []struct {
-		s1, s2  string
-		minSim  float64
+		s1, s2 string
+		minSim float64
 	}{
-		{"elon musk", "musk", 0.7},       // "musk" is a token of "elon musk"
-		{"spacex", "spacex inc", 0.85},    // "spacex" is a token of "spacex inc"
-		{"tesla motors", "tesla", 0.7},    // "tesla" is a token of "tesla motors"
+		{"elon musk", "musk", 0.7},     // "musk" is a token of "elon musk"
+		{"spacex", "spacex inc", 0.85}, // "spacex" is a token of "spacex inc"
+		{"tesla motors", "tesla", 0.7}, // "tesla" is a token of "tesla motors"
 		{"elon musk", "elon musk", 1.0},
 	}
 

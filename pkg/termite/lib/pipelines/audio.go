@@ -281,7 +281,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	stftMag := make([][]float32, numFrames)
 	nBins := nFft/2 + 1
 
-	for frame := 0; frame < numFrames; frame++ {
+	for frame := range numFrames {
 		start := frame * hopLength
 
 		// Extract frame and apply window
@@ -302,7 +302,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 	// Apply mel filter bank
 	melSpec := make([][]float32, numFrames)
-	for frame := 0; frame < numFrames; frame++ {
+	for frame := range numFrames {
 		melSpec[frame] = make([]float32, nMels)
 		for mel := range nMels {
 			var sum float32
@@ -328,7 +328,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 		// First pass: compute log10 and find global maximum
 		var globalMax float32 = -1000.0
-		for frame := 0; frame < numFrames; frame++ {
+		for frame := range numFrames {
 			for mel := range nMels {
 				val := melSpec[frame][mel]
 				if val < logFloor {
@@ -344,7 +344,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 
 		// Second pass: clip to (globalMax - 8.0) and normalize
 		minClip := globalMax - 8.0
-		for frame := 0; frame < numFrames; frame++ {
+		for frame := range numFrames {
 			for mel := range nMels {
 				logVal := melSpec[frame][mel]
 				// Clip minimum
@@ -359,7 +359,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	} else {
 		// Simple log mel spectrogram for CLAP and other audio models
 		// Use natural log without Whisper-specific normalization
-		for frame := 0; frame < numFrames; frame++ {
+		for frame := range numFrames {
 			for mel := range nMels {
 				val := melSpec[frame][mel]
 				if val < logFloor {
@@ -374,7 +374,7 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	// Note: Whisper expects [batch, n_mels, time] but we'll transpose in the model
 	// For now, return [time, n_mels] flattened
 	result := make([]float32, numFrames*nMels)
-	for frame := 0; frame < numFrames; frame++ {
+	for frame := range numFrames {
 		for mel := range nMels {
 			result[frame*nMels+mel] = melSpec[frame][mel]
 		}

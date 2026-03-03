@@ -29,6 +29,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// All registries in this file use MaxLoadedModels: 1 to prevent OOM when many
+// models are present on disk. We use Get() (not Acquire()) because these tests
+// are single-threaded and each model is used immediately before the next Get()
+// call could trigger eviction.
+
 // skipIfNoModels skips the test if the models directory doesn't exist or is empty
 func skipIfNoModels(t testing.TB, modelsDir string) {
 	t.Helper()
@@ -68,7 +73,7 @@ func TestRerankerRegistryLoading(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -103,7 +108,7 @@ func TestCompareQuantizedVsNonQuantized(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -158,7 +163,7 @@ func TestCompareAllRerankerModels(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -294,7 +299,7 @@ func BenchmarkRerankerQuantizedVsNonQuantized(b *testing.B) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(b, err)
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()
@@ -341,7 +346,7 @@ func BenchmarkAllRerankerModels(b *testing.B) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry once for all benchmarks
-	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewRerankerRegistry(RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(b, err)
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()
@@ -381,7 +386,7 @@ func TestEmbedderRegistryLoading(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -416,7 +421,7 @@ func TestEmbedderModelEmbedding(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -471,7 +476,7 @@ func TestEmbedderQuantizedVsNonQuantized(t *testing.T) {
 	defer func() { _ = sessionManager.Close() }()
 
 	// Create registry
-	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	defer func() { _ = registry.Close() }()
@@ -547,7 +552,7 @@ func BenchmarkEmbedderQuantizedVsNonQuantized(b *testing.B) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir}, sessionManager, logger)
+	registry, err := NewEmbedderRegistry(EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, logger)
 	require.NoError(b, err)
 	require.NotNil(b, registry)
 	defer func() { _ = registry.Close() }()

@@ -130,7 +130,7 @@ func maxPoolOverSequence(hiddenStates [][][]float32, attentionMask [][]int32) []
 	batchSize := len(hiddenStates)
 	results := make([][]float32, batchSize)
 
-	for b := 0; b < batchSize; b++ {
+	for b := range batchSize {
 		seqLen := len(hiddenStates[b])
 		if seqLen == 0 {
 			results[b] = nil
@@ -144,12 +144,12 @@ func maxPoolOverSequence(hiddenStates [][][]float32, attentionMask [][]int32) []
 			pooled[d] = float32(math.Inf(-1))
 		}
 
-		for s := 0; s < seqLen; s++ {
+		for s := range seqLen {
 			// Skip masked (padding) positions
 			if attentionMask != nil && b < len(attentionMask) && s < len(attentionMask[b]) && attentionMask[b][s] == 0 {
 				continue
 			}
-			for d := 0; d < hiddenDim; d++ {
+			for d := range hiddenDim {
 				if hiddenStates[b][s][d] > pooled[d] {
 					pooled[d] = hiddenStates[b][s][d]
 				}
@@ -317,4 +317,3 @@ func LoadSparseEmbeddingPipeline(
 	pipeline := NewSparseEmbeddingPipeline(model, tokenizer, pipelineConfig)
 	return pipeline, backendType, nil
 }
-

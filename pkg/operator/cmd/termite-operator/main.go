@@ -33,6 +33,8 @@ import (
 
 	antflyaiv1alpha1 "github.com/antflydb/termite/pkg/operator/api/v1alpha1"
 	"github.com/antflydb/termite/pkg/operator/controllers"
+	webhookv1alpha1 "github.com/antflydb/termite/pkg/operator/internal/webhook/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
 var (
@@ -45,7 +47,10 @@ func init() {
 	utilruntime.Must(antflyaiv1alpha1.AddToScheme(scheme))
 }
 
-var cfgFile string
+var (
+	cfgFile string
+	initErr error // set by initConfig, checked in runOperator
+)
 
 func main() {
 	// Initialize viper for config file support
@@ -113,33 +118,24 @@ Examples:
 	cmd.Flags().String("termite-image", "antfly/termite:latest", "Default Termite container image")
 
 	// Bind flags to viper
-	mustBindFlag(cmd, "log-level", "log.level")
-	mustBindFlag(cmd, "log-style", "log.style")
-	mustBindFlag(cmd, "metrics-bind-address", "metrics_bind_address")
-	mustBindFlag(cmd, "health-probe-bind-address", "health_probe_bind_address")
-	mustBindFlag(cmd, "leader-elect", "leader_elect")
-	mustBindFlag(cmd, "termite-image", "termite_image")
+	_ = viper.BindPFlag("log.level", cmd.PersistentFlags().Lookup("log-level"))
+	_ = viper.BindPFlag("log.style", cmd.PersistentFlags().Lookup("log-style"))
+	_ = viper.BindPFlag("metrics_bind_address", cmd.Flags().Lookup("metrics-bind-address"))
+	_ = viper.BindPFlag("health_probe_bind_address", cmd.Flags().Lookup("health-probe-bind-address"))
+	_ = viper.BindPFlag("leader_elect", cmd.Flags().Lookup("leader-elect"))
+	_ = viper.BindPFlag("termite_image", cmd.Flags().Lookup("termite-image"))
 
 	return cmd
 }
 
-func mustBindFlag(cmd *cobra.Command, flagName, viperKey string) {
-	// Try local flags first, then persistent flags
-	flag := cmd.Flags().Lookup(flagName)
-	if flag == nil {
-		flag = cmd.PersistentFlags().Lookup(flagName)
-	}
-	if err := viper.BindPFlag(viperKey, flag); err != nil {
-		panic(err)
-	}
-}
-
 // initConfig reads in config file and ENV variables if set.
+// Errors are stored in initErr rather than calling os.Exit, so that Cobra's
+// error propagation is respected (RunE will return the error).
 func initConfig() {
 	if cfgFile != "" {
 		if _, err := os.Stat(cfgFile); err != nil {
-			fmt.Fprintf(os.Stderr, "Config file not found: %s\n", cfgFile)
-			os.Exit(1)
+			initErr = fmt.Errorf("config file not found: %s", cfgFile)
+			return
 		}
 		viper.SetConfigFile(cfgFile)
 	} else {
@@ -159,12 +155,15 @@ func initConfig() {
 		fmt.Fprintf(os.Stderr, "Using config file: %s\n", viper.ConfigFileUsed())
 	} else if cfgFile != "" {
 		// Only error if user explicitly specified a config file
-		fmt.Fprintf(os.Stderr, "Error reading config file [%s]: %v\n", viper.ConfigFileUsed(), err)
-		os.Exit(1)
+		initErr = fmt.Errorf("error reading config file [%s]: %w", viper.ConfigFileUsed(), err)
 	}
 }
 
 func runOperator(cmd *cobra.Command, args []string) error {
+	if initErr != nil {
+		return initErr
+	}
+
 	metricsAddr := viper.GetString("metrics_bind_address")
 	probeAddr := viper.GetString("health_probe_bind_address")
 	enableLeaderElection := viper.GetBool("leader_elect")
@@ -183,7 +182,7 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	// Convert zap logger to logr for controller-runtime
 	ctrl.SetLogger(zapr.NewLogger(zapLogger))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgrOpts := ctrl.Options{
 		Scheme: scheme,
 		Metrics: server.Options{
 			BindAddress: metricsAddr,
@@ -191,7 +190,16 @@ func runOperator(cmd *cobra.Command, args []string) error {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "termite-operator.antfly.io",
-	})
+	}
+
+	// Configure webhook server when webhooks are enabled
+	if webhooksEnabled() {
+		mgrOpts.WebhookServer = webhook.NewServer(webhook.Options{
+			Port: 9443,
+		})
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
 	if err != nil {
 		return fmt.Errorf("unable to start manager: %w", err)
 	}
@@ -201,16 +209,25 @@ func runOperator(cmd *cobra.Command, args []string) error {
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		TermiteImage: termiteImage,
+		Recorder:     mgr.GetEventRecorder("termitepool-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create TermitePool controller: %w", err)
 	}
 
 	// Setup TermiteRoute controller
 	if err := (&controllers.TermiteRouteReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("termiteroute-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create TermiteRoute controller: %w", err)
+	}
+
+	// Setup webhooks
+	if webhooksEnabled() {
+		if err := webhookv1alpha1.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create webhooks: %w", err)
+		}
 	}
 
 	// Setup health checks
@@ -233,4 +250,13 @@ func runOperator(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// webhooksEnabled returns true only when ENABLE_WEBHOOKS is explicitly set to
+// "true" or "1" (case-insensitive). Defaults to false so that local development
+// with `make run` works without TLS certs. In-cluster deployments should set
+// ENABLE_WEBHOOKS=true in the manager Deployment.
+func webhooksEnabled() bool {
+	v := strings.ToLower(os.Getenv("ENABLE_WEBHOOKS"))
+	return v == "true" || v == "1"
 }

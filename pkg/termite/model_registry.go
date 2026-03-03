@@ -53,8 +53,8 @@ func discoverModelVariants(modelPath string) map[string]string {
 // multimodalCaps describes which multimodal capabilities a model directory has,
 // for both standard and quantized variants.
 type multimodalCaps struct {
-	hasImage         bool
-	hasAudio         bool
+	hasImage          bool
+	hasAudio          bool
 	hasImageQuantized bool
 	hasAudioQuantized bool
 }
