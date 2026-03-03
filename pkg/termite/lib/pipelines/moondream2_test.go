@@ -89,7 +89,7 @@ func TestLoadVision2SeqModelConfig_DecoderOnlyVLM(t *testing.T) {
 
 	// Create config.json matching real Moondream2 format (nested phi_config)
 	config := map[string]any{
-		"model_type": "moondream1",
+		"model_type":        "moondream1",
 		"image_token_index": -200,
 		"phi_config": map[string]any{
 			"hidden_size":             2048,

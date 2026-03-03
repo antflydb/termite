@@ -17,28 +17,30 @@ package v1alpha1
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// ValidateCreate validates the TermiteRoute configuration when creating a new route
+// timeFormatPattern matches HH:MM time format (00:00 - 23:59).
+var timeFormatPattern = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
+
+// ValidateCreate validates the TermiteRoute configuration when creating a new route.
+// Called by controller fallback when webhooks are disabled.
 func (r *TermiteRoute) ValidateCreate() error {
-	return r.validateTermiteRoute()
+	return r.ValidateTermiteRoute()
 }
 
-// ValidateUpdate validates the TermiteRoute configuration when updating an existing route
+// ValidateUpdate validates the TermiteRoute configuration when updating an existing route.
+// Called by controller fallback when webhooks are disabled (note: controllers cannot
+// provide the old object, so this is only called by the deprecated webhook interface).
 func (r *TermiteRoute) ValidateUpdate(old runtime.Object) error {
-	return r.validateTermiteRoute()
+	return r.ValidateTermiteRoute()
 }
 
-// ValidateDelete validates route deletion (no validation needed)
-func (r *TermiteRoute) ValidateDelete() error {
-	return nil
-}
-
-// validateTermiteRoute performs all validation checks
-func (r *TermiteRoute) validateTermiteRoute() error {
+// ValidateTermiteRoute performs all validation checks
+func (r *TermiteRoute) ValidateTermiteRoute() error {
 	var allErrors []string
 
 	if err := r.validateRouteDestinations(); err != nil {
@@ -75,7 +77,6 @@ func (r *TermiteRoute) validateRouteDestinations() error {
 		return fmt.Errorf("spec.route must have at least one destination")
 	}
 
-	totalWeight := int32(0)
 	poolNames := make(map[string]bool)
 
 	for i, dest := range r.Spec.Route {
@@ -95,19 +96,7 @@ func (r *TermiteRoute) validateRouteDestinations() error {
 		if dest.Weight < 0 || dest.Weight > 100 {
 			return fmt.Errorf("spec.route[%d].weight must be between 0 and 100, got %d", i, dest.Weight)
 		}
-
-		totalWeight += dest.Weight
 	}
-
-	// Warn if weights don't sum to 100 (when no conditions present)
-	unconditionalRoutes := 0
-	for _, dest := range r.Spec.Route {
-		if dest.Condition == nil {
-			unconditionalRoutes++
-		}
-	}
-	// Note: When unconditionalRoutes > 0 && totalWeight != 100 && unconditionalRoutes == len(r.Spec.Route),
-	// we accept it without warning - weights are normalized by the proxy.
 
 	return nil
 }
@@ -172,14 +161,11 @@ func (r *TermiteRoute) validateMatch() error {
 
 // validateTimeWindow validates time window configuration
 func validateTimeWindow(tw *TimeWindowMatch) error {
-	// Validate time format (HH:MM)
-	timeRegex := regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
-
-	if tw.Start != "" && !timeRegex.MatchString(tw.Start) {
+	if tw.Start != "" && !timeFormatPattern.MatchString(tw.Start) {
 		return fmt.Errorf("start time '%s' is not in HH:MM format", tw.Start)
 	}
 
-	if tw.End != "" && !timeRegex.MatchString(tw.End) {
+	if tw.End != "" && !timeFormatPattern.MatchString(tw.End) {
 		return fmt.Errorf("end time '%s' is not in HH:MM format", tw.End)
 	}
 
@@ -253,19 +239,13 @@ func (r *TermiteRoute) validateRetry() error {
 	}
 
 	// Validate retryOn values
-	validRetryOn := map[string]bool{
-		"5xx":                true,
-		"reset":              true,
-		"connect-failure":    true,
-		"retriable-4xx":      true,
-		"refused-stream":     true,
-		"cancelled":          true,
-		"deadline-exceeded":  true,
-		"resource-exhausted": true,
-	}
 	for _, condition := range retry.RetryOn {
-		if !validRetryOn[condition] {
-			return fmt.Errorf("invalid retry condition '%s'. Valid values: 5xx, reset, connect-failure, retriable-4xx, refused-stream, cancelled, deadline-exceeded, resource-exhausted", condition)
+		if !slices.Contains(ValidRetryConditions, condition) {
+			names := make([]string, len(ValidRetryConditions))
+			for i, c := range ValidRetryConditions {
+				names[i] = string(c)
+			}
+			return fmt.Errorf("invalid retry condition '%s'. Valid values: %s", condition, strings.Join(names, ", "))
 		}
 	}
 

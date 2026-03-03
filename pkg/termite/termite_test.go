@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
 	"github.com/antflydb/antfly-go/libaf/embeddings"
@@ -189,7 +190,7 @@ func TestTermiteNode_HandleApiRerank_Success(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		rerankingCache: NewRerankingCache(logger.Named("reranking-cache")),
+		rerankingCache: NewResultCache[[]float32]("Reranking", 2*time.Minute, logger.Named("reranking-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -292,7 +293,7 @@ func TestTermiteNode_HandleApiRerank_InvalidRequest(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		rerankingCache: NewRerankingCache(logger.Named("reranking-cache")),
+		rerankingCache: NewResultCache[[]float32]("Reranking", 2*time.Minute, logger.Named("reranking-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -437,9 +438,6 @@ func (m *MockNERRegistry) Get(modelName string) (ner.Model, error) {
 	return m.Acquire(modelName)
 }
 
-
-
-
 // MockEmbedderRegistry implements EmbedderRegistryInterface for testing
 type MockEmbedderRegistry struct {
 	models map[string]embeddings.Embedder
@@ -493,14 +491,14 @@ func TestTermiteNode_ListModels_IncludesAllRegistries(t *testing.T) {
 		logger: logger,
 		rerankerRegistry: &MockRerankerRegistry{
 			models: map[string]reranking.Model{
-				"reranker-1":               mockReranker,
-				"antfly-builtin-reranker":  mockReranker,
+				"reranker-1":              mockReranker,
+				"antfly-builtin-reranker": mockReranker,
 			},
 		},
 		embedderRegistry: &MockEmbedderRegistry{
 			models: map[string]embeddings.Embedder{
-				"embedder-1":               mockEmbedder,
-				"antfly-builtin-embedder":  mockEmbedder,
+				"embedder-1":              mockEmbedder,
+				"antfly-builtin-embedder": mockEmbedder,
 			},
 		},
 		nerRegistry: &MockNERRegistry{
@@ -599,7 +597,6 @@ func TestTermiteNode_ListModels_OnlyRerankers(t *testing.T) {
 	assert.Empty(t, resp.Recognizers)
 }
 
-
 func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 
@@ -632,7 +629,7 @@ func TestTermiteNode_HandleApiNER_Success(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		nerCache: NewNERCache(logger.Named("ner-cache")),
+		nerCache: NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, logger.Named("ner-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 
@@ -730,7 +727,7 @@ func TestTermiteNode_HandleApiNER_InvalidRequest(t *testing.T) {
 			MaxConcurrentRequests: 10,
 			MaxQueueSize:          100,
 		}, logger.Named("queue")),
-		nerCache: NewNERCache(logger.Named("ner-cache")),
+		nerCache: NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, logger.Named("ner-cache")),
 	}
 	handler := NewTermiteAPI(logger, node)
 

@@ -23,19 +23,23 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -55,6 +59,11 @@ type TermitePoolReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	TermiteImage string
+	Recorder     events.EventRecorder
+
+	// validationAttempts tracks consecutive validation failure counts per pool
+	// (namespace/name -> int). Reset on successful validation.
+	validationAttempts sync.Map
 }
 
 // +kubebuilder:rbac:groups=antfly.io,resources=termitepools,verbs=get;list;watch;create;update;patch;delete
@@ -76,6 +85,7 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	pool := &antflyaiv1alpha1.TermitePool{}
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		if errors.IsNotFound(err) {
+			r.validationAttempts.Delete(req.String())
 			logger.Info("TermitePool not found, ignoring")
 			return ctrl.Result{}, nil
 		}
@@ -84,16 +94,38 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("Reconciling TermitePool", "name", pool.Name)
 
+	poolKey := req.String()
+
 	// 0. Validate configuration (fallback when webhook is disabled)
-	if err := r.validatePool(pool); err != nil {
-		logger.Error(err, "TermitePool validation failed")
-		// Update status to reflect validation error
-		pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseDegraded
-		if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status after validation error")
+	// Generation guard: skip if spec unchanged since last successful validation.
+	needsValidation := pool.Status.ObservedGeneration != pool.Generation ||
+		pool.Status.Phase == antflyaiv1alpha1.TermitePoolPhaseDegraded
+	if needsValidation {
+		if err := r.validatePool(pool); err != nil {
+			logger.Error(err, "TermitePool validation failed")
+			meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+				Type:    antflyaiv1alpha1.TypeConfigurationValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  antflyaiv1alpha1.ReasonValidationFailed,
+				Message: err.Error(),
+			})
+			if pool.Status.Phase != antflyaiv1alpha1.TermitePoolPhaseDegraded {
+				pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseDegraded
+			}
+			if updateErr := r.Status().Update(ctx, pool); updateErr != nil {
+				logger.Error(updateErr, "Failed to update status after validation error")
+			}
+			r.Recorder.Eventf(pool, nil, corev1.EventTypeWarning, antflyaiv1alpha1.ReasonValidationFailed, antflyaiv1alpha1.ReasonValidationFailed, "Validation failed: %s", err.Error())
+			attempt := r.incrementValidationAttempts(poolKey)
+			return ctrl.Result{RequeueAfter: calculateBackoff(attempt - 1)}, nil
 		}
-		// Requeue with backoff
-		return ctrl.Result{RequeueAfter: 30 * 1e9}, nil
+		r.resetValidationAttempts(poolKey)
+		meta.SetStatusCondition(&pool.Status.Conditions, metav1.Condition{
+			Type:    antflyaiv1alpha1.TypeConfigurationValid,
+			Status:  metav1.ConditionTrue,
+			Reason:  antflyaiv1alpha1.ReasonValidationPassed,
+			Message: "Configuration is valid",
+		})
 	}
 
 	// 1. Create or update the headless Service
@@ -121,7 +153,7 @@ func (r *TermitePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: 30 * 1e9}, nil // Requeue after 30 seconds
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil // Requeue after 30 seconds
 }
 
 func (r *TermitePoolReconciler) reconcileService(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
@@ -158,9 +190,12 @@ func (r *TermitePoolReconciler) reconcileService(ctx context.Context, pool *antf
 		return err
 	}
 
-	// Update if needed
-	existing.Spec.Ports = svc.Spec.Ports
-	return r.Update(ctx, existing)
+	// Only update if ports changed
+	if !reflect.DeepEqual(existing.Spec.Ports, svc.Spec.Ports) {
+		existing.Spec.Ports = svc.Spec.Ports
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 func (r *TermitePoolReconciler) reconcileConfigMap(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
@@ -215,8 +250,12 @@ func (r *TermitePoolReconciler) reconcileConfigMap(ctx context.Context, pool *an
 		return err
 	}
 
-	existing.Data = cm.Data
-	return r.Update(ctx, existing)
+	// Only update if data changed
+	if !reflect.DeepEqual(existing.Data, cm.Data) {
+		existing.Data = cm.Data
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 // generateCompleteConfig merges user-provided config with auto-generated settings
@@ -488,7 +527,10 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 
 	// Add template hash annotation to trigger rolling updates when pod spec changes
 	// This ensures pods are recreated when tolerations, resources, etc. change
-	templateHash := computePodTemplateHash(&sts.Spec.Template)
+	templateHash, err := computePodTemplateHash(&sts.Spec.Template)
+	if err != nil {
+		return fmt.Errorf("compute pod template hash: %w", err)
+	}
 	if sts.Spec.Template.Annotations == nil {
 		sts.Spec.Template.Annotations = make(map[string]string)
 	}
@@ -503,15 +545,24 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 		return err
 	}
 
-	// Update relevant fields
-	existing.Spec.Replicas = sts.Spec.Replicas
-	existing.Spec.Template = sts.Spec.Template
-	return r.Update(ctx, existing)
+	// Only update if replicas or template changed.
+	// Compare template-hash annotations rather than full template specs to avoid
+	// false positives from API server defaulting (e.g. added default fields).
+	replicasChanged := !reflect.DeepEqual(existing.Spec.Replicas, sts.Spec.Replicas)
+	existingHash := existing.Spec.Template.Annotations["termite.antfly.io/template-hash"]
+	desiredHash := sts.Spec.Template.Annotations["termite.antfly.io/template-hash"]
+	templateChanged := existingHash != desiredHash
+	if replicasChanged || templateChanged {
+		existing.Spec.Replicas = sts.Spec.Replicas
+		existing.Spec.Template = sts.Spec.Template
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 // computePodTemplateHash computes a hash of the pod template spec.
 // This is used to trigger rolling updates when the template changes.
-func computePodTemplateHash(template *corev1.PodTemplateSpec) string {
+func computePodTemplateHash(template *corev1.PodTemplateSpec) (string, error) {
 	// Create a copy without the hash annotation itself to avoid circular dependency
 	templateCopy := template.DeepCopy()
 	delete(templateCopy.Annotations, "termite.antfly.io/template-hash")
@@ -519,12 +570,11 @@ func computePodTemplateHash(template *corev1.PodTemplateSpec) string {
 	// Marshal to JSON for consistent hashing
 	data, err := json.Marshal(templateCopy.Spec)
 	if err != nil {
-		// Fallback to empty hash on error (shouldn't happen)
-		return ""
+		return "", fmt.Errorf("marshal pod template spec: %w", err)
 	}
 
 	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:8]) // Use first 8 bytes (16 hex chars)
+	return hex.EncodeToString(hash[:8]), nil // Use first 8 bytes (16 hex chars)
 }
 
 func (r *TermitePoolReconciler) reconcilePDB(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
@@ -669,26 +719,70 @@ func (r *TermitePoolReconciler) applyGKEPodSpec(podTemplate *corev1.PodTemplateS
 func (r *TermitePoolReconciler) updateStatus(ctx context.Context, pool *antflyaiv1alpha1.TermitePool) error {
 	// Get StatefulSet to read replica status
 	sts := &appsv1.StatefulSet{}
+
+	newPhase := antflyaiv1alpha1.TermitePoolPhasePending
+	var ready, total, desired int32
+
 	if err := r.Get(ctx, types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}, sts); err != nil {
 		if !errors.IsNotFound(err) {
 			return err
 		}
-		pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhasePending
 	} else {
-		pool.Status.Replicas.Ready = sts.Status.ReadyReplicas
-		pool.Status.Replicas.Total = sts.Status.Replicas
-		pool.Status.Replicas.Desired = *sts.Spec.Replicas
+		ready = sts.Status.ReadyReplicas
+		total = sts.Status.Replicas
+		desired = *sts.Spec.Replicas
 
-		if sts.Status.ReadyReplicas == *sts.Spec.Replicas {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseRunning
-		} else if sts.Status.ReadyReplicas > 0 {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhaseScaling
-		} else {
-			pool.Status.Phase = antflyaiv1alpha1.TermitePoolPhasePending
+		if ready == desired {
+			newPhase = antflyaiv1alpha1.TermitePoolPhaseRunning
+		} else if ready > 0 {
+			newPhase = antflyaiv1alpha1.TermitePoolPhaseScaling
 		}
 	}
 
+	// Skip update if nothing changed
+	if pool.Status.Phase == newPhase &&
+		pool.Status.Replicas.Ready == ready &&
+		pool.Status.Replicas.Total == total &&
+		pool.Status.Replicas.Desired == desired &&
+		pool.Status.ObservedGeneration == pool.Generation {
+		return nil
+	}
+
+	pool.Status.Phase = newPhase
+	pool.Status.Replicas.Ready = ready
+	pool.Status.Replicas.Total = total
+	pool.Status.Replicas.Desired = desired
+	pool.Status.ObservedGeneration = pool.Generation
+
 	return r.Status().Update(ctx, pool)
+}
+
+// calculateBackoff calculates exponential backoff duration for validation failures.
+// Schedule: 1s, 2s, 4s, 8s, 16s, 32s, 60s (max)
+func calculateBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	// Cap to avoid int overflow (1<<63 wraps negative).
+	if attempt > 6 {
+		return 60 * time.Second
+	}
+	delay := time.Duration(1<<attempt) * time.Second
+	if delay > 60*time.Second {
+		return 60 * time.Second
+	}
+	return delay
+}
+
+func (r *TermitePoolReconciler) incrementValidationAttempts(key string) int {
+	val, _ := r.validationAttempts.LoadOrStore(key, 0)
+	count := val.(int) + 1
+	r.validationAttempts.Store(key, count)
+	return count
+}
+
+func (r *TermitePoolReconciler) resetValidationAttempts(key string) {
+	r.validationAttempts.Delete(key)
 }
 
 func (r *TermitePoolReconciler) labels(pool *antflyaiv1alpha1.TermitePool) map[string]string {
@@ -839,79 +933,11 @@ func (r *TermitePoolReconciler) addProbes(sts *appsv1.StatefulSet, pool *antflya
 	}
 }
 
-// validatePool performs controller-level validation (fallback when webhook is disabled)
+// validatePool performs controller-level validation (fallback when webhook is disabled).
+// Note: immutability checks require the old object and are only enforced by the
+// admission webhook.
 func (r *TermitePoolReconciler) validatePool(pool *antflyaiv1alpha1.TermitePool) error {
-	// Validate GKE config
-	if pool.Spec.GKE != nil {
-		gke := pool.Spec.GKE
-
-		// Validate compute class requires Autopilot
-		if gke.AutopilotComputeClass != "" && !gke.Autopilot {
-			return fmt.Errorf("spec.gke.autopilotComputeClass is set but spec.gke.autopilot=false; compute classes only work with GKE Autopilot clusters")
-		}
-
-		// Validate compute class enum (only if non-empty)
-		if gke.AutopilotComputeClass != "" {
-			validClasses := map[string]bool{
-				"Accelerator": true, "Balanced": true, "Performance": true,
-				"Scale-Out": true, "autopilot": true, "autopilot-spot": true,
-			}
-			if !validClasses[gke.AutopilotComputeClass] {
-				return fmt.Errorf("invalid GKE Autopilot compute class '%s'", gke.AutopilotComputeClass)
-			}
-		}
-
-		// Validate no conflicting settings (spot + autopilot)
-		// Exception: TPU workloads CAN use hardware.spot=true even in Autopilot mode
-		// because TPU provisioning doesn't use compute class (node selectors drive it)
-		isTPUWorkload := strings.Contains(pool.Spec.Hardware.Accelerator, "tpu")
-		if gke.Autopilot && pool.Spec.Hardware.Spot && !isTPUWorkload {
-			return fmt.Errorf("spec.hardware.spot=true conflicts with spec.gke.autopilot=true; use gke.autopilotComputeClass='autopilot-spot' instead")
-		}
-	}
-
-	// Validate EKS config
-	if pool.Spec.EKS != nil && pool.Spec.EKS.Enabled {
-		eks := pool.Spec.EKS
-		// Validate IRSA role ARN format if specified
-		if eks.IRSARoleARN != "" {
-			irsaPattern := regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:iam::\d{12}:role/.+$`)
-			if !irsaPattern.MatchString(eks.IRSARoleARN) {
-				return fmt.Errorf("invalid IRSA role ARN format: '%s'", eks.IRSARoleARN)
-			}
-		}
-		// Validate instance types format
-		for _, instanceType := range eks.InstanceTypes {
-			if instanceType == "" {
-				return fmt.Errorf("spec.eks.instanceTypes contains an empty string")
-			}
-			instancePattern := regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+$`)
-			if !instancePattern.MatchString(instanceType) {
-				return fmt.Errorf("invalid instance type format: '%s'", instanceType)
-			}
-		}
-	}
-
-	// Validate no conflicting cloud providers
-	gkeEnabled := pool.Spec.GKE != nil && pool.Spec.GKE.Autopilot
-	eksEnabled := pool.Spec.EKS != nil && pool.Spec.EKS.Enabled
-	if gkeEnabled && eksEnabled {
-		return fmt.Errorf("both spec.gke.autopilot=true and spec.eks.enabled=true are set; a pool cannot be configured for both GKE and EKS simultaneously")
-	}
-
-	// Validate replica counts
-	if pool.Spec.Replicas.Min < 0 {
-		return fmt.Errorf("spec.replicas.min must be >= 0, got %d", pool.Spec.Replicas.Min)
-	}
-	if pool.Spec.Replicas.Max <= 0 {
-		return fmt.Errorf("spec.replicas.max must be > 0, got %d", pool.Spec.Replicas.Max)
-	}
-	if pool.Spec.Replicas.Min > pool.Spec.Replicas.Max {
-		return fmt.Errorf("spec.replicas.min (%d) cannot be greater than spec.replicas.max (%d)",
-			pool.Spec.Replicas.Min, pool.Spec.Replicas.Max)
-	}
-
-	return nil
+	return pool.ValidateTermitePool()
 }
 
 // applySchedulingConstraints applies user-specified scheduling constraints to the pod template.

@@ -663,10 +663,8 @@ func countClassifications(results [][]Classification) int {
 // SupportsExtraction returns true if the model supports structured schema-based extraction.
 func (p *PooledGLiNER) SupportsExtraction() bool {
 	// Check config capabilities first
-	for _, cap := range p.config.Capabilities {
-		if cap == "extraction" {
-			return true
-		}
+	if slices.Contains(p.config.Capabilities, "extraction") {
+		return true
 	}
 	// Fall back to model type check: any GLiNER2 model can do extraction
 	return p.config.ModelType == GLiNERModelGLiNER2

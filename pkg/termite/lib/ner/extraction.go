@@ -17,6 +17,7 @@ package ner
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -194,10 +195,8 @@ func parseFieldDef(def string) (SchemaField, error) {
 			if len(choices) < 2 {
 				return SchemaField{}, fmt.Errorf("choice field must have at least 2 options in %q", def)
 			}
-			for _, c := range choices {
-				if c == "" {
-					return SchemaField{}, fmt.Errorf("choice field has empty option in %q", def)
-				}
+			if slices.Contains(choices, "") {
+				return SchemaField{}, fmt.Errorf("choice field has empty option in %q", def)
 			}
 			field.Choices = choices
 			nameEnd = i

@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"slices"
+
 	"github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
@@ -34,11 +36,21 @@ import (
 type ChunkerModelInfo struct {
 	Name         string
 	Path         string
-	OnnxFilename string
-	PoolSize     int
+	OnnxFilename string                   // Text chunkers (variant ONNX file)
+	PoolSize     int                      // Pipeline pool size (text chunkers)
+	Capabilities []string                 // From manifest (e.g., ["audio"])
+	Backends     []string                 // Required backends from manifest
+	SessionOpts  []backends.SessionOption // For GoMLX backend support
 }
 
-// ChunkerRegistry manages chunker models with lazy loading and TTL-based unloading
+// mediaCapabilities are the capabilities that qualify a chunker model as a media chunker.
+var mediaCapabilities = []modelregistry.Capability{
+	modelregistry.CapabilityAudio,
+}
+
+// ChunkerRegistry manages chunker models with lazy loading and TTL-based unloading.
+// It handles both text chunkers and media chunkers (audio, etc.) in a single registry
+// with capability-based dispatch, following the EmbedderRegistry pattern.
 type ChunkerRegistry struct {
 	modelsDir      string
 	sessionManager *backends.SessionManager
@@ -48,15 +60,20 @@ type ChunkerRegistry struct {
 	discovered map[string]*ChunkerModelInfo
 	mu         sync.RWMutex
 
-	// Loaded models with TTL cache
+	// Loaded text chunker models with TTL cache
 	cache *ttlcache.Cache[string, chunking.Chunker]
 
+	// Loaded media chunker models with TTL cache (separate Go type, like embedder sparse cache)
+	mediaCache *ttlcache.Cache[string, termchunking.CloseableMediaChunker]
+
 	// Reference counting to prevent eviction during active use
+	// Shared across text and media caches (model names are unique)
 	refCounts   map[string]int
 	refCountsMu sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
+	mediaKeepAlive  time.Duration // Separate TTL for media models (may differ from text)
 	maxLoadedModels uint64
 	poolSize        int
 }
@@ -64,7 +81,8 @@ type ChunkerRegistry struct {
 // ChunkerConfig configures the lazy chunker registry
 type ChunkerConfig struct {
 	ModelsDir       string
-	KeepAlive       time.Duration // How long to keep models loaded (0 = forever)
+	KeepAlive       time.Duration // How long to keep text models loaded (0 = forever)
+	MediaKeepAlive  time.Duration // How long to keep media models loaded (0 = use KeepAlive)
 	MaxLoadedModels uint64        // Max models in memory (0 = unlimited)
 	PoolSize        int           // Number of concurrent pipelines per model (0 = default)
 }
@@ -89,6 +107,11 @@ func NewChunkerRegistry(
 		poolSize = min(runtime.NumCPU(), 4)
 	}
 
+	mediaKeepAlive := config.MediaKeepAlive
+	if mediaKeepAlive == 0 {
+		mediaKeepAlive = keepAlive
+	}
+
 	registry := &ChunkerRegistry{
 		modelsDir:       config.ModelsDir,
 		sessionManager:  sessionManager,
@@ -96,11 +119,12 @@ func NewChunkerRegistry(
 		discovered:      make(map[string]*ChunkerModelInfo),
 		refCounts:       make(map[string]int),
 		keepAlive:       keepAlive,
+		mediaKeepAlive:  mediaKeepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
 	}
 
-	// Configure TTL cache with LRU eviction
+	// Configure text chunker TTL cache with LRU eviction
 	cacheOpts := []ttlcache.Option[string, chunking.Chunker]{
 		ttlcache.WithTTL[string, chunking.Chunker](keepAlive),
 	}
@@ -111,6 +135,16 @@ func NewChunkerRegistry(
 	}
 
 	registry.cache = ttlcache.New(cacheOpts...)
+
+	// Configure media chunker TTL cache with capacity (mirrors text cache pattern)
+	mediaCacheOpts := []ttlcache.Option[string, termchunking.CloseableMediaChunker]{
+		ttlcache.WithTTL[string, termchunking.CloseableMediaChunker](mediaKeepAlive),
+	}
+	if config.MaxLoadedModels > 0 {
+		mediaCacheOpts = append(mediaCacheOpts,
+			ttlcache.WithCapacity[string, termchunking.CloseableMediaChunker](config.MaxLoadedModels))
+	}
+	registry.mediaCache = ttlcache.New(mediaCacheOpts...)
 
 	// Set up eviction callback to close unloaded models
 	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
@@ -158,12 +192,41 @@ func NewChunkerRegistry(
 		}
 	})
 
-	// Start cache cleanup goroutine
+	// Set up media cache eviction callback
+	registry.mediaCache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, termchunking.CloseableMediaChunker]) {
+		if reason == ttlcache.EvictionReasonDeleted {
+			return
+		}
+
+		registry.refCountsMu.Lock()
+		refCount := registry.refCounts[item.Key()]
+		if refCount > 0 {
+			registry.mediaCache.Set(item.Key(), item.Value(), registry.mediaKeepAlive)
+			registry.refCountsMu.Unlock()
+			logger.Warn("Preventing eviction of media chunker model with active references",
+				zap.String("model", item.Key()),
+				zap.Int("refCount", refCount))
+			return
+		}
+		registry.refCountsMu.Unlock()
+
+		logger.Info("Evicting media chunker model from cache",
+			zap.String("model", item.Key()))
+		if err := item.Value().Close(); err != nil {
+			logger.Warn("Error closing evicted media chunker model",
+				zap.String("model", item.Key()),
+				zap.Error(err))
+		}
+	})
+
+	// Start cache cleanup goroutines
 	go registry.cache.Start()
+	go registry.mediaCache.Start()
 
 	// Discover models (but don't load them)
 	if err := registry.discoverModels(); err != nil {
 		registry.cache.Stop()
+		registry.mediaCache.Stop()
 		return nil, err
 	}
 
@@ -198,18 +261,75 @@ func (r *ChunkerRegistry) discoverModels() error {
 	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
+	// Collect log entries to emit outside the lock
+	type discoveryLog struct {
+		name         string
+		path         string
+		capabilities []string // non-nil for media models
+		variants     []string // non-nil for text models
+	}
+	var logEntries []discoveryLog
+
 	r.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
-		// Skip if no model files exist
+		// Check if this model has media capabilities (e.g., audio)
+		hasMediaCap := false
+		if dm.Manifest != nil {
+			if slices.ContainsFunc(mediaCapabilities, dm.Manifest.HasCapability) {
+				hasMediaCap = true
+			}
+		}
+
+		// Media-capable models: register with capabilities and session options
+		if hasMediaCap && dm.Manifest != nil {
+			if _, exists := r.discovered[registryFullName]; exists {
+				continue
+			}
+
+			// Build session options from manifest
+			var sessionOpts []backends.SessionOption
+			if dm.Manifest.SessionOptions != nil {
+				if len(dm.Manifest.SessionOptions.InputConstants) > 0 {
+					sessionOpts = append(sessionOpts, backends.WithInputConstants(dm.Manifest.SessionOptions.InputConstants))
+				}
+				if len(dm.Manifest.SessionOptions.DynamicAxes) > 0 {
+					overrides := make([]backends.DynamicAxisOverride, len(dm.Manifest.SessionOptions.DynamicAxes))
+					for i, da := range dm.Manifest.SessionOptions.DynamicAxes {
+						overrides[i] = backends.DynamicAxisOverride{
+							InputName: da.InputName,
+							Axis:      da.Axis,
+							ParamName: da.ParamName,
+						}
+					}
+					sessionOpts = append(sessionOpts, backends.WithDynamicAxes(overrides))
+				}
+			}
+
+			r.discovered[registryFullName] = &ChunkerModelInfo{
+				Name:         registryFullName,
+				Path:         modelPath,
+				Capabilities: dm.Manifest.Capabilities,
+				Backends:     dm.Manifest.Backends,
+				SessionOpts:  sessionOpts,
+			}
+
+			logEntries = append(logEntries, discoveryLog{
+				name:         registryFullName,
+				path:         modelPath,
+				capabilities: dm.Manifest.Capabilities,
+			})
+			continue
+		}
+
+		// Text chunker models: register each variant
 		if len(variants) == 0 {
 			continue
 		}
 
-		// Store each variant for lazy loading (skip already-discovered entries)
 		anyNew := false
 		for variantID, onnxFilename := range variants {
 			registryName := registryFullName
@@ -239,14 +359,30 @@ func (r *ChunkerRegistry) discoverModels() error {
 					variantIDs = append(variantIDs, v)
 				}
 			}
-			r.logger.Info("Discovered chunker model (not loaded)",
-				zap.String("name", registryFullName),
-				zap.String("path", modelPath),
-				zap.Strings("variants", variantIDs))
+			logEntries = append(logEntries, discoveryLog{
+				name:     registryFullName,
+				path:     modelPath,
+				variants: variantIDs,
+			})
 		}
 	}
 	discoveredCount := len(r.discovered)
 	r.mu.Unlock()
+
+	// Log discovered models outside the lock to avoid I/O under mutex
+	for _, entry := range logEntries {
+		if entry.capabilities != nil {
+			r.logger.Info("Discovered media chunker model (not loaded)",
+				zap.String("name", entry.name),
+				zap.String("path", entry.path),
+				zap.Strings("capabilities", entry.capabilities))
+		} else {
+			r.logger.Info("Discovered text chunker model (not loaded)",
+				zap.String("name", entry.name),
+				zap.String("path", entry.path),
+				zap.Strings("variants", entry.variants))
+		}
+	}
 
 	r.logger.Info("Chunker model discovery complete",
 		zap.Int("models_discovered", discoveredCount),
@@ -293,21 +429,26 @@ func (r *ChunkerRegistry) Get(modelName string) (chunking.Chunker, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *ChunkerRegistry) Acquire(modelName string) (chunking.Chunker, error) {
-	chunker, err := r.Get(modelName)
-	if err != nil {
-		return nil, err
+	// Check if model is discovered
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	r.mu.RUnlock()
+
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("chunker model not found: %s", modelName)
+		}
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
-	r.logger.Debug("Acquired chunker model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
-
-	return chunker, nil
+	// loadModelWithRef handles cache lookup, loading, and refcount increment
+	// atomically under r.mu.Lock to prevent TOCTOU between cache hit and eviction.
+	return r.loadModelWithRef(info)
 }
 
 // Release decrements the reference count for a model.
@@ -325,8 +466,127 @@ func (r *ChunkerRegistry) Release(modelName string) {
 		zap.Int("refCount", count))
 }
 
-// loadModel loads a chunker model from disk
+// AcquireMedia returns a media chunker by name and increments its reference count.
+// Only valid for models with media capabilities (e.g., "audio").
+// The caller MUST call Release() when done to allow the model to be evicted.
+func (r *ChunkerRegistry) AcquireMedia(modelName string) (termchunking.MediaChunker, error) {
+	// Check if model is discovered and has media capabilities
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	r.mu.RUnlock()
+
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, ok = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("chunker model not found: %s", modelName)
+		}
+	}
+
+	if !r.isMediaModel(info) {
+		return nil, fmt.Errorf("model %s does not have media capabilities", modelName)
+	}
+
+	// loadMediaModel handles cache lookup, loading, and refcount increment atomically
+	// under r.mu.Lock to prevent TOCTOU between cache hit and eviction.
+	return r.loadMediaModel(info)
+}
+
+// isMediaModel checks if a model has any media capability.
+func (r *ChunkerRegistry) isMediaModel(info *ChunkerModelInfo) bool {
+	for _, cap := range mediaCapabilities {
+		if slices.Contains(info.Capabilities, string(cap)) {
+			return true
+		}
+	}
+	return false
+}
+
+// loadMediaModel loads a media chunker model from disk using the lib/chunking factory.
+// It atomically increments the refcount under the lock to prevent TOCTOU races
+// between cache lookup and TTL eviction.
+func (r *ChunkerRegistry) loadMediaModel(info *ChunkerModelInfo) (termchunking.CloseableMediaChunker, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock.
+	// Increment refcount under the same lock to prevent eviction between
+	// the cache hit and the caller using the chunker.
+	if item := r.mediaCache.Get(info.Name); item != nil {
+		r.refCountsMu.Lock()
+		r.refCounts[info.Name]++
+		r.refCountsMu.Unlock()
+		return item.Value(), nil
+	}
+
+	r.logger.Info("Loading media chunker model on demand",
+		zap.String("model", info.Name),
+		zap.String("path", info.Path))
+
+	cfg := termchunking.MediaChunkerConfig{
+		ModelPath:     info.Path,
+		Capabilities:  info.Capabilities,
+		ModelBackends: info.Backends,
+		SessionOpts:   info.SessionOpts,
+		Logger:        r.logger.Named(info.Name),
+	}
+
+	chunker, backendUsed, err := termchunking.NewMediaChunkerFromModel(cfg, r.sessionManager)
+	if err != nil {
+		return nil, fmt.Errorf("loading media chunker model %s: %w", info.Name, err)
+	}
+
+	r.logger.Info("Successfully loaded media chunker model",
+		zap.String("name", info.Name),
+		zap.String("backend", string(backendUsed)))
+
+	r.mediaCache.Set(info.Name, chunker, r.mediaKeepAlive)
+
+	// Increment refcount for the newly loaded model
+	r.refCountsMu.Lock()
+	r.refCounts[info.Name]++
+	r.refCountsMu.Unlock()
+
+	return chunker, nil
+}
+
+// loadModel loads a text chunker model from disk.
+// Uses a double-checked lock to prevent concurrent duplicate loads.
 func (r *ChunkerRegistry) loadModel(info *ChunkerModelInfo) (chunking.Chunker, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.loadModelLocked(info)
+}
+
+// loadModelWithRef loads a text chunker model and atomically increments its refcount.
+// This prevents TOCTOU between cache hit and TTL eviction.
+func (r *ChunkerRegistry) loadModelWithRef(info *ChunkerModelInfo) (chunking.Chunker, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	chunker, err := r.loadModelLocked(info)
+	if err != nil {
+		return nil, err
+	}
+
+	r.refCountsMu.Lock()
+	r.refCounts[info.Name]++
+	r.refCountsMu.Unlock()
+
+	return chunker, nil
+}
+
+// loadModelLocked loads a text chunker model from disk. Caller must hold r.mu.
+func (r *ChunkerRegistry) loadModelLocked(info *ChunkerModelInfo) (chunking.Chunker, error) {
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading chunker model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -358,7 +618,7 @@ func (r *ChunkerRegistry) loadModel(info *ChunkerModelInfo) (chunking.Chunker, e
 // List returns all available chunker model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *ChunkerRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -368,6 +628,42 @@ func (r *ChunkerRegistry) List() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ListWithCapabilities returns a map of model names to their capabilities.
+// Re-scans the models directory to pick up newly pulled models.
+func (r *ChunkerRegistry) ListWithCapabilities() map[string][]string {
+	_ = r.discoverModels()
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string][]string, len(r.discovered))
+	for name, info := range r.discovered {
+		result[name] = info.Capabilities
+	}
+	return result
+}
+
+// HasCapability checks if a model has a specific capability (e.g., audio).
+func (r *ChunkerRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
+	r.mu.RLock()
+	info, known := r.discovered[modelName]
+	r.mu.RUnlock()
+
+	if !known {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		info, known = r.discovered[modelName]
+		r.mu.RUnlock()
+		if !known {
+			return false
+		}
+	}
+
+	return slices.Contains(info.Capabilities, string(capability))
 }
 
 // ListLoaded returns only the currently loaded chunker model names
@@ -391,12 +687,13 @@ func (r *ChunkerRegistry) Preload(modelNames []string) error {
 
 	var loaded, failed int
 	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
+		if _, err := r.Acquire(name); err != nil {
 			r.logger.Warn("Failed to preload chunker model",
 				zap.String("model", name),
 				zap.Error(err))
 			failed++
 		} else {
+			r.Release(name)
 			r.logger.Info("Preloaded chunker model",
 				zap.String("model", name))
 			loaded++
@@ -419,29 +716,43 @@ func (r *ChunkerRegistry) PreloadAll() error {
 	return r.Preload(r.List())
 }
 
-// Close stops the cache and unloads all models
+// Close stops the caches and unloads all models
 func (r *ChunkerRegistry) Close() error {
-	r.logger.Info("Closing lazy chunker registry")
+	r.logger.Info("Closing chunker registry")
 
-	// Stop cache first to prevent new evictions
+	// Stop caches first to prevent new evictions
 	r.cache.Stop()
+	r.mediaCache.Stop()
 
-	// Close all cached models synchronously (don't rely on async eviction callbacks)
+	// Close all cached text models synchronously
 	for _, key := range r.cache.Keys() {
 		if item := r.cache.Get(key); item != nil {
-			chunker := item.Value()
-			r.logger.Debug("Closing cached chunker model",
+			r.logger.Debug("Closing cached text chunker model",
 				zap.String("model", key))
-			if err := chunker.Close(); err != nil {
-				r.logger.Warn("Error closing chunker model",
+			if err := item.Value().Close(); err != nil {
+				r.logger.Warn("Error closing text chunker model",
 					zap.String("model", key),
 					zap.Error(err))
 			}
 		}
 	}
 
-	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
+	// Close all cached media models synchronously
+	for _, key := range r.mediaCache.Keys() {
+		if item := r.mediaCache.Get(key); item != nil {
+			r.logger.Debug("Closing cached media chunker model",
+				zap.String("model", key))
+			if err := item.Value().Close(); err != nil {
+				r.logger.Warn("Error closing media chunker model",
+					zap.String("model", key),
+					zap.Error(err))
+			}
+		}
+	}
+
+	// Clear both caches
 	r.cache.DeleteAll()
+	r.mediaCache.DeleteAll()
 
 	return nil
 }

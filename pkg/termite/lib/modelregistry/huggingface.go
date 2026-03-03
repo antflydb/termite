@@ -696,8 +696,8 @@ func (c *HuggingFaceClient) DetectGeneratorVariants(ctx context.Context, repoID 
 // See https://huggingface.co/docs/hub/models-widgets#enabling-a-widget for the full list.
 var pipelineTagToModelType = map[string]ModelType{
 	// Embedder models
-	"feature-extraction":    ModelTypeEmbedder,
-	"sentence-similarity":   ModelTypeEmbedder,
+	"feature-extraction":             ModelTypeEmbedder,
+	"sentence-similarity":            ModelTypeEmbedder,
 	"zero-shot-image-classification": ModelTypeEmbedder,
 
 	// Reranker models
@@ -712,22 +712,22 @@ var pipelineTagToModelType = map[string]ModelType{
 	"translation":          ModelTypeRewriter,
 
 	// Reader / OCR / vision-language models
-	"image-text-to-text":       ModelTypeReader,
-	"image-to-text":            ModelTypeReader,
+	"image-text-to-text":          ModelTypeReader,
+	"image-to-text":               ModelTypeReader,
 	"document-question-answering": ModelTypeReader,
 
 	// Transcriber models
 	"automatic-speech-recognition": ModelTypeTranscriber,
 
 	// Classifier models
-	"text-classification":  ModelTypeClassifier,
-	"token-classification": ModelTypeClassifier,
+	"text-classification":      ModelTypeClassifier,
+	"token-classification":     ModelTypeClassifier,
 	"zero-shot-classification": ModelTypeClassifier,
 
 	// Recognizer models
-	"object-detection":    ModelTypeRecognizer,
+	"object-detection":     ModelTypeRecognizer,
 	"image-classification": ModelTypeRecognizer,
-	"image-segmentation":  ModelTypeRecognizer,
+	"image-segmentation":   ModelTypeRecognizer,
 }
 
 // GetRepoInfo fetches the HuggingFace model info including pipeline_tag and tags.

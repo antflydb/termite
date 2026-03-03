@@ -17,17 +17,19 @@ package termite
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
-	mediachunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
-	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
+	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/reading"
+	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 	"go.uber.org/zap"
 )
 
@@ -40,9 +42,6 @@ type TermiteNode struct {
 	readerRegistry        ReaderRegistryInterface
 	transcriberRegistry   TranscriberRegistryInterface
 	chunker               ChunkerInterface
-	mediaChunker          *mediachunking.FixedMediaChunker
-	vadChunker            *mediachunking.VADAudioChunker
-	vadChunkerName        string
 	rerankerRegistry      RerankerRegistryInterface
 	generatorRegistry     GeneratorRegistryInterface
 	nerRegistry           NERRegistryInterface
@@ -54,12 +53,13 @@ type TermiteNode struct {
 	// Request queue for backpressure control
 	requestQueue *RequestQueue
 
-	// Caches for embeddings, reranking, NER, and reading
-	embeddingCache       *EmbeddingCache
-	sparseEmbeddingCache *SparseEmbeddingCache
-	rerankingCache       *RerankingCache
-	nerCache             *NERCache
-	readingCache         *ReadingCache
+	// Result caches for inference deduplication
+	embeddingCache       *ResultCache[[][]float32]
+	sparseEmbeddingCache *ResultCache[[]embeddings.SparseVector]
+	rerankingCache       *ResultCache[[]float32]
+	nerCache             *ResultCache[[][]ner.Entity]
+	readingCache         *ResultCache[[]reading.Result]
+	transcriptionCache   *ResultCache[*transcribing.Result]
 
 	// allowDownloads controls whether the dashboard shows model download commands
 	allowDownloads bool
@@ -192,21 +192,11 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	// Initialize chunker with optional model directory support
 	// If models_dir is set in config, Termite will discover and load chunker models
 	// If not set, Termite falls back to semantic-only chunking
-	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, config.PoolSize, zl.Named("chunker"))
+	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, config.PoolSize, keepAlive, uint64(config.MaxLoadedModels), zl.Named("chunker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
 	defer func() { _ = cachedChunker.Close() }()
-
-	// Discover and load VAD audio chunker if available
-	var vadChunker *mediachunking.VADAudioChunker
-	var vadChunkerName string
-	if chunkerModelsDir != "" && sessionManager != nil {
-		vadChunker, vadChunkerName = discoverVADChunker(chunkerModelsDir, sessionManager, zl)
-		if vadChunker != nil {
-			defer func() { _ = vadChunker.Close() }()
-		}
-	}
 
 	// Initialize embedder registry (lazy loading with TTL-based unloading)
 	embedderRegistry, err := NewEmbedderRegistry(
@@ -490,21 +480,24 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		RequestTimeout:        requestTimeout,
 	}, zl.Named("queue"))
 
-	// Initialize caches for embeddings, reranking, NER, and reading
-	embeddingCache := NewEmbeddingCache(zl.Named("embedding-cache"))
+	// Initialize result caches for inference deduplication
+	embeddingCache := NewResultCache[[][]float32]("Embedding", 2*time.Minute, zl.Named("embedding-cache"))
 	defer embeddingCache.Close()
 
-	sparseEmbeddingCache := NewSparseEmbeddingCache(zl.Named("sparse-embedding-cache"))
+	sparseEmbeddingCache := NewResultCache[[]embeddings.SparseVector]("Sparse embedding", 2*time.Minute, zl.Named("sparse-embedding-cache"))
 	defer sparseEmbeddingCache.Close()
 
-	rerankingCache := NewRerankingCache(zl.Named("reranking-cache"))
+	rerankingCache := NewResultCache[[]float32]("Reranking", 2*time.Minute, zl.Named("reranking-cache"))
 	defer rerankingCache.Close()
 
-	nerCache := NewNERCache(zl.Named("ner-cache"))
+	nerCache := NewResultCache[[][]ner.Entity]("NER", 2*time.Minute, zl.Named("ner-cache"))
 	defer nerCache.Close()
 
-	readingCache := NewReadingCache(zl.Named("reading-cache"))
+	readingCache := NewResultCache[[]reading.Result]("Reading", 5*time.Minute, zl.Named("reading-cache"))
 	defer readingCache.Close()
+
+	transcriptionCache := NewResultCache[*transcribing.Result]("Transcription", 2*time.Minute, zl.Named("transcription-cache"))
+	defer transcriptionCache.Close()
 
 	// Build S3 credentials from config (optional)
 	var s3Creds *s3.Credentials
@@ -517,9 +510,6 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 
 		embedderRegistry:      embedderRegistry,
 		chunker:               cachedChunker,
-		mediaChunker:          mediachunking.NewFixedMediaChunker(),
-		vadChunker:            vadChunker,
-		vadChunkerName:        vadChunkerName,
 		rerankerRegistry:      rerankerRegistry,
 		generatorRegistry:     generatorRegistry,
 		nerRegistry:           nerRegistry,
@@ -531,10 +521,11 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		s3Credentials:         s3Creds,
 		requestQueue:          requestQueue,
 		embeddingCache:        embeddingCache,
-		sparseEmbeddingCache: sparseEmbeddingCache,
+		sparseEmbeddingCache:  sparseEmbeddingCache,
 		rerankingCache:        rerankingCache,
 		nerCache:              nerCache,
 		readingCache:          readingCache,
+		transcriptionCache:    transcriptionCache,
 		allowDownloads:        config.AllowDownloads,
 
 		client: client,
@@ -569,25 +560,31 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	addDashboardRoutes(rootMux)
 
 	srv := &http.Server{
-		Addr:        u.Host,
 		Handler:     corsMiddleware(rootMux),
 		ReadTimeout: 540 * time.Second,
+	}
+
+	// Bind the socket before starting the server goroutine so readyC is only
+	// closed after the port is actually listening.
+	ln, err := net.Listen("tcp", u.Host)
+	if err != nil {
+		zl.Fatal("Failed to bind address", zap.String("address", u.Host), zap.Error(err))
+	}
+
+	// Signal readiness now that the socket is bound
+	if readyC != nil {
+		close(readyC)
 	}
 
 	// Start server in goroutine
 	serverErr := make(chan error, 1)
 	go func() {
-		zl.Info("Termite's api server starting", zap.String("address", config.ApiUrl))
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		zl.Info("Termite's api server starting", zap.String("address", ln.Addr().String()))
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			serverErr <- err
 		}
 		close(serverErr)
 	}()
-
-	// Signal readiness after server starts
-	if readyC != nil {
-		close(readyC)
-	}
 
 	// Wait for context cancellation or server error
 	select {
@@ -617,59 +614,4 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	zl.Info("HTTP server stopped")
-}
-
-// discoverVADChunker scans the chunker models directory for a model with the
-// "audio" capability (e.g., Silero VAD) and returns a ready-to-use VADAudioChunker.
-// Returns (nil, "") if no suitable model is found.
-func discoverVADChunker(chunkerModelsDir string, sessionManager *backends.SessionManager, logger *zap.Logger) (*mediachunking.VADAudioChunker, string) {
-	models, err := discoverModelsInDir(chunkerModelsDir, modelregistry.ModelTypeChunker, logger)
-	if err != nil {
-		logger.Warn("Failed to discover chunker models for VAD", zap.Error(err))
-		return nil, ""
-	}
-
-	for _, model := range models {
-		if model.Manifest == nil || !model.Manifest.HasCapability(modelregistry.CapabilityAudio) {
-			continue
-		}
-
-		// Found an audio-capable chunker model — create a session
-		modelFile := filepath.Join(model.Path, "model.onnx")
-		if _, err := os.Stat(modelFile); os.IsNotExist(err) {
-			logger.Warn("VAD model directory missing model.onnx",
-				zap.String("model", model.FullName()),
-				zap.String("path", model.Path))
-			continue
-		}
-
-		var modelBackends []string
-		if model.Manifest != nil {
-			modelBackends = model.Manifest.Backends
-		}
-
-		factory, _, err := sessionManager.GetSessionFactoryForModel(modelBackends)
-		if err != nil {
-			logger.Warn("No session factory available for VAD model",
-				zap.String("model", model.FullName()),
-				zap.Error(err))
-			continue
-		}
-
-		session, err := factory.CreateSession(modelFile)
-		if err != nil {
-			logger.Warn("Failed to create session for VAD model",
-				zap.String("model", model.FullName()),
-				zap.Error(err))
-			continue
-		}
-
-		chunker := mediachunking.NewVADAudioChunker(session, mediachunking.DefaultVADConfig())
-		logger.Info("Loaded VAD audio chunker",
-			zap.String("model", model.FullName()),
-			zap.String("path", model.Path))
-		return chunker, model.FullName()
-	}
-
-	return nil, ""
 }

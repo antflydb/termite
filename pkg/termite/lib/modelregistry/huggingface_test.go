@@ -16,6 +16,7 @@ package modelregistry
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -164,13 +165,7 @@ func TestSelectGeneratorFiles_FlatRepoDefaultVariant(t *testing.T) {
 		"vision_encoder.onnx",
 	}
 	for _, expected := range expectedBase {
-		found := false
-		for _, f := range onnxFiles {
-			if f == expected {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(onnxFiles, expected)
 		if !found {
 			t.Errorf("expected base file %q not in result", expected)
 		}
@@ -237,13 +232,7 @@ func TestSelectGeneratorFiles_FlatRepoFP16Variant(t *testing.T) {
 		"embed_tokens_fp16.onnx",
 	}
 	for _, expected := range expectedFP16 {
-		found := false
-		for _, f := range onnxFiles {
-			if f == expected {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(onnxFiles, expected)
 		if !found {
 			t.Errorf("expected fp16 file %q not in result", expected)
 		}

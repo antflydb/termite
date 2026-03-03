@@ -314,7 +314,7 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 	// and model size limits, but this is handled by the session manager.
 	cfg := seq2seq.PooledSeq2SeqConfig{
 		ModelPath:     info.Path,
-		PoolSize:      1, // Registry manages pooling at a higher level
+		PoolSize:      1,   // Registry manages pooling at a higher level
 		ModelBackends: nil, // Use all available backends
 		Logger:        r.logger.Named(info.Name),
 	}

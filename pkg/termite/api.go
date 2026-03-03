@@ -32,7 +32,6 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -41,6 +40,7 @@ import (
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/antfly-go/libaf/s3"
 	"github.com/antflydb/antfly-go/libaf/scraping"
+	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
@@ -154,7 +154,13 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.node.chunker != nil {
-		resp.Chunkers = stringsToModelInfoMap(t.node.chunker.ListModels())
+		// Built-in models (always available, no capabilities)
+		resp.Chunkers[termchunking.ModelFixedBert] = ModelInfo{}
+		resp.Chunkers[termchunking.ModelFixedBPE] = ModelInfo{}
+		// Registry models (text + media chunkers with capabilities)
+		for name, caps := range t.node.chunker.ListWithCapabilities() {
+			resp.Chunkers[name] = ModelInfo{Capabilities: caps}
+		}
 	}
 
 	if t.node.embedderRegistry != nil {
@@ -301,7 +307,7 @@ func (ln *TermiteNode) handleApiEmbed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wrap embedder with caching for deduplicated requests
-	cachedEmbedder := ln.embeddingCache.WrapEmbedder(embedder, req.Model)
+	cachedEmbedder := NewCachedEmbedder(embedder, req.Model, ln.embeddingCache, ln.logger.Named(req.Model))
 
 	// Generate embeddings (with caching and singleflight deduplication)
 	embeds, err := cachedEmbedder.Embed(r.Context(), contents)
@@ -364,7 +370,7 @@ func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request,
 	defer ln.embedderRegistry.Release(req.Model)
 
 	// Wrap with caching
-	cachedSparse := ln.sparseEmbeddingCache.WrapSparseEmbedder(sparseEmbedder, req.Model)
+	cachedSparse := NewCachedSparseEmbedder(sparseEmbedder, req.Model, ln.sparseEmbeddingCache, ln.logger.Named(req.Model))
 
 	// Generate sparse embeddings
 	sparseVecs, err := cachedSparse.SparseEmbed(r.Context(), texts)
@@ -383,7 +389,7 @@ func (ln *TermiteNode) handleSparseEmbed(w http.ResponseWriter, r *http.Request,
 	case "application/json":
 		// JSON response with sparse_embeddings field
 		resp := EmbedResponse{
-			Model: req.Model,
+			Model:            req.Model,
 			SparseEmbeddings: make([]SparseVector, len(sparseVecs)),
 		}
 		for i, sv := range sparseVecs {
@@ -695,24 +701,10 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// chunkMedia routes media chunking to the VAD chunker (for audio, when requested)
-// or falls back to the fixed-duration media chunker.
+// chunkMedia delegates media chunking to the unified chunker, which handles
+// model-based and algorithmic fallback internally.
 func (ln *TermiteNode) chunkMedia(ctx context.Context, data []byte, mimeType, model string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
-	mimeNorm := strings.ToLower(strings.TrimSpace(mimeType))
-	isAudio := strings.HasPrefix(mimeNorm, "audio/")
-
-	if isAudio && ln.vadChunker != nil && model == ln.vadChunkerName {
-		switch {
-		case mimeNorm == "audio/wav" || mimeNorm == "audio/x-wav" || mimeNorm == "audio/wave":
-			return ln.vadChunker.ChunkAudio(ctx, data, opts)
-		case mimeNorm == "audio/mpeg" || mimeNorm == "audio/mp3":
-			return ln.vadChunker.ChunkMP3(ctx, data, opts)
-		default:
-			return nil, fmt.Errorf("VAD chunker does not support MIME type %q", mimeType)
-		}
-	}
-
-	return ln.mediaChunker.ChunkMedia(ctx, data, mimeType, opts)
+	return ln.chunker.ChunkMedia(ctx, data, mimeType, model, opts)
 }
 
 // handleApiRerank handles reranking requests
@@ -779,7 +771,7 @@ func (ln *TermiteNode) handleApiRerank(w http.ResponseWriter, r *http.Request) {
 	defer ln.rerankerRegistry.Release(req.Model)
 
 	// Wrap reranker with caching for deduplicated requests
-	cachedReranker := ln.rerankingCache.WrapReranker(reranker, req.Model)
+	cachedReranker := NewCachedReranker(reranker, req.Model, ln.rerankingCache, ln.logger.Named(req.Model))
 
 	// Rerank prompts (with caching and singleflight deduplication)
 	scores, err := cachedReranker.Rerank(r.Context(), req.Query, req.Prompts)
@@ -936,7 +928,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 		}
 	} else {
 		// Standard NER model - wrap with caching for deduplicated requests
-		cachedModel := ln.nerCache.WrapModel(model, req.Model)
+		cachedModel := NewCachedNER(model, req.Model, ln.nerCache, ln.logger.Named(req.Model))
 
 		// Recognize entities (with caching and singleflight deduplication)
 		entities, err = cachedModel.Recognize(r.Context(), req.Texts)
@@ -1205,13 +1197,13 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 		zap.Int("total_fields", totalFields))
 
 	// Convert internal ExtractionResult to API response format
-	apiResults := make([]map[string][]map[string]interface{}, len(results))
+	apiResults := make([]map[string][]map[string]any, len(results))
 	for i, result := range results {
-		apiResult := make(map[string][]map[string]interface{})
+		apiResult := make(map[string][]map[string]any)
 		for structName, instances := range result {
-			apiInstances := make([]map[string]interface{}, len(instances))
+			apiInstances := make([]map[string]any, len(instances))
 			for j, instance := range instances {
-				apiInstance := make(map[string]interface{})
+				apiInstance := make(map[string]any)
 				for fieldName, fieldValue := range instance {
 					switch v := fieldValue.(type) {
 					case ner.ExtractedFieldValue:
@@ -1251,10 +1243,10 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 // `int` with `omitzero`, which silently drops offset 0 during marshalling.
 // Using *int pointers here ensures offset 0 is serialized correctly.
 type extractFieldValueJSON struct {
-	Value string   `json:"value"`
-	Score float32  `json:"score,omitempty"`
-	Start *int     `json:"start,omitempty"`
-	End   *int     `json:"end,omitempty"`
+	Value string  `json:"value"`
+	Score float32 `json:"score,omitempty"`
+	Start *int    `json:"start,omitempty"`
+	End   *int    `json:"end,omitempty"`
 }
 
 // convertFieldValue converts an internal ExtractedFieldValue to the response type.
@@ -2105,7 +2097,7 @@ func (ln *TermiteNode) handleApiRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wrap reader with caching for deduplicated requests
-	cachedReader := ln.readingCache.WrapReader(reader, req.Model)
+	cachedReader := NewCachedReader(reader, req.Model, ln.readingCache, ln.logger.Named(req.Model))
 
 	// Read images (with caching and singleflight deduplication)
 	results, err := cachedReader.Read(r.Context(), images, prompt, maxTokens)
@@ -2256,8 +2248,11 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 		opts.Language = req.Language
 	}
 
-	// Transcribe audio
-	result, err := transcriber.TranscribeWithOptions(r.Context(), audioData, opts)
+	// Wrap transcriber with caching for deduplicated requests
+	cachedTranscriber := NewCachedTranscriber(transcriber, req.Model, ln.transcriptionCache, ln.logger.Named(req.Model))
+
+	// Transcribe audio (with caching and singleflight deduplication)
+	result, err := cachedTranscriber.TranscribeWithOptions(r.Context(), audioData, opts)
 	if err != nil {
 		ln.logger.Error("transcription failed",
 			zap.String("model", req.Model),

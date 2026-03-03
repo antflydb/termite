@@ -81,6 +81,19 @@ func NewVADAudioChunker(session backends.Session, config VADConfig) *VADAudioChu
 	}
 }
 
+// ChunkMedia implements the MediaChunker interface by dispatching to the
+// appropriate format-specific method based on MIME type.
+func (v *VADAudioChunker) ChunkMedia(ctx context.Context, data []byte, mimeType string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
+	switch normalizeAudioMIME(mimeType) {
+	case "wav":
+		return v.ChunkAudio(ctx, data, opts)
+	case "mp3":
+		return v.ChunkMP3(ctx, data, opts)
+	default:
+		return nil, fmt.Errorf("VAD chunker does not support MIME type %q", mimeType)
+	}
+}
+
 // ChunkAudio parses a WAV file and segments it using VAD.
 func (v *VADAudioChunker) ChunkAudio(ctx context.Context, data []byte, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	samples, format, err := audio.ParseWAV(data)
@@ -336,10 +349,7 @@ func MergeVADFrames(probs []float32, frameSizeSamples, sampleRate int, config VA
 		}
 		// Split into sub-segments
 		for start := seg.StartSample; start < seg.EndSample; start += maxSamples {
-			end := start + maxSamples
-			if end > seg.EndSample {
-				end = seg.EndSample
-			}
+			end := min(start+maxSamples, seg.EndSample)
 			result = append(result, SpeechSegment{
 				StartSample: start,
 				EndSample:   end,

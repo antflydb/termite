@@ -41,13 +41,13 @@ func CTCDecode(logits []float32, timeSteps, vocabSize int, charDict []string) (s
 		prevIdx     = -1
 	)
 
-	for t := 0; t < timeSteps; t++ {
+	for t := range timeSteps {
 		// Find argmax for this timestep
 		bestIdx := 0
 		bestVal := float32(-math.MaxFloat32)
 
 		offset := t * vocabSize
-		for v := 0; v < vocabSize; v++ {
+		for v := range vocabSize {
 			if logits[offset+v] > bestVal {
 				bestVal = logits[offset+v]
 				bestIdx = v

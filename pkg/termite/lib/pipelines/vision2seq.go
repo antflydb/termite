@@ -270,7 +270,6 @@ type rawVision2SeqConfig struct {
 		DecoderAttentionHeads int   `json:"decoder_attention_heads"`
 		DModel                int   `json:"d_model"`
 	} `json:"text_config"`
-
 }
 
 // rawPreprocessorConfig represents preprocessor_config.json
