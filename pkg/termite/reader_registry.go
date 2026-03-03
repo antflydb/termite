@@ -53,8 +53,9 @@ type ReaderRegistry struct {
 	cache *ttlcache.Cache[string, reading.Reader]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refCounts      map[string]int
+	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
+	refCountsMu    sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -96,6 +97,7 @@ func NewReaderRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*ReaderModelEntry),
 		refCounts:       make(map[string]int),
+		evictedHandles:  make(map[string][]func() error),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -137,11 +139,16 @@ func NewReaderRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			// Model still in use — don't close it, but don't re-add to cache
+			// either (re-adding can overwrite a concurrently loaded newer instance).
+			// Track for cleanup when Release() drops refcount to 0.
+			model := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return model.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of reader model with active references",
+			logger.Warn("Reader model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
@@ -309,19 +316,24 @@ func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *ReaderRegistry) Acquire(modelName string) (reading.Reader, error) {
+	// Pre-increment refcount BEFORE Get() to prevent the eviction callback
+	// from closing the model between Get() returning and the increment.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	reader, err := r.Get(modelName)
 	if err != nil {
+		// Roll back on failure
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired reader model",
 		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.Int("refCount", r.refCounts[modelName]))
 
 	return reader, nil
 }
@@ -334,17 +346,45 @@ func (r *ReaderRegistry) Release(modelName string) {
 		r.refCounts[modelName]--
 	}
 	count := r.refCounts[modelName]
+
+	// If refcount hit 0, collect any orphaned handles for cleanup.
+	// These are handles that were evicted while still in use.
+	var orphans []func() error
+	if count == 0 {
+		orphans = r.evictedHandles[modelName]
+		delete(r.evictedHandles, modelName)
+	}
 	r.refCountsMu.Unlock()
 
 	r.logger.Debug("Released reader model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	// Close orphaned handles outside the lock
+	for _, closeFn := range orphans {
+		if err := closeFn(); err != nil {
+			r.logger.Warn("Error closing orphaned reader model",
+				zap.String("model", modelName),
+				zap.Error(err))
+		}
+	}
 }
 
 // loadModel loads a reader model from disk.
 // Multi-stage OCR models (Surya, PaddleOCR) are dispatched to MultiStageReader,
 // while Vision2Seq models (TrOCR, Donut, Florence-2, Nougat, Pix2Struct) use PooledReader.
 func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, error) {
+	// Lock to prevent concurrent loads of the same model (double-loading race).
+	// Double-check cache after acquiring lock in case another goroutine loaded it.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if item := r.cache.Get(info.Name); item != nil {
+		r.logger.Debug("Reader model loaded by another goroutine",
+			zap.String("model", info.Name))
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -488,6 +528,20 @@ func (r *ReaderRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	r.refCountsMu.Lock()
+	for name, orphans := range r.evictedHandles {
+		for _, closeFn := range orphans {
+			if err := closeFn(); err != nil {
+				r.logger.Warn("Error closing orphaned reader model during shutdown",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.evictedHandles = make(map[string][]func() error)
+	r.refCountsMu.Unlock()
 
 	return nil
 }

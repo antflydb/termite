@@ -57,8 +57,9 @@ type ClassifierRegistry struct {
 	cache *ttlcache.Cache[string, *loadedClassifier]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refCounts      map[string]int
+	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
+	refCountsMu    sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -100,6 +101,7 @@ func NewClassifierRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*ClassifierModelInfo),
 		refCounts:       make(map[string]int),
+		evictedHandles:  make(map[string][]func() error),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -139,10 +141,16 @@ func NewClassifierRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			// Model still in use — don't close it, but don't re-add to cache
+			// either (re-adding can overwrite a concurrently loaded newer instance).
+			// Track for cleanup when Release() drops refcount to 0.
+			loaded := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return loaded.classifier.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			logger.Warn("Preventing eviction of classifier model with active references",
+			logger.Warn("Classifier model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
@@ -279,20 +287,26 @@ func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, e
 
 // Acquire returns a classifier by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
+// This prevents the model from being closed while in use.
 func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifier, error) {
+	// Pre-increment refcount BEFORE getLoaded() to prevent the eviction callback
+	// from closing the model between getLoaded() returning and the increment.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
+		// Roll back on failure
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired classifier model",
 		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.Int("refCount", r.refCounts[modelName]))
 
 	return loaded.classifier, nil
 }
@@ -305,11 +319,28 @@ func (r *ClassifierRegistry) Release(modelName string) {
 		r.refCounts[modelName]--
 	}
 	count := r.refCounts[modelName]
+
+	// If refcount hit 0, collect any orphaned handles for cleanup.
+	// These are handles that were evicted while still in use.
+	var orphans []func() error
+	if count == 0 {
+		orphans = r.evictedHandles[modelName]
+		delete(r.evictedHandles, modelName)
+	}
 	r.refCountsMu.Unlock()
 
 	r.logger.Debug("Released classifier model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	// Close orphaned handles outside the lock
+	for _, closeFn := range orphans {
+		if err := closeFn(); err != nil {
+			r.logger.Warn("Error closing orphaned classifier model",
+				zap.String("model", modelName),
+				zap.Error(err))
+		}
+	}
 }
 
 // getLoaded gets or loads a model from cache
@@ -344,6 +375,17 @@ func (r *ClassifierRegistry) getLoaded(modelName string) (*loadedClassifier, err
 
 // loadModel loads a classifier model from disk
 func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
+	// Lock to prevent concurrent loads of the same model (double-loading race).
+	// Double-check cache after acquiring lock in case another goroutine loaded it.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if item := r.cache.Get(info.Name); item != nil {
+		r.logger.Debug("Classifier model loaded by another goroutine",
+			zap.String("model", info.Name))
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading classifier model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -428,24 +470,42 @@ func (r *ClassifierRegistry) Preload(modelNames []string) error {
 	return nil
 }
 
-// Close closes all loaded models and stops the cache
+// Close stops the cache and unloads all models
 func (r *ClassifierRegistry) Close() error {
 	r.logger.Info("Closing classifier registry")
 
-	// Close all loaded models
-	for _, name := range r.cache.Keys() {
-		if item := r.cache.Get(name); item != nil {
+	// Stop cache first to prevent new evictions
+	r.cache.Stop()
+
+	// Close all cached models synchronously (don't rely on async eviction callbacks)
+	for _, key := range r.cache.Keys() {
+		if item := r.cache.Get(key); item != nil {
+			r.logger.Debug("Closing cached classifier model",
+				zap.String("model", key))
 			if err := item.Value().classifier.Close(); err != nil {
 				r.logger.Warn("Error closing classifier model",
-					zap.String("model", name),
+					zap.String("model", key),
 					zap.Error(err))
 			}
-			r.cache.Delete(name)
 		}
 	}
 
-	// Stop the cache cleanup goroutine
-	r.cache.Stop()
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
+	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	r.refCountsMu.Lock()
+	for name, orphans := range r.evictedHandles {
+		for _, closeFn := range orphans {
+			if err := closeFn(); err != nil {
+				r.logger.Warn("Error closing orphaned classifier model during shutdown",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.evictedHandles = make(map[string][]func() error)
+	r.refCountsMu.Unlock()
 
 	return nil
 }
