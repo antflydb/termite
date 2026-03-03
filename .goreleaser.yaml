@@ -230,7 +230,7 @@ homebrew_casks:
     homepage: "https://docs.antfly.io/docs/guides/termite"
     description: "Termite - ML inference service for embeddings, chunking, and reranking"
     url:
-      template: "https://github.com/antflydb/termite/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+      template: "https://releases.antfly.io/termite/{{ .Tag }}/{{ .ArtifactName }}"
     binary: "termite"
     conflicts:
       - cask: termite-omni
@@ -252,7 +252,7 @@ homebrew_casks:
     homepage: "https://docs.antfly.io/docs/guides/termite"
     description: "Termite with ONNX Runtime + XLA - multi-backend ML inference"
     url:
-      template: "https://github.com/antflydb/termite/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+      template: "https://releases.antfly.io/termite/{{ .Tag }}/{{ .ArtifactName }}"
     binary: "termite"
     conflicts:
       - cask: termite
