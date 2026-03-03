@@ -8,6 +8,7 @@ replace (
 	github.com/gomlx/go-huggingface => github.com/ajroetker/go-huggingface v0.0.0-antfly001
 	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
 	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
+	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260302202010-e7999fbf1a99
 )
 
 require (

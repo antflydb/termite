@@ -15,6 +15,8 @@ github.com/ajroetker/gomlx v0.0.0-antfly008 h1:gR4QU267YK+1N0tC23nip7NpVSqyGa+aZ
 github.com/ajroetker/gomlx v0.0.0-antfly008/go.mod h1:7E+k2jApq1jX1F9uqINqPpFadESxqclrMqEySUkYs2w=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly008 h1:JoTmh8JZUiCoUQGJcdpHOx0OVMkYdPgcLj9jy9NbSy0=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly008/go.mod h1:BCAoiXSp71DmoCH7bbwv7SXveXazQiOylPDYkuQI2DU=
+github.com/ajroetker/ortgenai v0.0.0-20260302202010-e7999fbf1a99 h1:bCeujOIwzqy/tNFAMG9N+QTKLot1Bdc6Kw16sWYVdDA=
+github.com/ajroetker/ortgenai v0.0.0-20260302202010-e7999fbf1a99/go.mod h1:NsxP23iC77IP6q+gRTC+v79v3hyv7fKH1iSa7D+DoVk=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/antflydb/antfly-go/libaf v0.0.0-20260302070729-e25bf6f18ec6 h1:p9SpMvSbfcffMYzi9H23XiRo02DotK5uFupz0fjJXnI=
@@ -98,8 +100,6 @@ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzh
 github.com/klauspost/cpuid/v2 v2.3.0/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/klauspost/crc32 v1.3.0 h1:sSmTt3gUt81RP655XGZPElI0PelVTZ6YwCRnPSupoFM=
 github.com/klauspost/crc32 v1.3.0/go.mod h1:D7kQaZhnkX/Y0tstFGf8VUzv2UofNGqCjnC3zdHB0Hw=
-github.com/knights-analytics/ortgenai v0.1.0 h1:QJ57FCf+Ideo1zKojINXeDbFNeIYcd9yvzHhnuGVXZc=
-github.com/knights-analytics/ortgenai v0.1.0/go.mod h1:NsxP23iC77IP6q+gRTC+v79v3hyv7fKH1iSa7D+DoVk=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
