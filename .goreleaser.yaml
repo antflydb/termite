@@ -223,6 +223,7 @@ homebrew_casks:
   - name: termite
     ids:
       - default
+    skip_upload: auto
     repository:
       owner: antflydb
       name: homebrew-antfly
@@ -245,6 +246,7 @@ homebrew_casks:
   - name: termite-omni
     ids:
       - omni
+    skip_upload: auto
     repository:
       owner: antflydb
       name: homebrew-antfly
@@ -298,12 +300,13 @@ blobs:
     extra_files:
       - glob: ./scripts/install.sh
     include_meta: true
-  # Upload to /latest/ path for easy installation
+  # Upload to /latest/ path for easy installation (stable releases only)
   - provider: s3
     endpoint: https://e7e005e208ec9363efaca673271d2dbd.r2.cloudflarestorage.com
     region: auto
     bucket: antfly-releases
     directory: "termite/latest"
+    disable: "{{ if .Prerelease }}true{{ end }}"
     extra_files:
       - glob: ./scripts/install.sh
     include_meta: true

@@ -35,6 +35,11 @@ func discoverModelVariants(modelPath string) map[string]string {
 	if _, err := os.Stat(filepath.Join(modelPath, "model.onnx")); err == nil {
 		variants[""] = "model.onnx" // Empty key = default/FP32
 		usedFilenames["model.onnx"] = true
+	} else if _, err := os.Stat(filepath.Join(modelPath, "encoder_model.onnx")); err == nil {
+		// Encoder/decoder split models (e.g. Whisper, T5) don't have model.onnx
+		// but are valid default variants loaded by their respective pipelines.
+		variants[""] = "encoder_model.onnx"
+		usedFilenames["encoder_model.onnx"] = true
 	}
 
 	// Check for all known variant files, but skip if filename already used

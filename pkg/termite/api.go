@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -2235,12 +2234,8 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 	}
 	defer ln.transcriberRegistry.Release(req.Model)
 
-	// Decode base64 audio data
-	audioData, err := base64.StdEncoding.DecodeString(string(req.Audio))
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid base64 audio data: %v", err), http.StatusBadRequest)
-		return
-	}
+	// req.Audio is []byte — Go's JSON unmarshaler already base64-decoded it
+	audioData := req.Audio
 
 	// Build transcription options
 	opts := transcribing.TranscribeOptions{}
