@@ -48,8 +48,9 @@ type Seq2SeqRegistry struct {
 	cache *ttlcache.Cache[string, seq2seq.Model]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refCounts      map[string]int
+	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
+	refCountsMu    sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -84,6 +85,7 @@ func NewSeq2SeqRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*Seq2SeqModelInfo),
 		refCounts:       make(map[string]int),
+		evictedHandles:  make(map[string][]func() error),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 	}
@@ -124,11 +126,13 @@ func NewSeq2SeqRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			model := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return model.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of Seq2Seq model with active references",
+			logger.Warn("Seq2Seq model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
@@ -281,11 +285,25 @@ func (r *Seq2SeqRegistry) Release(modelName string) {
 		r.refCounts[modelName]--
 	}
 	count := r.refCounts[modelName]
+
+	var orphans []func() error
+	if count == 0 {
+		orphans = r.evictedHandles[modelName]
+		delete(r.evictedHandles, modelName)
+	}
 	r.refCountsMu.Unlock()
 
 	r.logger.Debug("Released Seq2Seq model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	for _, closeFn := range orphans {
+		if err := closeFn(); err != nil {
+			r.logger.Warn("Error closing orphaned Seq2Seq model",
+				zap.String("model", modelName),
+				zap.Error(err))
+		}
+	}
 }
 
 // GetQuestionGenerator returns a Seq2Seq model as a QuestionGenerator by name
@@ -422,6 +440,20 @@ func (r *Seq2SeqRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks may still fire but models are already closed)
 	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	r.refCountsMu.Lock()
+	for name, orphans := range r.evictedHandles {
+		for _, closeFn := range orphans {
+			if err := closeFn(); err != nil {
+				r.logger.Warn("Error closing orphaned Seq2Seq model during shutdown",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.evictedHandles = make(map[string][]func() error)
+	r.refCountsMu.Unlock()
 
 	return nil
 }

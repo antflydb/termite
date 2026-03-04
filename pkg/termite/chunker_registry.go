@@ -68,8 +68,9 @@ type ChunkerRegistry struct {
 
 	// Reference counting to prevent eviction during active use
 	// Shared across text and media caches (model names are unique)
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refCounts      map[string]int
+	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
+	refCountsMu    sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -118,6 +119,7 @@ func NewChunkerRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*ChunkerModelInfo),
 		refCounts:       make(map[string]int),
+		evictedHandles:  make(map[string][]func() error),
 		keepAlive:       keepAlive,
 		mediaKeepAlive:  mediaKeepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
@@ -170,11 +172,13 @@ func NewChunkerRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			model := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return model.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of chunker model with active references",
+			logger.Warn("Chunker model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
@@ -201,9 +205,13 @@ func NewChunkerRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			registry.mediaCache.Set(item.Key(), item.Value(), registry.mediaKeepAlive)
+			model := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return model.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			logger.Warn("Preventing eviction of media chunker model with active references",
+			logger.Warn("Media chunker model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount))
 			return
@@ -459,11 +467,25 @@ func (r *ChunkerRegistry) Release(modelName string) {
 		r.refCounts[modelName]--
 	}
 	count := r.refCounts[modelName]
+
+	var orphans []func() error
+	if count == 0 {
+		orphans = r.evictedHandles[modelName]
+		delete(r.evictedHandles, modelName)
+	}
 	r.refCountsMu.Unlock()
 
 	r.logger.Debug("Released chunker model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	for _, closeFn := range orphans {
+		if err := closeFn(); err != nil {
+			r.logger.Warn("Error closing orphaned chunker model",
+				zap.String("model", modelName),
+				zap.Error(err))
+		}
+	}
 }
 
 // AcquireMedia returns a media chunker by name and increments its reference count.
@@ -753,6 +775,20 @@ func (r *ChunkerRegistry) Close() error {
 	// Clear both caches
 	r.cache.DeleteAll()
 	r.mediaCache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	r.refCountsMu.Lock()
+	for name, orphans := range r.evictedHandles {
+		for _, closeFn := range orphans {
+			if err := closeFn(); err != nil {
+				r.logger.Warn("Error closing orphaned chunker model during shutdown",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.evictedHandles = make(map[string][]func() error)
+	r.refCountsMu.Unlock()
 
 	return nil
 }

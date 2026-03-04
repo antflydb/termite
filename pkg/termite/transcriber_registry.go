@@ -50,8 +50,9 @@ type TranscriberRegistry struct {
 	cache *ttlcache.Cache[string, transcribing.Transcriber]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refCounts      map[string]int
+	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
+	refCountsMu    sync.Mutex
 
 	// Configuration
 	keepAlive       time.Duration
@@ -93,6 +94,7 @@ func NewTranscriberRegistry(
 		logger:          logger,
 		discovered:      make(map[string]*TranscriberModelInfo),
 		refCounts:       make(map[string]int),
+		evictedHandles:  make(map[string][]func() error),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -134,11 +136,13 @@ func NewTranscriberRegistry(
 		registry.refCountsMu.Lock()
 		refCount := registry.refCounts[item.Key()]
 		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
+			model := item.Value()
+			registry.evictedHandles[item.Key()] = append(
+				registry.evictedHandles[item.Key()],
+				func() error { return model.Close() },
+			)
 			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of transcriber model with active references",
+			logger.Warn("Transcriber model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
 				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
@@ -315,11 +319,25 @@ func (r *TranscriberRegistry) Release(modelName string) {
 		r.refCounts[modelName]--
 	}
 	count := r.refCounts[modelName]
+
+	var orphans []func() error
+	if count == 0 {
+		orphans = r.evictedHandles[modelName]
+		delete(r.evictedHandles, modelName)
+	}
 	r.refCountsMu.Unlock()
 
 	r.logger.Debug("Released transcriber model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	for _, closeFn := range orphans {
+		if err := closeFn(); err != nil {
+			r.logger.Warn("Error closing orphaned transcriber model",
+				zap.String("model", modelName),
+				zap.Error(err))
+		}
+	}
 }
 
 // loadModel loads a transcriber model from disk
@@ -437,6 +455,20 @@ func (r *TranscriberRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	r.refCountsMu.Lock()
+	for name, orphans := range r.evictedHandles {
+		for _, closeFn := range orphans {
+			if err := closeFn(); err != nil {
+				r.logger.Warn("Error closing orphaned transcriber model during shutdown",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.evictedHandles = make(map[string][]func() error)
+	r.refCountsMu.Unlock()
 
 	return nil
 }
