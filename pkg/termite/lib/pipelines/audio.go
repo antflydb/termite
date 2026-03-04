@@ -395,7 +395,7 @@ func (ap *AudioProcessor) computeMelFilterBank() [][]float32 {
 
 	// Slaney mel scale (librosa default, htk=False):
 	// Linear below 1000 Hz, logarithmic above.
-	fSp := 200.0 / 3.0         // linear spacing: 66.667 Hz per mel
+	fSp := 200.0 / 3.0          // linear spacing: 66.667 Hz per mel
 	minLogHz := 1000.0          // transition frequency
 	minLogMel := minLogHz / fSp // = 15.0
 	logStep := math.Log(6.4) / 27.0
