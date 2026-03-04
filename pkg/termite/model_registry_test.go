@@ -19,7 +19,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/reranking"
@@ -567,6 +569,179 @@ func BenchmarkEmbedderQuantizedVsNonQuantized(b *testing.B) {
 				require.NoError(b, err)
 			}
 		})
+	}
+}
+
+// --- Registry Concurrency Regression Tests ---
+//
+// These tests verify fixes for concurrency bugs proven by TLA+ formal
+// verification. They use mock models injected via same-package access to
+// test the Acquire/Release/eviction protocol without real model files.
+//
+// See .piledriver/model-registry/report.md for the full TLA+ analysis.
+
+// closeTrackingReranker implements reranking.Model and tracks Close() calls.
+type closeTrackingReranker struct {
+	closed atomic.Bool
+}
+
+var _ reranking.Model = (*closeTrackingReranker)(nil)
+
+func (m *closeTrackingReranker) Rerank(_ context.Context, _ string, docs []string) ([]float32, error) {
+	return make([]float32, len(docs)), nil
+}
+
+func (m *closeTrackingReranker) Close() error {
+	m.closed.Store(true)
+	return nil
+}
+
+// TestRegistryEvictionRespectsRefcount verifies that the eviction callback
+// does NOT close a model when its refcount is > 0. This is the core property
+// of the Bug 1 fix (pre-increment refcount before Get in Acquire).
+//
+// Setup: increment refcount (simulating what the fixed Acquire does), add a
+// mock model to the cache, wait for TTL eviction. The eviction callback must
+// see refcount > 0 and defer close instead of closing immediately.
+func TestRegistryEvictionRespectsRefcount(t *testing.T) {
+	reg, err := NewRerankerRegistry(RerankerConfig{
+		ModelsDir: t.TempDir(),
+		KeepAlive: 20 * time.Millisecond,
+	}, nil, zap.NewNop())
+	require.NoError(t, err)
+	defer func() { _ = reg.Close() }()
+
+	mock := &closeTrackingReranker{}
+
+	// Simulate what the fixed Acquire() does: pre-increment refcount
+	reg.refCountsMu.Lock()
+	reg.refCounts["test"]++
+	reg.refCountsMu.Unlock()
+
+	// Add model to cache (simulates what Get/loadModel would do)
+	reg.cache.Set("test", mock, reg.keepAlive)
+
+	// Wait for TTL eviction
+	time.Sleep(200 * time.Millisecond)
+
+	// Callback must see refcount > 0 and NOT close
+	require.False(t, mock.closed.Load(),
+		"model must not be closed while refcount > 0")
+
+	// Model must be tracked in evictedHandles for deferred cleanup
+	reg.refCountsMu.Lock()
+	orphanCount := len(reg.evictedHandles["test"])
+	reg.refCountsMu.Unlock()
+	require.Greater(t, orphanCount, 0,
+		"evicted model must be tracked in evictedHandles")
+
+	// Release via actual Release() — must close orphaned handle
+	reg.Release("test")
+
+	require.True(t, mock.closed.Load(),
+		"Release must close orphaned model when refcount hits 0")
+}
+
+// TestRegistryOrphanCleanup verifies that Release() closes all orphaned
+// handles when refcount hits 0. This tests the Bug 4 fix: eviction tracks
+// orphaned handles instead of re-adding to cache, and Release cleans them up.
+func TestRegistryOrphanCleanup(t *testing.T) {
+	reg, err := NewRerankerRegistry(RerankerConfig{
+		ModelsDir: t.TempDir(),
+		KeepAlive: 10 * time.Millisecond,
+	}, nil, zap.NewNop())
+	require.NoError(t, err)
+	defer func() { _ = reg.Close() }()
+
+	const evictions = 3
+	mocks := make([]*closeTrackingReranker, evictions)
+	for i := range mocks {
+		mocks[i] = &closeTrackingReranker{}
+	}
+
+	// Simulate an active acquire
+	reg.refCountsMu.Lock()
+	reg.refCounts["test"]++
+	reg.refCountsMu.Unlock()
+
+	// Simulate multiple evictions
+	for i := 0; i < evictions; i++ {
+		reg.cache.Set("test", mocks[i], reg.keepAlive)
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// All models should still be alive (refcount prevents closing)
+	for i, mock := range mocks {
+		require.False(t, mock.closed.Load(),
+			"model %d must not be closed while refcount > 0", i)
+	}
+
+	// All should be tracked as orphans
+	reg.refCountsMu.Lock()
+	orphanCount := len(reg.evictedHandles["test"])
+	reg.refCountsMu.Unlock()
+	require.Equal(t, evictions, orphanCount,
+		"all evicted models must be tracked in evictedHandles")
+
+	// Release — must close all orphans
+	reg.Release("test")
+
+	for i, mock := range mocks {
+		require.True(t, mock.closed.Load(),
+			"orphaned model %d must be closed after Release", i)
+	}
+
+	reg.refCountsMu.Lock()
+	remaining := len(reg.evictedHandles["test"])
+	reg.refCountsMu.Unlock()
+	require.Equal(t, 0, remaining,
+		"evictedHandles must be empty after cleanup")
+}
+
+// TestRegistryLoadLockDoubleCheck verifies that loadModel() acquires the
+// load lock and performs a double-check of the cache. A concurrent caller
+// blocked on the lock should find the model already cached after acquiring it.
+// This is the Bug 2 fix (8 of 9 registries lacked this; EmbedderRegistry had it).
+func TestRegistryLoadLockDoubleCheck(t *testing.T) {
+	reg, err := NewRerankerRegistry(RerankerConfig{
+		ModelsDir: t.TempDir(),
+	}, nil, zap.NewNop())
+	require.NoError(t, err)
+	defer func() { _ = reg.Close() }()
+
+	mock := &closeTrackingReranker{}
+	reg.cache.Set("test", mock, reg.keepAlive)
+	reg.discovered["test"] = &RerankerModelInfo{Name: "test", Path: "/fake"}
+
+	// Take the load lock (simulates being inside loadModel)
+	reg.mu.Lock()
+
+	// From another goroutine, call loadModel — it should block on the lock
+	loaded := make(chan bool, 1)
+	go func() {
+		// loadModel acquires r.mu.Lock() — blocks until we release.
+		// Then double-checks cache and finds the model already there.
+		model, err := reg.loadModel(reg.discovered["test"])
+		loaded <- (err == nil && model == mock)
+	}()
+
+	// Goroutine should be blocked
+	select {
+	case <-loaded:
+		t.Fatal("loadModel should be blocked waiting for lock")
+	case <-time.After(50 * time.Millisecond):
+		// Expected
+	}
+
+	// Release lock — goroutine should proceed and find cached model
+	reg.mu.Unlock()
+
+	select {
+	case ok := <-loaded:
+		require.True(t, ok,
+			"loadModel must double-check cache and return existing model")
+	case <-time.After(time.Second):
+		t.Fatal("loadModel did not complete after lock release")
 	}
 }
 
