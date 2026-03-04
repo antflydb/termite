@@ -171,8 +171,8 @@ func TestFixedChunker_PerRequestOverrides(t *testing.T) {
 	text := strings.Join(sections, "\n\n")
 
 	chunks, err := fc.Chunk(context.Background(), text, chunking.ChunkOptions{
-		TargetTokens: 15,
-		MaxChunks:    2,
+		MaxChunks: 2,
+		Text:      chunking.TextChunkOptions{TargetTokens: 15},
 	})
 	if err != nil {
 		t.Fatalf("Chunk: %v", err)

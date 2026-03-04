@@ -277,9 +277,9 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	// (original samples length before center padding)
 	numFrames := max(targetLen/hopLength, 1)
 
-	// Compute STFT magnitude
-	stftMag := make([][]float32, numFrames)
-	nBins := nFft/2 + 1
+	// Compute STFT power spectrum (magnitude squared, matching HuggingFace WhisperFeatureExtractor)
+	nBins := nFft / 2 // Drop last bin to match HuggingFace's magnitudes[:, :-1]
+	stftPower := make([][]float32, numFrames)
 
 	for frame := range numFrames {
 		start := frame * hopLength
@@ -293,21 +293,22 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 		// Compute FFT
 		fftResult := ap.fft(frameData)
 
-		// Compute magnitude spectrum
-		stftMag[frame] = make([]float32, nBins)
+		// Compute power spectrum (magnitude squared)
+		stftPower[frame] = make([]float32, nBins)
 		for i := range nBins {
-			stftMag[frame][i] = float32(cmplx.Abs(fftResult[i]))
+			mag := cmplx.Abs(fftResult[i])
+			stftPower[frame][i] = float32(mag * mag)
 		}
 	}
 
-	// Apply mel filter bank
+	// Apply mel filter bank to power spectrum
 	melSpec := make([][]float32, numFrames)
 	for frame := range numFrames {
 		melSpec[frame] = make([]float32, nMels)
 		for mel := range nMels {
 			var sum float32
 			for bin := 0; bin < nBins && bin < len(ap.melFilters[mel]); bin++ {
-				sum += stftMag[frame][bin] * ap.melFilters[mel][bin]
+				sum += stftPower[frame][bin] * ap.melFilters[mel][bin]
 			}
 			melSpec[frame][mel] = sum
 		}
@@ -383,61 +384,80 @@ func (ap *AudioProcessor) computeMelSpectrogram(samples []float32) ([]float32, i
 	return result, numFrames
 }
 
-// computeMelFilterBank creates triangular mel filter banks.
+// computeMelFilterBank creates triangular mel filter banks using the Slaney mel
+// scale and Slaney normalization, matching librosa.filters.mel() defaults.
+// This is required for Whisper compatibility.
 func (ap *AudioProcessor) computeMelFilterBank() [][]float32 {
 	nMels := ap.Config.NMels
 	nFft := ap.Config.NFft
 	sampleRate := ap.Config.SampleRate
 	nBins := nFft/2 + 1
 
-	// Frequency to mel conversion
+	// Slaney mel scale (librosa default, htk=False):
+	// Linear below 1000 Hz, logarithmic above.
+	fSp := 200.0 / 3.0         // linear spacing: 66.667 Hz per mel
+	minLogHz := 1000.0          // transition frequency
+	minLogMel := minLogHz / fSp // = 15.0
+	logStep := math.Log(6.4) / 27.0
+
 	freqToMel := func(f float64) float64 {
-		return 2595.0 * math.Log10(1.0+f/700.0)
+		if f >= minLogHz {
+			return minLogMel + math.Log(f/minLogHz)/logStep
+		}
+		return f / fSp
 	}
 	melToFreq := func(m float64) float64 {
-		return 700.0 * (math.Pow(10.0, m/2595.0) - 1.0)
+		if m >= minLogMel {
+			return minLogHz * math.Exp(logStep*(m-minLogMel))
+		}
+		return fSp * m
 	}
 
-	// Create mel points
-	lowFreq := 0.0
-	highFreq := float64(sampleRate) / 2.0
-	lowMel := freqToMel(lowFreq)
-	highMel := freqToMel(highFreq)
+	// Create uniformly spaced mel points
+	lowMel := freqToMel(0.0)
+	highMel := freqToMel(float64(sampleRate) / 2.0)
 
 	melPoints := make([]float64, nMels+2)
-	for i := 0; i < nMels+2; i++ {
+	for i := range nMels + 2 {
 		melPoints[i] = lowMel + float64(i)*(highMel-lowMel)/float64(nMels+1)
 	}
 
-	// Convert to frequency and then to FFT bin indices
-	binIndices := make([]int, nMels+2)
-	for i := 0; i < nMels+2; i++ {
-		freq := melToFreq(melPoints[i])
-		binIndices[i] = int(math.Floor((float64(nFft)+1)*freq/float64(sampleRate) + 0.5))
-		if binIndices[i] >= nBins {
-			binIndices[i] = nBins - 1
-		}
+	// Convert mel points to Hz frequencies
+	freqPoints := make([]float64, nMels+2)
+	for i := range nMels + 2 {
+		freqPoints[i] = melToFreq(melPoints[i])
 	}
 
-	// Create filter bank
+	// Convert frequencies to FFT bin indices (fractional)
+	fftFreqs := make([]float64, nBins)
+	for i := range nBins {
+		fftFreqs[i] = float64(i) * float64(sampleRate) / float64(nFft)
+	}
+
+	// Create filter bank with triangular filters
 	filters := make([][]float32, nMels)
 	for mel := range nMels {
 		filters[mel] = make([]float32, nBins)
-		startBin := binIndices[mel]
-		centerBin := binIndices[mel+1]
-		endBin := binIndices[mel+2]
+		lower := freqPoints[mel]
+		center := freqPoints[mel+1]
+		upper := freqPoints[mel+2]
 
-		// Rising slope
-		for bin := startBin; bin < centerBin; bin++ {
-			if centerBin != startBin {
-				filters[mel][bin] = float32(bin-startBin) / float32(centerBin-startBin)
+		for bin := range nBins {
+			freq := fftFreqs[bin]
+			if freq >= lower && freq < center && center != lower {
+				filters[mel][bin] = float32((freq - lower) / (center - lower))
+			} else if freq >= center && freq <= upper && upper != center {
+				filters[mel][bin] = float32((upper - freq) / (upper - center))
 			}
 		}
 
-		// Falling slope
-		for bin := centerBin; bin <= endBin; bin++ {
-			if endBin != centerBin {
-				filters[mel][bin] = float32(endBin-bin) / float32(endBin-centerBin)
+		// Slaney normalization: divide by filter bandwidth in Hz
+		// This ensures approximately constant energy per channel.
+		bandwidth := freqPoints[mel+2] - freqPoints[mel]
+		if bandwidth > 0 {
+			norm := float32(2.0 / bandwidth)
+			for bin := range nBins {
+				filters[mel][bin] *= norm
 			}
 		}
 	}
@@ -445,12 +465,14 @@ func (ap *AudioProcessor) computeMelFilterBank() [][]float32 {
 	return filters
 }
 
-// computeHannWindow creates a Hann window of the given size.
+// computeHannWindow creates a periodic Hann window of the given size.
+// Uses periodic form (divide by N, not N-1) to match HuggingFace's
+// np.hanning(n_fft + 1)[:-1] used by WhisperFeatureExtractor.
 func (ap *AudioProcessor) computeHannWindow() []float32 {
 	n := ap.Config.NFft
 	window := make([]float32, n)
 	for i := range n {
-		window[i] = float32(0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(n-1))))
+		window[i] = float32(0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(n))))
 	}
 	return window
 }

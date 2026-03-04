@@ -86,7 +86,7 @@ func TestFixedMediaChunker_DispatchMP3(t *testing.T) {
 
 	chunker := NewFixedMediaChunker()
 	chunks, err := chunker.ChunkMedia(context.Background(), mp3Data, "audio/mpeg", chunking.ChunkOptions{
-		WindowDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkMedia returned error: %v", err)
@@ -111,7 +111,7 @@ func TestFixedMediaChunker_DispatchMP3Alias(t *testing.T) {
 
 	chunker := NewFixedMediaChunker()
 	chunks, err := chunker.ChunkMedia(context.Background(), mp3Data, "audio/mp3", chunking.ChunkOptions{
-		WindowDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkMedia returned error: %v", err)
