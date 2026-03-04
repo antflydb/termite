@@ -59,12 +59,12 @@ func (a *AudioChunker) ChunkPCM(ctx context.Context, samples []float32, format a
 		return nil, fmt.Errorf("audio contains no samples")
 	}
 
-	windowMs := opts.WindowDurationMs
+	windowMs := opts.Audio.WindowDurationMs
 	if windowMs <= 0 {
 		windowMs = defaultWindowDurationMs
 	}
 
-	overlapMs := opts.OverlapDurationMs
+	overlapMs := opts.Audio.OverlapDurationMs
 	if overlapMs < 0 {
 		overlapMs = defaultOverlapDurationMs
 	}

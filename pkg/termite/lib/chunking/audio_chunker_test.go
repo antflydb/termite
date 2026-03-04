@@ -15,7 +15,7 @@ func TestAudioChunker_BasicWindowing(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkAudio(context.Background(), wav, chunking.ChunkOptions{
-		WindowDurationMs: 2000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 2000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkAudio failed: %v", err)
@@ -65,8 +65,7 @@ func TestAudioChunker_Overlap(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkAudio(context.Background(), wav, chunking.ChunkOptions{
-		WindowDurationMs:  2000,
-		OverlapDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 2000, OverlapDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkAudio failed: %v", err)
@@ -94,7 +93,7 @@ func TestAudioChunker_ShortAudio(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkAudio(context.Background(), wav, chunking.ChunkOptions{
-		WindowDurationMs: 2000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 2000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkAudio failed: %v", err)
@@ -122,8 +121,8 @@ func TestAudioChunker_MaxChunks(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkAudio(context.Background(), wav, chunking.ChunkOptions{
-		WindowDurationMs: 1000,
-		MaxChunks:        3,
+		MaxChunks: 3,
+		Audio:     chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkAudio failed: %v", err)
@@ -137,7 +136,7 @@ func TestAudioChunker_MaxChunks(t *testing.T) {
 func TestAudioChunker_EmptyInput(t *testing.T) {
 	ac := &AudioChunker{}
 	_, err := ac.ChunkAudio(context.Background(), []byte{}, chunking.ChunkOptions{
-		WindowDurationMs: 2000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 2000},
 	})
 	if err == nil {
 		t.Fatal("ChunkAudio with empty input should return error")
@@ -149,7 +148,7 @@ func TestAudioChunker_InvalidWAV(t *testing.T) {
 
 	ac := &AudioChunker{}
 	_, err := ac.ChunkAudio(context.Background(), garbage, chunking.ChunkOptions{
-		WindowDurationMs: 2000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 2000},
 	})
 	if err == nil {
 		t.Fatal("ChunkAudio with invalid WAV should return error")
@@ -163,7 +162,7 @@ func TestAudioChunker_RoundtripWAV(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkAudio(context.Background(), wav, chunking.ChunkOptions{
-		WindowDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkAudio failed: %v", err)
@@ -217,7 +216,7 @@ func TestChunkPCM_Direct(t *testing.T) {
 		BitsPerSample: 16,
 		NumChannels:   1,
 	}, chunking.ChunkOptions{
-		WindowDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkPCM failed: %v", err)
@@ -242,7 +241,7 @@ func TestChunkMP3_Windowing(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkMP3(context.Background(), data, chunking.ChunkOptions{
-		WindowDurationMs: 1000,
+		Audio: chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkMP3 failed: %v", err)
@@ -275,8 +274,8 @@ func TestChunkMP3_MaxChunks(t *testing.T) {
 
 	ac := &AudioChunker{}
 	chunks, err := ac.ChunkMP3(context.Background(), data, chunking.ChunkOptions{
-		WindowDurationMs: 1000,
-		MaxChunks:        2,
+		MaxChunks: 2,
+		Audio:     chunking.AudioChunkOptions{WindowDurationMs: 1000},
 	})
 	if err != nil {
 		t.Fatalf("ChunkMP3 failed: %v", err)

@@ -231,52 +231,58 @@ components:
     Chunk:
       $ref: "../../../antfly-go/libaf/chunking/openapi.yaml#/components/schemas/Chunk"
 
+    VADOptions:
+      type: object
+      description: "Options for Voice Activity Detection (VAD) based audio segmentation. Termite-specific."
+      properties:
+        min_silence_duration_ms:
+          type: integer
+          description: "Minimum silence duration (ms) to split speech segments. Gaps shorter than this are merged. Higher values produce longer, fewer segments. Default: 300."
+        min_speech_duration_ms:
+          type: integer
+          description: "Minimum speech duration (ms) for a segment to be kept. Shorter segments are discarded. Default: 250."
+        speech_pad_ms:
+          type: integer
+          description: "Padding (ms) added before and after detected speech. Default: 30."
+        max_segment_duration_ms:
+          type: integer
+          description: "Maximum segment duration (ms). Segments longer than this are split. Useful for Whisper-compatible chunking. Default: 30000."
+
+    AudioChunkConfig:
+      type: object
+      description: "Audio chunking configuration for Termite, including VAD options."
+      properties:
+        window_duration_ms:
+          type: integer
+          description: "Window duration in milliseconds for fixed-window audio chunking (default: 30000)."
+        overlap_duration_ms:
+          type: integer
+          description: "Overlap duration in milliseconds between audio chunks (default: 0)."
+        vad:
+          $ref: "#/components/schemas/VADOptions"
+
     ChunkConfig:
       type: object
       description: |
         Configuration for chunking requests to Termite API.
-        This is a simplified config for the HTTP API - differs from the full ChunkerConfig
-        which includes provider selection and caching configuration.
+        Combines shared text options with Termite-specific audio/VAD options.
       properties:
         model:
           type: string
           description: "The chunking model to use. Either 'fixed' for simple token-based chunking, or a model name from models/chunkers/{name}/."
           default: "fixed"
           example: "fixed"
-        target_tokens:
-          type: integer
-          description: Target number of tokens per chunk
-          example: 500
-          default: 500
-        overlap_tokens:
-          type: integer
-          description: Number of overlapping tokens between chunks
-          example: 50
-          default: 50
-        separator:
-          type: string
-          description: Text separator for fixed chunking
-          example: "\n\n"
-          default: "\n\n"
         max_chunks:
           type: integer
-          description: Maximum number of chunks to return
-          example: 50
-          default: 50
+          description: "Maximum number of chunks to generate per document."
         threshold:
           type: number
           format: float
-          description: Confidence threshold for ONNX models (0.0-1.0)
-          example: 0.5
-          default: 0.5
-        window_duration_ms:
-          type: integer
-          description: "Window duration in ms for audio chunking (default: 30000)"
-          default: 30000
-        overlap_duration_ms:
-          type: integer
-          description: "Overlap duration in ms between audio chunks (default: 0)"
-          default: 0
+          description: "Confidence threshold for model-based chunking (0.0-1.0). Used by ONNX text models and VAD audio models."
+        text:
+          $ref: "../../../antfly-go/libaf/chunking/openapi.yaml#/components/schemas/TextChunkOptions"
+        audio:
+          $ref: "#/components/schemas/AudioChunkConfig"
 
     ChunkRequest:
       type: object

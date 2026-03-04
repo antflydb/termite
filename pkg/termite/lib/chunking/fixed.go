@@ -187,14 +187,14 @@ func (s *FixedChunker) Chunk(ctx context.Context, text string, opts chunking.Chu
 	if opts.MaxChunks != 0 {
 		effectiveConfig.MaxChunks = opts.MaxChunks
 	}
-	if opts.TargetTokens != 0 {
-		effectiveConfig.TargetTokens = opts.TargetTokens
+	if opts.Text.TargetTokens != 0 {
+		effectiveConfig.TargetTokens = opts.Text.TargetTokens
 	}
-	if opts.OverlapTokens != 0 {
-		effectiveConfig.OverlapTokens = opts.OverlapTokens
+	if opts.Text.OverlapTokens != 0 {
+		effectiveConfig.OverlapTokens = opts.Text.OverlapTokens
 	}
-	if opts.Separator != "" {
-		effectiveConfig.Separator = opts.Separator
+	if opts.Text.Separator != "" {
+		effectiveConfig.Separator = opts.Text.Separator
 	}
 	// Note: Threshold is not applicable to FixedChunker (only used by ONNX models)
 

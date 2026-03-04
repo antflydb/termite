@@ -240,7 +240,7 @@ func (cc *CachedChunker) buildChunkOptions(config chunkConfig) chunking.ChunkOpt
 		opts.Threshold = config.Threshold
 	}
 	if config.TargetTokens > 0 {
-		opts.TargetTokens = config.TargetTokens
+		opts.Text.TargetTokens = config.TargetTokens
 	}
 	return opts
 }

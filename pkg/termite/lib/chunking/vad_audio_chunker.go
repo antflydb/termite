@@ -127,10 +127,24 @@ func (v *VADAudioChunker) ChunkPCM(ctx context.Context, samples []float32, forma
 		return nil, fmt.Errorf("running VAD: %w", err)
 	}
 
-	// Determine threshold (allow per-request override)
+	// Allow per-request overrides of VAD config
 	config := v.config
 	if opts.Threshold > 0 {
 		config.Threshold = opts.Threshold
+	}
+	if vadCfg, ok := VADConfigFromContext(ctx); ok {
+		if vadCfg.MinSilenceDurationMs > 0 {
+			config.MinSilenceDurationMs = vadCfg.MinSilenceDurationMs
+		}
+		if vadCfg.MinSpeechDurationMs > 0 {
+			config.MinSpeechDurationMs = vadCfg.MinSpeechDurationMs
+		}
+		if vadCfg.SpeechPadMs > 0 {
+			config.SpeechPadMs = vadCfg.SpeechPadMs
+		}
+		if vadCfg.MaxSegmentDurationMs > 0 {
+			config.MaxSegmentDurationMs = vadCfg.MaxSegmentDurationMs
+		}
 	}
 
 	// Merge probabilities into speech segments (in 16kHz sample space)

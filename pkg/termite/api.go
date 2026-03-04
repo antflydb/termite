@@ -582,18 +582,36 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	// Convert ChunkConfig to internal chunkConfig type
 	internalConfig := chunkConfig{
 		Model:         req.Config.Model,
-		TargetTokens:  req.Config.TargetTokens,
-		OverlapTokens: req.Config.OverlapTokens,
-		Separator:     req.Config.Separator,
+		TargetTokens:  req.Config.Text.TargetTokens,
+		OverlapTokens: req.Config.Text.OverlapTokens,
+		Separator:     req.Config.Text.Separator,
 		MaxChunks:     req.Config.MaxChunks,
 		Threshold:     req.Config.Threshold,
 	}
 
 	mediaOpts := chunking.ChunkOptions{
-		MaxChunks:         req.Config.MaxChunks,
-		WindowDurationMs:  req.Config.WindowDurationMs,
-		OverlapDurationMs: req.Config.OverlapDurationMs,
-		Threshold:         req.Config.Threshold,
+		MaxChunks: req.Config.MaxChunks,
+		Threshold: req.Config.Threshold,
+		Audio: chunking.AudioChunkOptions{
+			WindowDurationMs:  req.Config.Audio.WindowDurationMs,
+			OverlapDurationMs: req.Config.Audio.OverlapDurationMs,
+		},
+	}
+
+	// Inject VAD config into context for the VAD audio chunker.
+	// NOTE: This condition must include all fields of VADOptions. The gate prevents
+	// a zero-valued VADConfig from being injected when no overrides are specified.
+	// The chunker's apply block (vad_audio_chunker.go ChunkPCM) uses individual
+	// > 0 guards to skip zero fields within an injected config.
+	ctx := r.Context()
+	vadCfg := req.Config.Audio.Vad
+	if vadCfg.MinSilenceDurationMs > 0 || vadCfg.MinSpeechDurationMs > 0 || vadCfg.SpeechPadMs > 0 || vadCfg.MaxSegmentDurationMs > 0 {
+		ctx = termchunking.WithVADConfig(ctx, termchunking.VADConfig{
+			MinSilenceDurationMs: vadCfg.MinSilenceDurationMs,
+			MinSpeechDurationMs:  vadCfg.MinSpeechDurationMs,
+			SpeechPadMs:          vadCfg.SpeechPadMs,
+			MaxSegmentDurationMs: vadCfg.MaxSegmentDurationMs,
+		})
 	}
 
 	var chunks []chunking.Chunk
@@ -605,7 +623,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 	if req.Input.union != nil {
 		// Try as string (text)
 		if text, err := req.Input.AsChunkRequestInput0(); err == nil && text != "" {
-			chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), text, internalConfig)
+			chunks, cacheHit, err = ln.chunker.Chunk(ctx, text, internalConfig)
 			if err != nil {
 				ln.logger.Error("chunking failed", zap.Error(err))
 				http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
@@ -619,7 +637,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 			if part, err := req.Input.AsContentPart(); err == nil {
 				// MediaContentPart — inline binary
 				if mediaPart, err := part.AsMediaContentPart(); err == nil && mediaPart.Type == MediaContentPartTypeMedia {
-					chunks, err = ln.chunkMedia(r.Context(), mediaPart.Data, mediaPart.MimeType, internalConfig.Model, mediaOpts)
+					chunks, err = ln.chunkMedia(ctx, mediaPart.Data, mediaPart.MimeType, internalConfig.Model, mediaOpts)
 					if err != nil {
 						ln.logger.Error("media chunking failed", zap.Error(err))
 						http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
@@ -631,7 +649,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 				// TextContentPart
 				if !inputHandled {
 					if textPart, err := part.AsTextContentPart(); err == nil && textPart.Type == TextContentPartTypeText {
-						chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), textPart.Text, internalConfig)
+						chunks, cacheHit, err = ln.chunker.Chunk(ctx, textPart.Text, internalConfig)
 						if err != nil {
 							ln.logger.Error("chunking failed", zap.Error(err))
 							http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
@@ -644,12 +662,12 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 				// ImageURLContentPart — download then dispatch to media chunker
 				if !inputHandled {
 					if imgPart, err := part.AsImageURLContentPart(); err == nil && imgPart.Type == ImageURLContentPartTypeImageUrl {
-						mimeType, data, err := scraping.DownloadContent(r.Context(), imgPart.ImageUrl.Url, ln.contentSecurityConfig, ln.s3Credentials)
+						mimeType, data, err := scraping.DownloadContent(ctx, imgPart.ImageUrl.Url, ln.contentSecurityConfig, ln.s3Credentials)
 						if err != nil {
 							http.Error(w, fmt.Sprintf("downloading content: %v", err), http.StatusBadRequest)
 							return
 						}
-						chunks, err = ln.chunkMedia(r.Context(), data, mimeType, internalConfig.Model, mediaOpts)
+						chunks, err = ln.chunkMedia(ctx, data, mimeType, internalConfig.Model, mediaOpts)
 						if err != nil {
 							ln.logger.Error("media chunking failed", zap.Error(err))
 							http.Error(w, fmt.Sprintf("chunking media: %v", err), http.StatusInternalServerError)
@@ -668,7 +686,7 @@ func (ln *TermiteNode) handleApiChunk(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "input or text is required", http.StatusBadRequest)
 			return
 		}
-		chunks, cacheHit, err = ln.chunker.Chunk(r.Context(), req.Text, internalConfig)
+		chunks, cacheHit, err = ln.chunker.Chunk(ctx, req.Text, internalConfig)
 		if err != nil {
 			ln.logger.Error("chunking failed", zap.Error(err))
 			http.Error(w, fmt.Sprintf("chunking text: %v", err), http.StatusInternalServerError)
