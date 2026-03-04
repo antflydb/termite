@@ -12,7 +12,7 @@ replace (
 )
 
 require (
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260303003844-110c235df183
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260304202045-da53f6505f4a
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
@@ -70,7 +70,7 @@ require (
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/yalue/onnxruntime_go v1.26.0 // indirect
+	github.com/yalue/onnxruntime_go v1.27.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
