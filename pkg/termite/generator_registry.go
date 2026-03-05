@@ -51,8 +51,7 @@ type GeneratorRegistry struct {
 	cache *ttlcache.Cache[string, generation.Generator]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refs refTracker
 
 	// Configuration
 	keepAlive       time.Duration
@@ -86,7 +85,7 @@ func NewGeneratorRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*GeneratorModelInfo),
-		refCounts:       make(map[string]int),
+		refs:            newRefTracker(),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 	}
@@ -114,35 +113,26 @@ func NewGeneratorRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
-			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of generator model with active references",
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error {
+			if closer, ok := model.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		}) {
+			logger.Warn("Generator model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting generator model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
-		if closer, ok := item.Value().(interface{ Close() error }); ok {
+		if closer, ok := model.(interface{ Close() error }); ok {
 			if err := closer.Close(); err != nil {
 				logger.Warn("Error closing evicted generator model",
 					zap.String("model", item.Key()),
@@ -286,19 +276,18 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between Get() returning and the refcount being visible.
+	r.refs.incRef(modelName)
+
 	gen, err := r.Get(modelName)
 	if err != nil {
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired generator model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return gen, nil
 }
@@ -306,41 +295,37 @@ func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, err
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the generator.
 func (r *GeneratorRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released generator model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	closeOrphans(r.logger, "generator", modelName, orphans)
 }
 
 // AcquireWithVariant returns a generator by name with a specific variant
 // and increments its reference count.
 // The caller MUST call ReleaseWithVariant() when done.
 func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (generation.Generator, error) {
-	gen, err := r.GetWithVariant(modelName, variant)
-	if err != nil {
-		return nil, err
-	}
-
 	// Build cache key including variant
 	cacheKey := modelName
 	if variant != "" {
 		cacheKey = modelName + ":" + variant
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[cacheKey]++
-	count := r.refCounts[cacheKey]
-	r.refCountsMu.Unlock()
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between GetWithVariant() returning and the refcount being visible.
+	r.refs.incRef(cacheKey)
+
+	gen, err := r.GetWithVariant(modelName, variant)
+	if err != nil {
+		r.refs.rollbackRef(cacheKey)
+		return nil, err
+	}
 
 	r.logger.Debug("Acquired generator model with variant",
-		zap.String("model", cacheKey),
-		zap.Int("refCount", count))
+		zap.String("model", cacheKey))
 
 	return gen, nil
 }
@@ -353,16 +338,13 @@ func (r *GeneratorRegistry) ReleaseWithVariant(modelName, variant string) {
 		cacheKey = modelName + ":" + variant
 	}
 
-	r.refCountsMu.Lock()
-	if r.refCounts[cacheKey] > 0 {
-		r.refCounts[cacheKey]--
-	}
-	count := r.refCounts[cacheKey]
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(cacheKey)
 
 	r.logger.Debug("Released generator model with variant",
 		zap.String("model", cacheKey),
 		zap.Int("refCount", count))
+
+	closeOrphans(r.logger, "generator", cacheKey, orphans)
 }
 
 // loadModel loads a generator model from disk (base variant)
@@ -372,6 +354,14 @@ func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Gene
 
 // loadModelFromPath loads a generator model from a specific path
 func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (generation.Generator, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(cacheKey); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading generator model on demand",
 		zap.String("cacheKey", cacheKey),
 		zap.String("path", modelPath))
@@ -561,6 +551,9 @@ func (r *GeneratorRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	logDrainErrors(r.logger, "generator", r.refs.drainOrphans())
 
 	return nil
 }

@@ -50,8 +50,7 @@ type TranscriberRegistry struct {
 	cache *ttlcache.Cache[string, transcribing.Transcriber]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refs refTracker
 
 	// Configuration
 	keepAlive       time.Duration
@@ -92,7 +91,7 @@ func NewTranscriberRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*TranscriberModelInfo),
-		refCounts:       make(map[string]int),
+		refs:            newRefTracker(),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -121,35 +120,21 @@ func NewTranscriberRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
-			registry.refCountsMu.Unlock()
-			// Model is still in use - re-added to cache to prevent closing
-			logger.Warn("Preventing eviction of transcriber model with active references",
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.Close() }) {
+			logger.Warn("Transcriber model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting transcriber model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
-		if err := item.Value().Close(); err != nil {
+		if err := model.Close(); err != nil {
 			logger.Warn("Error closing evicted transcriber model",
 				zap.String("model", item.Key()),
 				zap.Error(err))
@@ -290,19 +275,16 @@ func (r *TranscriberRegistry) Get(modelName string) (transcribing.Transcriber, e
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *TranscriberRegistry) Acquire(modelName string) (transcribing.Transcriber, error) {
+	r.refs.incRef(modelName)
+
 	transcriber, err := r.Get(modelName)
 	if err != nil {
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired transcriber model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return transcriber, nil
 }
@@ -310,20 +292,25 @@ func (r *TranscriberRegistry) Acquire(modelName string) (transcribing.Transcribe
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the transcriber.
 func (r *TranscriberRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released transcriber model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	closeOrphans(r.logger, "transcriber", modelName, orphans)
 }
 
 // loadModel loads a transcriber model from disk
 func (r *TranscriberRegistry) loadModel(info *TranscriberModelInfo) (transcribing.Transcriber, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading transcriber model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -437,6 +424,9 @@ func (r *TranscriberRegistry) Close() error {
 
 	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	logDrainErrors(r.logger, "transcriber", r.refs.drainOrphans())
 
 	return nil
 }

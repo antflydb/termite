@@ -57,8 +57,7 @@ type ClassifierRegistry struct {
 	cache *ttlcache.Cache[string, *loadedClassifier]
 
 	// Reference counting to prevent eviction during active use
-	refCounts   map[string]int
-	refCountsMu sync.Mutex
+	refs refTracker
 
 	// Configuration
 	keepAlive       time.Duration
@@ -99,7 +98,7 @@ func NewClassifierRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ClassifierModelInfo),
-		refCounts:       make(map[string]int),
+		refs:            newRefTracker(),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 		poolSize:        poolSize,
@@ -126,34 +125,21 @@ func NewClassifierRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			// Re-add while still holding lock to prevent race with Release()
-			registry.cache.Set(item.Key(), item.Value(), registry.keepAlive)
-			registry.refCountsMu.Unlock()
-			logger.Warn("Preventing eviction of classifier model with active references",
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.classifier.Close() }) {
+			logger.Warn("Classifier model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting classifier model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
-		if err := item.Value().classifier.Close(); err != nil {
+		if err := model.classifier.Close(); err != nil {
 			logger.Warn("Error closing evicted classifier model",
 				zap.String("model", item.Key()),
 				zap.Error(err))
@@ -280,19 +266,18 @@ func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, e
 // Acquire returns a classifier by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifier, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between getLoaded() returning and the refcount being visible.
+	r.refs.incRef(modelName)
+
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired classifier model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return loaded.classifier, nil
 }
@@ -300,16 +285,13 @@ func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifie
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the classifier.
 func (r *ClassifierRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released classifier model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
+
+	closeOrphans(r.logger, "classifier", modelName, orphans)
 }
 
 // getLoaded gets or loads a model from cache
@@ -344,6 +326,14 @@ func (r *ClassifierRegistry) getLoaded(modelName string) (*loadedClassifier, err
 
 // loadModel loads a classifier model from disk
 func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading classifier model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -432,7 +422,11 @@ func (r *ClassifierRegistry) Preload(modelNames []string) error {
 func (r *ClassifierRegistry) Close() error {
 	r.logger.Info("Closing classifier registry")
 
-	// Close all loaded models
+	// Stop the cache cleanup goroutine FIRST to prevent eviction callbacks
+	// firing during shutdown (race window if Stop comes after iteration)
+	r.cache.Stop()
+
+	// Close all loaded models synchronously (don't rely on async eviction callbacks)
 	for _, name := range r.cache.Keys() {
 		if item := r.cache.Get(name); item != nil {
 			if err := item.Value().classifier.Close(); err != nil {
@@ -440,12 +434,14 @@ func (r *ClassifierRegistry) Close() error {
 					zap.String("model", name),
 					zap.Error(err))
 			}
-			r.cache.Delete(name)
 		}
 	}
 
-	// Stop the cache cleanup goroutine
-	r.cache.Stop()
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
+	r.cache.DeleteAll()
+
+	// Close any orphaned handles that were evicted while in use
+	logDrainErrors(r.logger, "classifier", r.refs.drainOrphans())
 
 	return nil
 }

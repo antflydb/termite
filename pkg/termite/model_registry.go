@@ -204,13 +204,14 @@ func hasModelFiles(path string) bool {
 
 // discoverSingleModel discovers a model from a directory
 func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.ModelType, logger *zap.Logger) *DiscoveredModel {
+	variants := discoverModelVariants(modelPath)
+
 	// Try to load manifest first
 	manifest, err := modelregistry.LoadManifestFromDir(modelPath)
 	if err != nil {
 		// Manifest not found or invalid - discover from files.
 		// Accept any directory that contains at least one .onnx file;
 		// architecture-specific file layouts are resolved at load time.
-		variants := discoverModelVariants(modelPath)
 		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) {
 			return nil // No model files found
 		}
@@ -234,8 +235,6 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 			manifest.Source = owner + "/" + manifest.Name
 		}
 	}
-
-	variants := discoverModelVariants(modelPath)
 
 	return &DiscoveredModel{
 		Ref: modelregistry.ModelRef{
