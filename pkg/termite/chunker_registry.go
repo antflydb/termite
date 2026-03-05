@@ -68,9 +68,7 @@ type ChunkerRegistry struct {
 
 	// Reference counting to prevent eviction during active use
 	// Shared across text and media caches (model names are unique)
-	refCounts      map[string]int
-	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
-	refCountsMu    sync.Mutex
+	refs refTracker
 
 	// Configuration
 	keepAlive       time.Duration
@@ -118,8 +116,7 @@ func NewChunkerRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*ChunkerModelInfo),
-		refCounts:       make(map[string]int),
-		evictedHandles:  make(map[string][]func() error),
+		refs:            newRefTracker(),
 		keepAlive:       keepAlive,
 		mediaKeepAlive:  mediaKeepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
@@ -161,29 +158,18 @@ func NewChunkerRegistry(
 
 		reasonStr := evictionReasonString(reason)
 
-		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			model := item.Value()
-			registry.evictedHandles[item.Key()] = append(
-				registry.evictedHandles[item.Key()],
-				func() error { return model.Close() },
-			)
-			registry.refCountsMu.Unlock()
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.Close() }) {
 			logger.Warn("Chunker model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting chunker model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
-		if err := item.Value().Close(); err != nil {
+		if err := model.Close(); err != nil {
 			logger.Warn("Error closing evicted chunker model",
 				zap.String("model", item.Key()),
 				zap.Error(err))
@@ -193,28 +179,25 @@ func NewChunkerRegistry(
 	// Set up media cache eviction callback
 	registry.mediaCache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, termchunking.CloseableMediaChunker]) {
 		if reason == ttlcache.EvictionReasonDeleted {
+			logger.Debug("Media chunker model removed from cache (cleanup handled separately)",
+				zap.String("model", item.Key()))
 			return
 		}
 
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			model := item.Value()
-			registry.evictedHandles[item.Key()] = append(
-				registry.evictedHandles[item.Key()],
-				func() error { return model.Close() },
-			)
-			registry.refCountsMu.Unlock()
+		reasonStr := evictionReasonString(reason)
+
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.Close() }) {
 			logger.Warn("Media chunker model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount))
+				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting media chunker model from cache",
-			zap.String("model", item.Key()))
-		if err := item.Value().Close(); err != nil {
+			zap.String("model", item.Key()),
+			zap.String("reason", reasonStr))
+		if err := model.Close(); err != nil {
 			logger.Warn("Error closing evicted media chunker model",
 				zap.String("model", item.Key()),
 				zap.Error(err))
@@ -448,38 +431,30 @@ func (r *ChunkerRegistry) Acquire(modelName string) (chunking.Chunker, error) {
 		}
 	}
 
-	// loadModelWithRef handles cache lookup, loading, and refcount increment
-	// atomically under r.mu.Lock to prevent TOCTOU between cache hit and eviction.
-	return r.loadModelWithRef(info)
+	r.refs.incRef(modelName)
+
+	chunker, err := r.loadModel(info)
+	if err != nil {
+		r.refs.rollbackRef(modelName)
+		return nil, err
+	}
+
+	r.logger.Debug("Acquired chunker model",
+		zap.String("model", modelName))
+
+	return chunker, nil
 }
 
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the chunker.
 func (r *ChunkerRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-
-	var orphans []func() error
-	if count == 0 {
-		orphans = r.evictedHandles[modelName]
-		delete(r.evictedHandles, modelName)
-	}
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released chunker model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
 
-	for _, closeFn := range orphans {
-		if err := closeFn(); err != nil {
-			r.logger.Warn("Error closing orphaned chunker model",
-				zap.String("model", modelName),
-				zap.Error(err))
-		}
-	}
+	closeOrphans(r.logger, "chunker", modelName, orphans)
 }
 
 // AcquireMedia returns a media chunker by name and increments its reference count.
@@ -507,9 +482,18 @@ func (r *ChunkerRegistry) AcquireMedia(modelName string) (termchunking.MediaChun
 		return nil, fmt.Errorf("model %s does not have media capabilities", modelName)
 	}
 
-	// loadMediaModel handles cache lookup, loading, and refcount increment atomically
-	// under r.mu.Lock to prevent TOCTOU between cache hit and eviction.
-	return r.loadMediaModel(info)
+	r.refs.incRef(modelName)
+
+	chunker, err := r.loadMediaModel(info)
+	if err != nil {
+		r.refs.rollbackRef(modelName)
+		return nil, err
+	}
+
+	r.logger.Debug("Acquired media chunker model",
+		zap.String("model", modelName))
+
+	return chunker, nil
 }
 
 // isMediaModel checks if a model has any media capability.
@@ -523,19 +507,13 @@ func (r *ChunkerRegistry) isMediaModel(info *ChunkerModelInfo) bool {
 }
 
 // loadMediaModel loads a media chunker model from disk using the lib/chunking factory.
-// It atomically increments the refcount under the lock to prevent TOCTOU races
-// between cache lookup and TTL eviction.
+// Uses a double-checked lock to prevent concurrent duplicate loads.
 func (r *ChunkerRegistry) loadMediaModel(info *ChunkerModelInfo) (termchunking.CloseableMediaChunker, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Double-check cache after acquiring lock.
-	// Increment refcount under the same lock to prevent eviction between
-	// the cache hit and the caller using the chunker.
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
 	if item := r.mediaCache.Get(info.Name); item != nil {
-		r.refCountsMu.Lock()
-		r.refCounts[info.Name]++
-		r.refCountsMu.Unlock()
 		return item.Value(), nil
 	}
 
@@ -562,11 +540,6 @@ func (r *ChunkerRegistry) loadMediaModel(info *ChunkerModelInfo) (termchunking.C
 
 	r.mediaCache.Set(info.Name, chunker, r.mediaKeepAlive)
 
-	// Increment refcount for the newly loaded model
-	r.refCountsMu.Lock()
-	r.refCounts[info.Name]++
-	r.refCountsMu.Unlock()
-
 	return chunker, nil
 }
 
@@ -576,24 +549,6 @@ func (r *ChunkerRegistry) loadModel(info *ChunkerModelInfo) (chunking.Chunker, e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.loadModelLocked(info)
-}
-
-// loadModelWithRef loads a text chunker model and atomically increments its refcount.
-// This prevents TOCTOU between cache hit and TTL eviction.
-func (r *ChunkerRegistry) loadModelWithRef(info *ChunkerModelInfo) (chunking.Chunker, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	chunker, err := r.loadModelLocked(info)
-	if err != nil {
-		return nil, err
-	}
-
-	r.refCountsMu.Lock()
-	r.refCounts[info.Name]++
-	r.refCountsMu.Unlock()
-
-	return chunker, nil
 }
 
 // loadModelLocked loads a text chunker model from disk. Caller must hold r.mu.
@@ -770,19 +725,7 @@ func (r *ChunkerRegistry) Close() error {
 	r.cache.DeleteAll()
 	r.mediaCache.DeleteAll()
 
-	// Close any orphaned handles that were evicted while in use
-	r.refCountsMu.Lock()
-	for name, orphans := range r.evictedHandles {
-		for _, closeFn := range orphans {
-			if err := closeFn(); err != nil {
-				r.logger.Warn("Error closing orphaned chunker model during shutdown",
-					zap.String("model", name),
-					zap.Error(err))
-			}
-		}
-	}
-	r.evictedHandles = make(map[string][]func() error)
-	r.refCountsMu.Unlock()
+	logDrainErrors(r.logger, "chunker", r.refs.drainOrphans())
 
 	return nil
 }

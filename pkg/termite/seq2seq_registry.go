@@ -48,9 +48,7 @@ type Seq2SeqRegistry struct {
 	cache *ttlcache.Cache[string, seq2seq.Model]
 
 	// Reference counting to prevent eviction during active use
-	refCounts      map[string]int
-	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
-	refCountsMu    sync.Mutex
+	refs refTracker
 
 	// Configuration
 	keepAlive       time.Duration
@@ -84,8 +82,7 @@ func NewSeq2SeqRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*Seq2SeqModelInfo),
-		refCounts:       make(map[string]int),
-		evictedHandles:  make(map[string][]func() error),
+		refs:            newRefTracker(),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
 	}
@@ -116,28 +113,18 @@ func NewSeq2SeqRegistry(
 		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[item.Key()]
-		if refCount > 0 {
-			model := item.Value()
-			registry.evictedHandles[item.Key()] = append(
-				registry.evictedHandles[item.Key()],
-				func() error { return model.Close() },
-			)
-			registry.refCountsMu.Unlock()
+		model := item.Value()
+		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.Close() }) {
 			logger.Warn("Seq2Seq model evicted while in use, deferring close",
 				zap.String("model", item.Key()),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Evicting Seq2Seq model from cache",
 			zap.String("model", item.Key()),
 			zap.String("reason", reasonStr))
-		if err := item.Value().Close(); err != nil {
+		if err := model.Close(); err != nil {
 			logger.Warn("Error closing evicted Seq2Seq model",
 				zap.String("model", item.Key()),
 				zap.Error(err))
@@ -256,28 +243,16 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 func (r *Seq2SeqRegistry) Acquire(modelName string) (seq2seq.Model, error) {
 	// Pre-increment refcount to prevent eviction callback from closing
 	// the model between Get() returning and the refcount being visible.
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	r.refCountsMu.Unlock()
+	r.refs.incRef(modelName)
 
 	model, err := r.Get(modelName)
 	if err != nil {
-		r.refCountsMu.Lock()
-		r.refCounts[modelName]--
-		if r.refCounts[modelName] == 0 {
-			delete(r.refCounts, modelName)
-		}
-		r.refCountsMu.Unlock()
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired Seq2Seq model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return model, nil
 }
@@ -285,30 +260,13 @@ func (r *Seq2SeqRegistry) Acquire(modelName string) (seq2seq.Model, error) {
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the model.
 func (r *Seq2SeqRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-
-	var orphans []func() error
-	if count == 0 {
-		orphans = r.evictedHandles[modelName]
-		delete(r.evictedHandles, modelName)
-	}
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released Seq2Seq model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
 
-	for _, closeFn := range orphans {
-		if err := closeFn(); err != nil {
-			r.logger.Warn("Error closing orphaned Seq2Seq model",
-				zap.String("model", modelName),
-				zap.Error(err))
-		}
-	}
+	closeOrphans(r.logger, "seq2seq", modelName, orphans)
 }
 
 // GetQuestionGenerator returns a Seq2Seq model as a QuestionGenerator by name
@@ -451,22 +409,11 @@ func (r *Seq2SeqRegistry) Close() error {
 		}
 	}
 
-	// Clear the cache (eviction callbacks may still fire but models are already closed)
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
 	r.cache.DeleteAll()
 
 	// Close any orphaned handles that were evicted while in use
-	r.refCountsMu.Lock()
-	for name, orphans := range r.evictedHandles {
-		for _, closeFn := range orphans {
-			if err := closeFn(); err != nil {
-				r.logger.Warn("Error closing orphaned Seq2Seq model during shutdown",
-					zap.String("model", name),
-					zap.Error(err))
-			}
-		}
-	}
-	r.evictedHandles = make(map[string][]func() error)
-	r.refCountsMu.Unlock()
+	logDrainErrors(r.logger, "seq2seq", r.refs.drainOrphans())
 
 	return nil
 }

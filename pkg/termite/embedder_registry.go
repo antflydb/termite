@@ -90,9 +90,7 @@ type EmbedderRegistry struct {
 
 	// Reference counting to prevent eviction during active use
 	// Shared across dense and sparse caches (model names are unique)
-	refCounts      map[string]int
-	evictedHandles map[string][]func() error // orphaned handles awaiting cleanup
-	refCountsMu    sync.Mutex
+	refs refTracker
 
 	// Pinned models (never evicted, stored separately from cache)
 	pinned   map[string]embeddings.Embedder
@@ -132,8 +130,7 @@ func NewEmbedderRegistry(
 		sessionManager:  sessionManager,
 		logger:          logger,
 		discovered:      make(map[string]*EmbedderModelInfo),
-		refCounts:       make(map[string]int),
-		evictedHandles:  make(map[string][]func() error),
+		refs:            newRefTracker(),
 		pinned:          make(map[string]embeddings.Embedder),
 		keepAlive:       keepAlive,
 		maxLoadedModels: config.MaxLoadedModels,
@@ -169,32 +166,24 @@ func NewEmbedderRegistry(
 		embedder := item.Value()
 
 		if reason == ttlcache.EvictionReasonDeleted {
+			logger.Debug("Sparse embedder model removed from cache (cleanup handled separately)",
+				zap.String("model", modelName))
 			return
 		}
 
 		reasonStr := evictionReasonString(reason)
 
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[modelName]
-		if refCount > 0 {
-			model := embedder
-			registry.evictedHandles[modelName] = append(
-				registry.evictedHandles[modelName],
-				func() error {
-					if closer, ok := model.(interface{ Close() error }); ok {
-						return closer.Close()
-					}
-					return nil
-				},
-			)
-			registry.refCountsMu.Unlock()
+		if registry.refs.deferCloseIfInUse(modelName, func() error {
+			if closer, ok := embedder.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		}) {
 			logger.Warn("Sparse embedder model evicted while in use, deferring close",
 				zap.String("model", modelName),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Unloading sparse embedder model",
 			zap.String("model", modelName),
@@ -226,28 +215,17 @@ func NewEmbedderRegistry(
 		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
-		// Hold lock through check-and-action to prevent race with Release()
-		registry.refCountsMu.Lock()
-		refCount := registry.refCounts[modelName]
-		if refCount > 0 {
-			model := embedder
-			registry.evictedHandles[modelName] = append(
-				registry.evictedHandles[modelName],
-				func() error {
-					if closer, ok := model.(interface{ Close() error }); ok {
-						return closer.Close()
-					}
-					return nil
-				},
-			)
-			registry.refCountsMu.Unlock()
+		if registry.refs.deferCloseIfInUse(modelName, func() error {
+			if closer, ok := embedder.(interface{ Close() error }); ok {
+				return closer.Close()
+			}
+			return nil
+		}) {
 			logger.Warn("Embedder model evicted while in use, deferring close",
 				zap.String("model", modelName),
-				zap.Int("refCount", refCount),
 				zap.String("reason", reasonStr))
 			return
 		}
-		registry.refCountsMu.Unlock()
 
 		logger.Info("Unloading embedder model",
 			zap.String("model", modelName),
@@ -505,30 +483,16 @@ func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between Get() returning and the refcount being visible.
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	r.refCountsMu.Unlock()
+	r.refs.incRef(modelName)
 
 	embedder, err := r.Get(modelName)
 	if err != nil {
-		r.refCountsMu.Lock()
-		r.refCounts[modelName]--
-		if r.refCounts[modelName] == 0 {
-			delete(r.refCounts, modelName)
-		}
-		r.refCountsMu.Unlock()
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired embedder model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return embedder, nil
 }
@@ -536,51 +500,25 @@ func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the embedder.
 func (r *EmbedderRegistry) Release(modelName string) {
-	r.refCountsMu.Lock()
-	if r.refCounts[modelName] > 0 {
-		r.refCounts[modelName]--
-	}
-	count := r.refCounts[modelName]
-
-	var orphans []func() error
-	if count == 0 {
-		orphans = r.evictedHandles[modelName]
-		delete(r.evictedHandles, modelName)
-	}
-	r.refCountsMu.Unlock()
+	count, orphans := r.refs.releaseRef(modelName)
 
 	r.logger.Debug("Released embedder model",
 		zap.String("model", modelName),
 		zap.Int("refCount", count))
 
-	for _, closeFn := range orphans {
-		if err := closeFn(); err != nil {
-			r.logger.Warn("Error closing orphaned embedder model",
-				zap.String("model", modelName),
-				zap.Error(err))
-		}
-	}
+	closeOrphans(r.logger, "embedder", modelName, orphans)
 }
 
 // AcquireSparse returns a sparse embedder by model name and increments its reference count.
 // Only valid for models with the "sparse" capability.
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between cache lookup and the refcount being visible.
-	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
-	r.refCountsMu.Unlock()
+	r.refs.incRef(modelName)
 
 	// Check if already loaded in sparse cache
 	if item := r.sparseCache.Get(modelName); item != nil {
-		r.refCountsMu.Lock()
-		count := r.refCounts[modelName]
-		r.refCountsMu.Unlock()
-
 		r.logger.Debug("Acquired sparse embedder model (cache hit)",
-			zap.String("model", modelName),
-			zap.Int("refCount", count))
+			zap.String("model", modelName))
 		return item.Value(), nil
 	}
 
@@ -597,44 +535,24 @@ func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmb
 		info, known = r.discovered[modelName]
 		r.mu.RUnlock()
 		if !known {
-			r.refCountsMu.Lock()
-			r.refCounts[modelName]--
-			if r.refCounts[modelName] == 0 {
-				delete(r.refCounts, modelName)
-			}
-			r.refCountsMu.Unlock()
+			r.refs.rollbackRef(modelName)
 			return nil, fmt.Errorf("embedder model not found: %s", modelName)
 		}
 	}
 
 	if !slices.Contains(info.Capabilities, string(modelregistry.CapabilitySparse)) {
-		r.refCountsMu.Lock()
-		r.refCounts[modelName]--
-		if r.refCounts[modelName] == 0 {
-			delete(r.refCounts, modelName)
-		}
-		r.refCountsMu.Unlock()
+		r.refs.rollbackRef(modelName)
 		return nil, fmt.Errorf("model %s does not have sparse capability", modelName)
 	}
 
 	embedder, err := r.loadSparseModel(info)
 	if err != nil {
-		r.refCountsMu.Lock()
-		r.refCounts[modelName]--
-		if r.refCounts[modelName] == 0 {
-			delete(r.refCounts, modelName)
-		}
-		r.refCountsMu.Unlock()
+		r.refs.rollbackRef(modelName)
 		return nil, err
 	}
 
-	r.refCountsMu.Lock()
-	count := r.refCounts[modelName]
-	r.refCountsMu.Unlock()
-
 	r.logger.Debug("Acquired sparse embedder model",
-		zap.String("model", modelName),
-		zap.Int("refCount", count))
+		zap.String("model", modelName))
 
 	return embedder, nil
 }
@@ -944,19 +862,7 @@ func (r *EmbedderRegistry) Close() error {
 	r.cache.DeleteAll()
 	r.sparseCache.DeleteAll()
 
-	// Close any orphaned handles that were evicted while in use
-	r.refCountsMu.Lock()
-	for name, orphans := range r.evictedHandles {
-		for _, closeFn := range orphans {
-			if err := closeFn(); err != nil {
-				r.logger.Warn("Error closing orphaned embedder model during shutdown",
-					zap.String("model", name),
-					zap.Error(err))
-			}
-		}
-	}
-	r.evictedHandles = make(map[string][]func() error)
-	r.refCountsMu.Unlock()
+	logDrainErrors(r.logger, "embedder", r.refs.drainOrphans())
 
 	// Close all pinned models
 	r.pinnedMu.Lock()
