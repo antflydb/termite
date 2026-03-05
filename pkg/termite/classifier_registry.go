@@ -128,13 +128,7 @@ func NewClassifierRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
 		// Hold lock through check-and-action to prevent race with Release()
@@ -285,13 +279,24 @@ func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, e
 // Acquire returns a classifier by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifier, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between getLoaded() returning and the refcount being visible.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	loaded, err := r.getLoaded(modelName)
 	if err != nil {
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		if r.refCounts[modelName] == 0 {
+			delete(r.refCounts, modelName)
+		}
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
 	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
 	count := r.refCounts[modelName]
 	r.refCountsMu.Unlock()
 
@@ -363,6 +368,14 @@ func (r *ClassifierRegistry) getLoaded(modelName string) (*loadedClassifier, err
 
 // loadModel loads a classifier model from disk
 func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading classifier model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
@@ -455,7 +468,7 @@ func (r *ClassifierRegistry) Close() error {
 	// firing during shutdown (race window if Stop comes after iteration)
 	r.cache.Stop()
 
-	// Close all loaded models
+	// Close all loaded models synchronously (don't rely on async eviction callbacks)
 	for _, name := range r.cache.Keys() {
 		if item := r.cache.Get(name); item != nil {
 			if err := item.Value().classifier.Close(); err != nil {
@@ -463,9 +476,11 @@ func (r *ClassifierRegistry) Close() error {
 					zap.String("model", name),
 					zap.Error(err))
 			}
-			r.cache.Delete(name)
 		}
 	}
+
+	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
+	r.cache.DeleteAll()
 
 	// Close any orphaned handles that were evicted while in use
 	r.refCountsMu.Lock()

@@ -159,13 +159,7 @@ func NewChunkerRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
 		// Hold lock through check-and-action to prevent race with Release()

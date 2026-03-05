@@ -123,13 +123,7 @@ func NewTranscriberRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
 		// Hold lock through check-and-action to prevent race with Release()
@@ -294,13 +288,24 @@ func (r *TranscriberRegistry) Get(modelName string) (transcribing.Transcriber, e
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *TranscriberRegistry) Acquire(modelName string) (transcribing.Transcriber, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between Get() returning and the refcount being visible.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	transcriber, err := r.Get(modelName)
 	if err != nil {
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		if r.refCounts[modelName] == 0 {
+			delete(r.refCounts, modelName)
+		}
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
 	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
 	count := r.refCounts[modelName]
 	r.refCountsMu.Unlock()
 
@@ -342,6 +347,14 @@ func (r *TranscriberRegistry) Release(modelName string) {
 
 // loadModel loads a transcriber model from disk
 func (r *TranscriberRegistry) loadModel(info *TranscriberModelInfo) (transcribing.Transcriber, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading transcriber model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))

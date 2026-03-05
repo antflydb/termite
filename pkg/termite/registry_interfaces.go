@@ -27,7 +27,20 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
 	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
+	"github.com/jellydator/ttlcache/v3"
 )
+
+// evictionReasonString returns a human-readable string for a ttlcache eviction reason.
+func evictionReasonString(reason ttlcache.EvictionReason) string {
+	switch reason {
+	case ttlcache.EvictionReasonExpired:
+		return "expired (keep-alive timeout)"
+	case ttlcache.EvictionReasonCapacityReached:
+		return "capacity reached (LRU eviction)"
+	default:
+		return "unknown"
+	}
+}
 
 // EmbedderRegistryInterface defines the interface for embedder model registries.
 // This enables testing with mock implementations.

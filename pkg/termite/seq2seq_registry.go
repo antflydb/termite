@@ -113,13 +113,7 @@ func NewSeq2SeqRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
 		// Hold lock through check-and-action to prevent race with Release()
@@ -260,13 +254,24 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *Seq2SeqRegistry) Acquire(modelName string) (seq2seq.Model, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between Get() returning and the refcount being visible.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	model, err := r.Get(modelName)
 	if err != nil {
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		if r.refCounts[modelName] == 0 {
+			delete(r.refCounts, modelName)
+		}
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
 	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
 	count := r.refCounts[modelName]
 	r.refCountsMu.Unlock()
 
@@ -322,6 +327,14 @@ func (r *Seq2SeqRegistry) GetQuestionGenerator(modelName string) (seq2seq.Questi
 
 // loadModel loads a Seq2Seq model from disk
 func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading Seq2Seq model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))

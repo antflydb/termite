@@ -126,13 +126,7 @@ func NewReaderRegistry(
 			return
 		}
 
-		reasonStr := "unknown"
-		switch reason {
-		case ttlcache.EvictionReasonExpired:
-			reasonStr = "expired (keep-alive timeout)"
-		case ttlcache.EvictionReasonCapacityReached:
-			reasonStr = "capacity reached (LRU eviction)"
-		}
+		reasonStr := evictionReasonString(reason)
 
 		// Check if model is still in use (has active references)
 		// Hold lock through check-and-action to prevent race with Release()
@@ -313,13 +307,24 @@ func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *ReaderRegistry) Acquire(modelName string) (reading.Reader, error) {
+	// Pre-increment refcount to prevent eviction callback from closing
+	// the model between Get() returning and the refcount being visible.
+	r.refCountsMu.Lock()
+	r.refCounts[modelName]++
+	r.refCountsMu.Unlock()
+
 	reader, err := r.Get(modelName)
 	if err != nil {
+		r.refCountsMu.Lock()
+		r.refCounts[modelName]--
+		if r.refCounts[modelName] == 0 {
+			delete(r.refCounts, modelName)
+		}
+		r.refCountsMu.Unlock()
 		return nil, err
 	}
 
 	r.refCountsMu.Lock()
-	r.refCounts[modelName]++
 	count := r.refCounts[modelName]
 	r.refCountsMu.Unlock()
 
@@ -363,6 +368,14 @@ func (r *ReaderRegistry) Release(modelName string) {
 // Multi-stage OCR models (Surya, PaddleOCR) are dispatched to MultiStageReader,
 // while Vision2Seq models (TrOCR, Donut, Florence-2, Nougat, Pix2Struct) use PooledReader.
 func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
+	if item := r.cache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
 	r.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
