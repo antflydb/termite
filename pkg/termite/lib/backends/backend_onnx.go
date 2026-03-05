@@ -54,9 +54,11 @@ type onnxBackend struct {
 	cudaEnabledOnce sync.Once
 
 	// Track initialization state
-	initialized     bool
 	initializedOnce sync.Once
 	initErr         error
+
+	// Shared arena-based allocator for all sessions
+	sharedAllocator bool
 }
 
 func (b *onnxBackend) Type() BackendType {
@@ -91,7 +93,9 @@ func (b *onnxBackend) SessionFactory() SessionFactory {
 	return &onnxSessionFactory{backend: b}
 }
 
-// initONNX initializes the ONNX Runtime library.
+// initONNX initializes the ONNX Runtime library and registers a shared
+// arena-based allocator so that all sessions share the same memory pool,
+// reducing fragmentation and total memory usage.
 func (b *onnxBackend) initONNX() error {
 	b.initializedOnce.Do(func() {
 		// Set library path if found
@@ -101,11 +105,32 @@ func (b *onnxBackend) initONNX() error {
 
 		// Initialize the environment
 		b.initErr = ort.InitializeEnvironment()
-		if b.initErr == nil {
-			b.initialized = true
+		if b.initErr != nil {
+			return
+		}
+
+		// Best-effort: register a shared arena-based allocator with the
+		// environment so all sessions share one memory pool. If any step
+		// fails, we silently fall back to per-session allocators.
+		if memInfo, err := ort.GetMemoryInfo(); err == nil {
+			if arenaCfg, err := ort.NewArenaCfg(0, -1, -1, -1); err == nil {
+				if err := ort.CreateAndRegisterAllocator(memInfo, arenaCfg); err == nil {
+					b.sharedAllocator = true
+				}
+				arenaCfg.Destroy()
+			}
 		}
 	})
 	return b.initErr
+}
+
+// enableSharedAllocator configures session options to use the shared
+// environment allocator if one was registered during initialization.
+func (b *onnxBackend) enableSharedAllocator(opts *ort.SessionOptions) error {
+	if b.sharedAllocator {
+		return opts.AddSessionConfigEntry("session.use_env_allocators", "1")
+	}
+	return nil
 }
 
 // getOnnxLibraryPath returns the directory containing libonnxruntime.
@@ -280,6 +305,12 @@ func (l *ortModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 	sessionOpts, err := ort.NewSessionOptions()
 	if err != nil {
 		return nil, fmt.Errorf("creating session options: %w", err)
+	}
+
+	// Use shared environment allocator if available
+	if err := l.backend.enableSharedAllocator(sessionOpts); err != nil {
+		sessionOpts.Destroy()
+		return nil, fmt.Errorf("enabling shared allocator: %w", err)
 	}
 
 	// Configure number of threads
@@ -986,6 +1017,12 @@ func (f *onnxSessionFactory) CreateSession(modelPath string, opts ...SessionOpti
 	sessionOpts, err := ort.NewSessionOptions()
 	if err != nil {
 		return nil, fmt.Errorf("creating session options: %w", err)
+	}
+
+	// Use shared environment allocator if available
+	if err := f.backend.enableSharedAllocator(sessionOpts); err != nil {
+		sessionOpts.Destroy()
+		return nil, fmt.Errorf("enabling shared allocator: %w", err)
 	}
 
 	// Configure number of threads

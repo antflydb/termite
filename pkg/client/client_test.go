@@ -210,7 +210,7 @@ func TestClient_Chunk(t *testing.T) {
 		var req map[string]any
 		err = json.Unmarshal(body, &req)
 		require.NoError(t, err)
-		assert.Equal(t, "This is a test document.", req["text"])
+		assert.Equal(t, "This is a test document.", req["input"])
 
 		// Return chunks
 		w.Header().Set("Content-Type", "application/json")
@@ -240,6 +240,149 @@ func TestClient_Chunk(t *testing.T) {
 	require.Len(t, chunks, 2)
 	assert.Equal(t, "This is a test", chunks[0].GetText())
 	assert.Equal(t, "test document.", chunks[1].GetText())
+}
+
+func TestClient_Chunk_ConfigMapping(t *testing.T) {
+	// Verify that ChunkConfig fields are correctly mapped to the nested
+	// oapi.ChunkConfig structure (text options under "text" sub-object).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/chunk", r.URL.Path)
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]any
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		config, ok := req["config"].(map[string]any)
+		require.True(t, ok, "config should be an object")
+
+		// Top-level config fields
+		assert.Equal(t, "fixed", config["model"])
+		assert.EqualValues(t, 5, config["max_chunks"])
+		assert.InDelta(t, 0.7, config["threshold"], 0.01)
+
+		// Text-specific fields must be nested under "text"
+		textConfig, ok := config["text"].(map[string]any)
+		require.True(t, ok, "text config should be a nested object")
+		assert.EqualValues(t, 200, textConfig["target_tokens"])
+		assert.EqualValues(t, 20, textConfig["overlap_tokens"])
+		assert.Equal(t, "\n\n", textConfig["separator"])
+
+		// These fields should NOT appear at the top level
+		assert.Nil(t, config["target_tokens"], "target_tokens should not be at top level")
+		assert.Nil(t, config["overlap_tokens"], "overlap_tokens should not be at top level")
+		assert.Nil(t, config["separator"], "separator should not be at top level")
+
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"chunks":    []map[string]any{{"id": 0, "text": "chunk one", "start_char": 0, "end_char": 9}},
+			"model":     "fixed",
+			"cache_hit": false,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil)
+	require.NoError(t, err)
+
+	chunks, err := termiteClient.Chunk(context.Background(), "Some long document text.", ChunkConfig{
+		Model:         "fixed",
+		TargetTokens:  200,
+		OverlapTokens: 20,
+		Separator:     "\n\n",
+		MaxChunks:     5,
+		Threshold:     0.7,
+	})
+	require.NoError(t, err)
+	require.Len(t, chunks, 1)
+}
+
+func TestClient_ChunkMedia(t *testing.T) {
+	// Verify that MediaChunkConfig fields are correctly mapped to the nested
+	// oapi.ChunkConfig structure (audio options under "audio" sub-object).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/chunk", r.URL.Path)
+		assert.Equal(t, "POST", r.Method)
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var req map[string]any
+		err = json.Unmarshal(body, &req)
+		require.NoError(t, err)
+
+		config, ok := req["config"].(map[string]any)
+		require.True(t, ok, "config should be an object")
+
+		// Top-level config fields
+		assert.Equal(t, "vad", config["model"])
+		assert.EqualValues(t, 10, config["max_chunks"])
+		assert.InDelta(t, 0.5, config["threshold"], 0.01)
+
+		// Audio-specific fields must be nested under "audio"
+		audioConfig, ok := config["audio"].(map[string]any)
+		require.True(t, ok, "audio config should be a nested object")
+		assert.EqualValues(t, 30000, audioConfig["window_duration_ms"])
+		assert.EqualValues(t, 1000, audioConfig["overlap_duration_ms"])
+
+		// These fields should NOT appear at the top level
+		assert.Nil(t, config["window_duration_ms"], "window_duration_ms should not be at top level")
+		assert.Nil(t, config["overlap_duration_ms"], "overlap_duration_ms should not be at top level")
+
+		// Verify input contains media data
+		input := req["input"]
+		require.NotNil(t, input, "input should be present for media chunking")
+
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{
+			"chunks": []map[string]any{
+				{"id": 0, "text": "audio segment 1", "start_char": 0, "end_char": 15},
+				{"id": 1, "text": "audio segment 2", "start_char": 15, "end_char": 30},
+			},
+			"model":     "vad",
+			"cache_hit": false,
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil)
+	require.NoError(t, err)
+
+	audioData := []byte("fake-audio-data")
+
+	chunks, err := termiteClient.ChunkMedia(context.Background(), audioData, "audio/wav", MediaChunkConfig{
+		Model:             "vad",
+		MaxChunks:         10,
+		WindowDurationMs:  30000,
+		OverlapDurationMs: 1000,
+		Threshold:         0.5,
+	})
+	require.NoError(t, err)
+	require.Len(t, chunks, 2)
+	assert.Equal(t, "audio segment 1", chunks[0].GetText())
+	assert.Equal(t, "audio segment 2", chunks[1].GetText())
+}
+
+func TestClient_ChunkMedia_BadRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unsupported media type"})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil)
+	require.NoError(t, err)
+
+	_, err = termiteClient.ChunkMedia(context.Background(), []byte("data"), "video/mp4", MediaChunkConfig{
+		Model: "vad",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bad request")
 }
 
 func TestClient_Chunk_EmptyText(t *testing.T) {

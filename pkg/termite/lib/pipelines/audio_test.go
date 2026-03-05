@@ -152,7 +152,7 @@ func TestMelFilterBank_SlaneyScale(t *testing.T) {
 	// From librosa.mel_frequencies(n_mels=80, fmin=0, fmax=8000)[1:6]
 	expectedCenters := []float64{37.15, 74.30, 111.45, 148.59, 185.74}
 
-	for mel := 0; mel < 5; mel++ {
+	for mel := range 5 {
 		maxVal := float32(0)
 		maxBin := 0
 		for bin, v := range ap.melFilters[mel] {

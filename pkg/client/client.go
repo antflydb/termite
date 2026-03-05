@@ -29,7 +29,7 @@ import (
 	"net/http"
 	"strings"
 
-	externalRef0 "github.com/antflydb/antfly-go/libaf/chunking"
+	chunking "github.com/antflydb/antfly-go/libaf/chunking"
 	"github.com/antflydb/termite/pkg/client/oapi"
 )
 
@@ -277,16 +277,23 @@ type ChunkConfig struct {
 }
 
 // Chunk splits text into smaller segments using semantic or fixed-size chunking.
-func (c *TermiteClient) Chunk(ctx context.Context, text string, config ChunkConfig) ([]externalRef0.Chunk, error) {
+func (c *TermiteClient) Chunk(ctx context.Context, text string, config ChunkConfig) ([]chunking.Chunk, error) {
+	var input oapi.ChunkRequest_Input
+	if err := input.FromChunkRequestInput0(text); err != nil {
+		return nil, fmt.Errorf("building chunk request input: %w", err)
+	}
+
 	req := oapi.ChunkRequest{
-		Text: text,
+		Input: input,
 		Config: oapi.ChunkConfig{
-			Model:         config.Model,
-			TargetTokens:  config.TargetTokens,
-			OverlapTokens: config.OverlapTokens,
-			Separator:     config.Separator,
-			MaxChunks:     config.MaxChunks,
-			Threshold:     config.Threshold,
+			Model:     config.Model,
+			MaxChunks: config.MaxChunks,
+			Threshold: config.Threshold,
+			Text: chunking.TextChunkOptions{
+				TargetTokens:  config.TargetTokens,
+				OverlapTokens: config.OverlapTokens,
+				Separator:     config.Separator,
+			},
 		},
 	}
 
@@ -318,7 +325,7 @@ type MediaChunkConfig struct {
 }
 
 // ChunkMedia splits binary media content (audio/wav, image/gif) into chunks.
-func (c *TermiteClient) ChunkMedia(ctx context.Context, data []byte, mimeType string, config MediaChunkConfig) ([]externalRef0.Chunk, error) {
+func (c *TermiteClient) ChunkMedia(ctx context.Context, data []byte, mimeType string, config MediaChunkConfig) ([]chunking.Chunk, error) {
 	// Build MediaContentPart
 	var part oapi.ContentPart
 	if err := part.FromMediaContentPart(oapi.MediaContentPart{
@@ -337,11 +344,13 @@ func (c *TermiteClient) ChunkMedia(ctx context.Context, data []byte, mimeType st
 	req := oapi.ChunkRequest{
 		Input: input,
 		Config: oapi.ChunkConfig{
-			Model:             config.Model,
-			MaxChunks:         config.MaxChunks,
-			WindowDurationMs:  config.WindowDurationMs,
-			OverlapDurationMs: config.OverlapDurationMs,
-			Threshold:         config.Threshold,
+			Model:     config.Model,
+			MaxChunks: config.MaxChunks,
+			Threshold: config.Threshold,
+			Audio: oapi.AudioChunkConfig{
+				WindowDurationMs:  config.WindowDurationMs,
+				OverlapDurationMs: config.OverlapDurationMs,
+			},
 		},
 	}
 
