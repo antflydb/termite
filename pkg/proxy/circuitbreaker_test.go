@@ -37,7 +37,7 @@ func TestThunderingHerd(t *testing.T) {
 	// Use a barrier to ensure all goroutines start at roughly the same time
 	barrier := make(chan struct{})
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()

@@ -121,7 +121,6 @@ func TestRefTracker_MultipleOrphans(t *testing.T) {
 
 	var closed []int
 	for i := range 3 {
-		i := i
 		rt.deferCloseIfInUse("a", func() error {
 			closed = append(closed, i)
 			return nil

@@ -372,7 +372,7 @@ func JaroWinkler(s1, s2 string) float64 {
 	// Winkler modification: boost for common prefix (up to 4 chars).
 	prefixLen := 0
 	maxPrefix := min(len(s2), min(len(s1), 4))
-	for i := 0; i < maxPrefix; i++ {
+	for i := range maxPrefix {
 		if s1[i] == s2[i] {
 			prefixLen++
 		} else {

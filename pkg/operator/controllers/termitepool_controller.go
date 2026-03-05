@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -951,9 +952,7 @@ func applySchedulingConstraints(podTemplate *corev1.PodTemplateSpec, tolerations
 		if podTemplate.Spec.NodeSelector == nil {
 			podTemplate.Spec.NodeSelector = make(map[string]string)
 		}
-		for k, v := range nodeSelector {
-			podTemplate.Spec.NodeSelector[k] = v
-		}
+		maps.Copy(podTemplate.Spec.NodeSelector, nodeSelector)
 	}
 
 	// Apply affinity (deep merge to coexist with cloud-provider entries)

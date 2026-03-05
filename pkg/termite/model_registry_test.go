@@ -679,7 +679,7 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 	reg.refs.incRef("test")
 
 	// Simulate multiple evictions: each adds a model to cache, waits for eviction
-	for i := 0; i < evictions; i++ {
+	for i := range evictions {
 		reg.cache.Set("test", mocks[i], reg.keepAlive)
 		time.Sleep(50 * time.Millisecond)
 	}
