@@ -360,9 +360,7 @@ func (p *FunctionGemmaParser) parseCall(content string) (ToolCall, bool) {
 
 	// Extract parameters
 	paramsStr := after
-	if strings.HasSuffix(paramsStr, "}") {
-		paramsStr = paramsStr[:len(paramsStr)-1]
-	}
+	paramsStr = strings.TrimSuffix(paramsStr, "}")
 
 	// Parse key-value pairs
 	params := p.splitParams(paramsStr)

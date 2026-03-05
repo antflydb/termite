@@ -340,7 +340,7 @@ func (r *TranscriberRegistry) loadModel(info *TranscriberModelInfo) (transcribin
 // List returns all available transcriber model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *TranscriberRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

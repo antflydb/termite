@@ -559,7 +559,7 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 // List returns all available NER model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *NERRegistry) List() map[string][]string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

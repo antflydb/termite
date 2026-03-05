@@ -100,10 +100,10 @@ func (p *SparseEmbeddingPipeline) EmbedBatch(ctx context.Context, inputs *backen
 	// Get [batch, vocab] scores
 	var scores [][]float32
 
-	if output.Logits != nil && len(output.Logits) > 0 {
+	if len(output.Logits) > 0 {
 		// Model directly outputs logits [batch, vocab] (e.g., SPLADE with MLM head)
 		scores = output.Logits
-	} else if output.LastHiddenState != nil && len(output.LastHiddenState) > 0 {
+	} else if len(output.LastHiddenState) > 0 {
 		// Max-pool over sequence dimension, respecting attention mask
 		scores = maxPoolOverSequence(output.LastHiddenState, inputs.AttentionMask)
 	} else {

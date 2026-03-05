@@ -26,7 +26,6 @@ import (
 	"github.com/antflydb/antfly-go/libaf/embeddings"
 	"github.com/antflydb/antfly-go/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
-	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -47,18 +46,6 @@ func skipIfNoModels(t testing.TB, modelsDir string) {
 	if len(entries) == 0 {
 		t.Skipf("Skipping: no models found in %s", modelsDir)
 	}
-}
-
-// newRerankerModel creates a reranker model using the new pipeline-based API
-func newRerankerModel(modelPath string, sessionManager *backends.SessionManager, logger *zap.Logger) (reranking.Model, error) {
-	cfg := termreranking.PooledRerankerConfig{
-		ModelPath:     modelPath,
-		PoolSize:      1,
-		ModelBackends: nil,
-		Logger:        logger,
-	}
-	model, _, err := termreranking.NewPooledReranker(cfg, sessionManager)
-	return model, err
 }
 
 func TestRerankerRegistryLoading(t *testing.T) {
@@ -627,7 +614,7 @@ func TestRegistryEvictionRespectsRefcount(t *testing.T) {
 		KeepAlive: 20 * time.Millisecond,
 	}, nil, zap.NewNop())
 	require.NoError(t, err)
-	defer reg.Close()
+	defer func() { _ = reg.Close() }()
 
 	mock := &closeTrackingReranker{}
 
@@ -667,7 +654,7 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 		KeepAlive: 10 * time.Millisecond,
 	}, nil, zap.NewNop())
 	require.NoError(t, err)
-	defer reg.Close()
+	defer func() { _ = reg.Close() }()
 
 	const evictions = 3
 	mocks := make([]*closeTrackingReranker, evictions)

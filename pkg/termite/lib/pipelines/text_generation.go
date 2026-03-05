@@ -1099,7 +1099,7 @@ func LoadTextGenerationPipeline(
 	// Load the tokenizer
 	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
-		model.Close()
+		_ = model.Close()
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 

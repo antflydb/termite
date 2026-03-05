@@ -57,7 +57,7 @@ func TestTermiteNode_EmbedEndpoint_NoModels(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test server URL
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 
@@ -78,7 +78,7 @@ func TestTermiteNode_EmbedEndpoint_NoModels(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test server URL
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 
@@ -96,7 +96,7 @@ func TestTermiteNode_EmbedEndpoint_NoModels(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test server URL
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 
@@ -124,7 +124,7 @@ func TestTermiteNode_ModelsEndpoint(t *testing.T) {
 		req, err := http.NewRequest("GET", server.URL+"/api/models", nil)
 		require.NoError(t, err)
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // test server URL
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 

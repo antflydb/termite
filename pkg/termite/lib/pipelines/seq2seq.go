@@ -376,7 +376,7 @@ func LoadSeq2SeqModel(modelPath string, factory backends.SessionFactory, opts ..
 	// Create decoder session
 	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
 	if err != nil {
-		encoderSession.Close()
+		_ = encoderSession.Close()
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
 
@@ -386,8 +386,8 @@ func LoadSeq2SeqModel(modelPath string, factory backends.SessionFactory, opts ..
 	if config.DecoderInitPath != "" {
 		decoderInitSession, err = factory.CreateSession(config.DecoderInitPath, opts...)
 		if err != nil {
-			encoderSession.Close()
-			decoderSession.Close()
+			_ = encoderSession.Close()
+			_ = decoderSession.Close()
 			return nil, fmt.Errorf("creating decoder init session: %w", err)
 		}
 	}
@@ -620,7 +620,7 @@ func (m *seq2SeqModel) buildDecoderInputsForSession(session backends.Session, in
 	// Check the input data type to determine whether to use bool or float
 	if inputNames["use_cache_branch"] {
 		// Find the expected data type for use_cache_branch
-		var useCacheDataType backends.DataType = backends.DataTypeBool // default to bool
+		var useCacheDataType = backends.DataTypeBool // default to bool
 		for _, info := range inputInfo {
 			if info.Name == "use_cache_branch" {
 				useCacheDataType = info.DataType
@@ -1006,7 +1006,7 @@ func LoadSeq2SeqPipeline(
 	// Load the tokenizer
 	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
-		model.Close()
+		_ = model.Close()
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 

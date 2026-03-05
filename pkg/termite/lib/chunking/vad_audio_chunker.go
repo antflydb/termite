@@ -197,7 +197,7 @@ func (v *VADAudioChunker) ChunkPCM(ctx context.Context, samples []float32, forma
 		var c chunking.Chunk
 		c.Id = uint32(len(chunks))
 		c.MimeType = "audio/wav"
-		c.FromBinaryContent(chunking.BinaryContent{
+		_ = c.FromBinaryContent(chunking.BinaryContent{
 			Data:        wavBytes,
 			StartTimeMs: startTimeMs,
 			EndTimeMs:   endTimeMs,

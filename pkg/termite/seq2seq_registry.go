@@ -328,7 +328,7 @@ func (r *Seq2SeqRegistry) loadModel(info *Seq2SeqModelInfo) (seq2seq.Model, erro
 // List returns all available Seq2Seq model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *Seq2SeqRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

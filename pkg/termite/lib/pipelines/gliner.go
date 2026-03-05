@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/antflydb/termite/pkg/termite/lib/tokenizers"
 
@@ -1194,26 +1193,13 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	maxWidth := p.PipelineConfig.MaxWidth
 
 	// Get dimensions from logits shape
-	var numTokens int
 	if len(logitsShape) >= 4 {
 		// GLiNER v1 format: [batch, num_tokens, max_width, num_labels]
-		numTokens = int(logitsShape[1])
 		maxWidth = int(logitsShape[2])
 		numLabels = int(logitsShape[3])
 	} else if len(logitsShape) == 3 {
 		// GLiNER2 format: [batch, num_spans, 1]
-		// num_spans = num_tokens * max_width, numLabels = 1
-		numSpans := int(logitsShape[1])
 		numLabels = int(logitsShape[2])
-		// Infer numTokens from num_spans / max_width
-		if maxWidth > 0 && numSpans > 0 {
-			numTokens = numSpans / maxWidth
-		}
-	}
-
-	// Ensure at least 1 token, fall back to word count if not determined
-	if numTokens < 1 {
-		numTokens = numWords
 	}
 
 	// Extract entities from spans with scores above threshold
@@ -1738,13 +1724,7 @@ func (p *GLiNERPipeline) ExtractSpansForLabels(
 
 	spans := make([]GLiNERExtractedSpan, len(entities))
 	for i, e := range entities {
-		spans[i] = GLiNERExtractedSpan{
-			Text:  e.Text,
-			Label: e.Label,
-			Start: e.Start,
-			End:   e.End,
-			Score: e.Score,
-		}
+		spans[i] = GLiNERExtractedSpan(e)
 	}
 	return spans, nil
 }
@@ -1777,18 +1757,4 @@ func (p *GLiNERPipeline) ClassifySpanText(
 	}
 
 	return classifications[0].Label, classifications[0].Score, nil
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-// charOffsetFromRunes converts rune index to byte offset.
-func charOffsetFromRunes(text string, runeIdx int) int {
-	offset := 0
-	for i := 0; i < runeIdx && offset < len(text); i++ {
-		_, size := utf8.DecodeRuneInString(text[offset:])
-		offset += size
-	}
-	return offset
 }

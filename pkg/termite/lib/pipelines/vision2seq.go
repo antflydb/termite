@@ -673,7 +673,7 @@ func LoadVision2SeqModel(modelPath string, factory backends.SessionFactory, opts
 	// Create decoder session (main/merged decoder)
 	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
 	if err != nil {
-		encoderSession.Close()
+		_ = encoderSession.Close()
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
 
@@ -696,7 +696,7 @@ func LoadVision2SeqModel(modelPath string, factory backends.SessionFactory, opts
 				model.useSplitDecoders = true
 			} else {
 				// Clean up first step session if with-past failed
-				firstStepSession.Close()
+				_ = firstStepSession.Close()
 			}
 		}
 	}
@@ -718,7 +718,7 @@ func (m *vision2SeqModel) Forward(ctx context.Context, inputs *backends.ModelInp
 	}
 
 	// Otherwise run encoder on image
-	if inputs.ImagePixels == nil || len(inputs.ImagePixels) == 0 {
+	if len(inputs.ImagePixels) == 0 {
 		return nil, fmt.Errorf("no image pixels or encoder output provided")
 	}
 
@@ -944,7 +944,7 @@ func buildDecoderInputs(
 
 	// Add use_cache_branch if needed
 	if inputNames["use_cache_branch"] {
-		var useCacheDataType backends.DataType = backends.DataTypeBool
+		var useCacheDataType = backends.DataTypeBool
 		for _, info := range inputInfo {
 			if info.Name == "use_cache_branch" {
 				useCacheDataType = info.DataType
@@ -1269,12 +1269,6 @@ func (p *Vision2SeqPipeline) isEncoderDecoderVLMModel() bool {
 	return ok
 }
 
-// isDecoderOnlyVLMModel checks if the underlying model is a decoder-only VLM.
-func (p *Vision2SeqPipeline) isDecoderOnlyVLMModel() bool {
-	_, ok := p.Model.(*decoderOnlyVLMModel)
-	return ok
-}
-
 // =============================================================================
 // Loader
 // =============================================================================
@@ -1336,7 +1330,7 @@ func LoadVision2SeqPipeline(
 	// Load the tokenizer
 	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
-		model.Close()
+		_ = model.Close()
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 

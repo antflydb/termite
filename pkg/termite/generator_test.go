@@ -16,70 +16,17 @@ package termite
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
-
-// mockGenerator implements generation.Generator for testing
-type mockGenerator struct {
-	generateFunc func(ctx context.Context, messages []generation.Message, opts generation.GenerateOptions) (*generation.GenerateResult, error)
-}
-
-func (m *mockGenerator) Generate(ctx context.Context, messages []generation.Message, opts generation.GenerateOptions) (*generation.GenerateResult, error) {
-	if m.generateFunc != nil {
-		return m.generateFunc(ctx, messages, opts)
-	}
-	return &generation.GenerateResult{
-		Text:         "Test response",
-		TokensUsed:   5,
-		FinishReason: "stop",
-	}, nil
-}
-
-func (m *mockGenerator) Close() error {
-	return nil
-}
-
-// mockGeneratorRegistry implements a test-friendly generator registry
-type mockGeneratorRegistry struct {
-	models map[string]generation.Generator
-}
-
-func newMockGeneratorRegistry() *mockGeneratorRegistry {
-	return &mockGeneratorRegistry{
-		models: make(map[string]generation.Generator),
-	}
-}
-
-func (r *mockGeneratorRegistry) Get(modelName string) (generation.Generator, error) {
-	if gen, ok := r.models[modelName]; ok {
-		return gen, nil
-	}
-	return nil, fmt.Errorf("generator model not found: %s", modelName)
-}
-
-func (r *mockGeneratorRegistry) List() []string {
-	names := make([]string, 0, len(r.models))
-	for name := range r.models {
-		names = append(names, name)
-	}
-	return names
-}
-
-func (r *mockGeneratorRegistry) Close() error {
-	return nil
-}
 
 func TestTermiteNode_HandleApiGenerate_NoModels(t *testing.T) {
 	node := &TermiteNode{

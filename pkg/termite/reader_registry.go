@@ -379,7 +379,7 @@ func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, erro
 // List returns all available reader model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *ReaderRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

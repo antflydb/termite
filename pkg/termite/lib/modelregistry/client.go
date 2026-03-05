@@ -113,7 +113,7 @@ func (c *Client) FetchIndex(ctx context.Context) (*RegistryIndex, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL is constructed from trusted baseURL
 	if err != nil {
 		return nil, fmt.Errorf("fetching index: %w", err)
 	}
@@ -141,7 +141,7 @@ func (c *Client) FetchManifest(ctx context.Context, modelName string) (*ModelMan
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req) //nolint:gosec // G704: URL is constructed from trusted baseURL
 	if err != nil {
 		return nil, fmt.Errorf("fetching manifest: %w", err)
 	}
@@ -266,7 +266,7 @@ func (c *Client) downloadFile(ctx context.Context, file ModelFile, destDir strin
 		return fmt.Errorf("creating request: %w", err)
 	}
 
-	resp, err := c.downloadClient.Do(req)
+	resp, err := c.downloadClient.Do(req) //nolint:gosec // G704: URL is constructed from trusted baseURL
 	if err != nil {
 		return fmt.Errorf("downloading: %w", err)
 	}

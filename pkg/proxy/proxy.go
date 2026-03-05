@@ -826,9 +826,9 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 		activeConnections.WithLabelValues(endpoint.Pool, endpoint.Address).Dec()
 	}()
 
-	// Proxy the request
+	// Proxy the request — endpoint.Address comes from internal service discovery, not user input.
 	targetURL, _ := url.Parse(endpoint.Address)
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	proxy := httputil.NewSingleHostReverseProxy(targetURL) //nolint:gosec // G704: endpoint address is from trusted internal registry
 
 	// Restore body for proxying
 	r.Body = io.NopCloser(&bodyReader{data: body})
@@ -854,7 +854,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 		return nil
 	}
 
-	proxy.ServeHTTP(w, r)
+	proxy.ServeHTTP(w, r) //nolint:gosec // G704: endpoint address is from trusted internal registry
 }
 
 type bodyReader struct {

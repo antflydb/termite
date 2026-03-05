@@ -91,7 +91,7 @@ func (g *GIFChunker) ChunkGIF(ctx context.Context, data []byte, opts chunking.Ch
 		var c chunking.Chunk
 		c.Id = uint32(i)
 		c.MimeType = "image/png"
-		c.FromBinaryContent(chunking.BinaryContent{
+		_ = c.FromBinaryContent(chunking.BinaryContent{
 			Data:         pngBuf.Bytes(),
 			FrameIndex:   i,
 			FrameDelayMs: delayMs,

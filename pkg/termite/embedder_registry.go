@@ -655,7 +655,7 @@ func (r *EmbedderRegistry) Touch(modelName string) {
 // List returns all available model names (discovered + pinned built-ins).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	names := make([]string, 0, len(r.discovered))
@@ -677,7 +677,7 @@ func (r *EmbedderRegistry) List() []string {
 // ListWithCapabilities returns a map of model names to their capabilities.
 // Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) ListWithCapabilities() map[string][]string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	result := make(map[string][]string)
 

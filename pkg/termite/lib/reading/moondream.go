@@ -56,7 +56,7 @@ func MoondreamDescriptionPrompt(userPrompt string) string {
 var moondreamJSONBlockRegex = regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(\\{.*?\\})\\s*```")
 
 // jsonObjectRegex matches a JSON object anywhere in text
-var moondreamJSONObjectRegex = regexp.MustCompile("(?s)(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})")
+var moondreamJSONObjectRegex = regexp.MustCompile(`(?s)(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})`)
 
 // MoondreamOutputParser parses Moondream model output into a Result.
 // Extracts JSON fields if present, falls back to raw text.
@@ -194,9 +194,10 @@ func moondreamExtractBalancedJSON(text string) string {
 			continue
 		}
 
-		if ch == '{' {
+		switch ch {
+		case '{':
 			depth++
-		} else if ch == '}' {
+		case '}':
 			depth--
 			if depth == 0 {
 				candidate := text[:i+1]

@@ -148,7 +148,7 @@ func (ap *AudioProcessor) loadWAV(data []byte) ([]float32, error) {
 			// Skip any extra format bytes
 			remaining := int(chunkSize) - 16
 			if remaining > 0 {
-				reader.Seek(int64(remaining), io.SeekCurrent)
+				_, _ = reader.Seek(int64(remaining), io.SeekCurrent)
 			}
 
 		case "data":
@@ -159,7 +159,7 @@ func (ap *AudioProcessor) loadWAV(data []byte) ([]float32, error) {
 
 		default:
 			// Skip unknown chunks
-			reader.Seek(int64(chunkSize), io.SeekCurrent)
+			_, _ = reader.Seek(int64(chunkSize), io.SeekCurrent)
 		}
 	}
 
@@ -202,16 +202,16 @@ func (ap *AudioProcessor) bytesToSamples(data []byte, bitsPerSample, numChannels
 			switch bitsPerSample {
 			case 8:
 				var s uint8
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				// 8-bit WAV is unsigned, center at 128
 				sample = (float64(s) - 128) / 128.0
 			case 16:
 				var s int16
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				sample = float64(s) / 32768.0
 			case 24:
 				var buf [3]byte
-				reader.Read(buf[:])
+				_, _ = reader.Read(buf[:])
 				// Convert 24-bit to 32-bit signed
 				s := int32(buf[0]) | int32(buf[1])<<8 | int32(buf[2])<<16
 				if s&0x800000 != 0 {
@@ -220,7 +220,7 @@ func (ap *AudioProcessor) bytesToSamples(data []byte, bitsPerSample, numChannels
 				sample = float64(s) / 8388608.0
 			case 32:
 				var s int32
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				sample = float64(s) / 2147483648.0
 			default:
 				return nil, fmt.Errorf("unsupported bits per sample: %d", bitsPerSample)

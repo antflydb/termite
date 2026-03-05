@@ -515,7 +515,7 @@ func TopP(probs []float32, p float32) []float32 {
 
 // Sample samples from a probability distribution.
 func Sample(probs []float32) int32 {
-	r := rand.Float32()
+	r := rand.Float32() //nolint:gosec // G404: math/rand is appropriate for ML sampling
 	var cumSum float32
 	for i, p := range probs {
 		cumSum += p

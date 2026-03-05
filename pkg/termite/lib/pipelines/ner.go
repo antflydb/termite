@@ -365,7 +365,7 @@ func (p *NERPipeline) ClassifyTokens(ctx context.Context, inputs *backends.Model
 	}
 
 	// Check if we have LastHiddenState that could be token logits
-	if output.LastHiddenState != nil && len(output.LastHiddenState) > 0 {
+	if len(output.LastHiddenState) > 0 {
 		// LastHiddenState has shape [batch, seq, hidden]
 		// For NER, we need logits with shape [batch, seq, num_labels]
 		// This typically requires a classification head
@@ -750,16 +750,6 @@ func getLabelType(label string) string {
 // isBIOBegin checks if a label is a beginning token (B-).
 func isBIOBegin(label string) bool {
 	return len(label) >= 2 && label[0] == 'B' && label[1] == '-'
-}
-
-// isBIOInside checks if a label is an inside token (I-).
-func isBIOInside(label string) bool {
-	return len(label) >= 2 && label[0] == 'I' && label[1] == '-'
-}
-
-// isBIOOutside checks if a label is an outside token (O).
-func isBIOOutside(label string) bool {
-	return label == "O" || label == ""
 }
 
 // safeSubstring returns a substring of text, handling bounds safely.

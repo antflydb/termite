@@ -424,7 +424,7 @@ func LoadSpeech2SeqModel(modelPath string, factory backends.SessionFactory, opts
 				return model, nil
 			}
 			// Failed to load with-past decoder, close first-step session
-			firstStepSession.Close()
+			_ = firstStepSession.Close()
 		}
 		// Fall through to use merged decoder
 	}
@@ -432,7 +432,7 @@ func LoadSpeech2SeqModel(modelPath string, factory backends.SessionFactory, opts
 	// Create merged decoder session (fallback)
 	decoderSession, err := factory.CreateSession(config.DecoderPath, opts...)
 	if err != nil {
-		encoderSession.Close()
+		_ = encoderSession.Close()
 		return nil, fmt.Errorf("creating decoder session: %w", err)
 	}
 	model.decoderSession = decoderSession
@@ -454,7 +454,7 @@ func (m *speech2SeqModel) Forward(ctx context.Context, inputs *backends.ModelInp
 	}
 
 	// Otherwise run encoder on audio features
-	if inputs.AudioFeatures == nil || len(inputs.AudioFeatures) == 0 {
+	if len(inputs.AudioFeatures) == 0 {
 		return nil, fmt.Errorf("no audio features or encoder output provided")
 	}
 
@@ -666,7 +666,7 @@ func (m *speech2SeqModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 	// Add use_cache_branch if needed
 	if inputNames["use_cache_branch"] {
 		// Find the expected data type for use_cache_branch
-		var useCacheDataType backends.DataType = backends.DataTypeBool
+		var useCacheDataType = backends.DataTypeBool
 		for _, info := range inputInfo {
 			if info.Name == "use_cache_branch" {
 				useCacheDataType = info.DataType
@@ -1058,7 +1058,7 @@ func LoadSpeech2SeqPipeline(
 	// Load the tokenizer
 	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
-		model.Close()
+		_ = model.Close()
 		return nil, "", fmt.Errorf("loading tokenizer: %w", err)
 	}
 

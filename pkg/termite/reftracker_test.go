@@ -132,7 +132,7 @@ func TestRefTracker_MultipleOrphans(t *testing.T) {
 	assert.Len(t, orphans, 3)
 
 	for _, fn := range orphans {
-		fn()
+		_ = fn()
 	}
 	assert.Equal(t, []int{0, 1, 2}, closed)
 }

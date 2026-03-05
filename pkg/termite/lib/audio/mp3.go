@@ -56,8 +56,8 @@ func ParseMP3(data []byte) ([]float32, Format, error) {
 	reader := bytes.NewReader(pcm)
 	for i := range numFrames {
 		var left, right int16
-		binary.Read(reader, binary.LittleEndian, &left)
-		binary.Read(reader, binary.LittleEndian, &right)
+		_ = binary.Read(reader, binary.LittleEndian, &left)
+		_ = binary.Read(reader, binary.LittleEndian, &right)
 		// Downmix stereo to mono and normalize to [-1, 1]
 		samples[i] = float32((float64(left)+float64(right))/2.0) / 32768.0
 	}

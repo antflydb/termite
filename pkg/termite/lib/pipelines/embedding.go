@@ -146,8 +146,7 @@ func LoadEmbeddingModelConfig(modelPath string) (*EmbeddingModelConfig, error) {
 	// where model.onnx is the text encoder. Otherwise, model.onnx is the only encoder.
 	if config.TextEncoderFile == filepath.Join(modelPath, "model.onnx") && config.VisualEncoderFile != "" {
 		// Keep text encoder as model.onnx for multimodal
-	} else if config.TextEncoderFile != "" && config.VisualEncoderFile == "" {
-		// Text-only model - model.onnx is the text encoder
+	} else if config.TextEncoderFile != "" && config.VisualEncoderFile == "" { //nolint:staticcheck // SA9003: intentionally empty branch for text-only model
 	}
 
 	// Load configuration from config.json
@@ -505,10 +504,10 @@ func (p *EmbeddingPipeline) EmbedBatch(ctx context.Context, inputs *backends.Mod
 
 	// Get embeddings - either from pre-computed or pool from hidden states
 	var embeddings [][]float32
-	if output.Embeddings != nil && len(output.Embeddings) > 0 {
+	if len(output.Embeddings) > 0 {
 		// Model already computed embeddings (pooling done in Forward)
 		embeddings = output.Embeddings
-	} else if output.LastHiddenState != nil && len(output.LastHiddenState) > 0 {
+	} else if len(output.LastHiddenState) > 0 {
 		// Pool hidden states to get embeddings
 		embeddings = backends.PoolHiddenStates(
 			output.LastHiddenState,
@@ -554,7 +553,7 @@ func (p *EmbeddingPipeline) applyProjection(ctx context.Context, embeddings [][]
 		return nil, fmt.Errorf("projection forward: %w", err)
 	}
 
-	if output.Embeddings != nil && len(output.Embeddings) > 0 {
+	if len(output.Embeddings) > 0 {
 		return output.Embeddings, nil
 	}
 
@@ -851,10 +850,10 @@ func LoadEmbeddingPipelines(
 	// Helper to close already-loaded pipelines on error
 	closePipelines := func() {
 		if textPipeline != nil {
-			textPipeline.Close()
+			_ = textPipeline.Close()
 		}
 		if visualPipeline != nil {
-			visualPipeline.Close()
+			_ = visualPipeline.Close()
 		}
 	}
 
@@ -925,7 +924,7 @@ func loadTextEmbeddingPipeline(
 		}
 		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
 		if err != nil {
-			model.Close()
+			_ = model.Close()
 			return nil, fmt.Errorf("loading text projection: %w", err)
 		}
 	}
@@ -979,7 +978,7 @@ func loadVisualEmbeddingPipeline(
 		}
 		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
 		if err != nil {
-			model.Close()
+			_ = model.Close()
 			return nil, fmt.Errorf("loading visual projection: %w", err)
 		}
 	}
@@ -1039,7 +1038,7 @@ func loadAudioEmbeddingPipeline(
 		}
 		projector, err = loader.Load(modelPath, backends.WithONNXFile(projRelPath))
 		if err != nil {
-			model.Close()
+			_ = model.Close()
 			return nil, fmt.Errorf("loading audio projection: %w", err)
 		}
 	}

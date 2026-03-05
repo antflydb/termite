@@ -465,7 +465,7 @@ func (r *GeneratorRegistry) ListVariants(modelName string) []string {
 // List returns all available generator model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *GeneratorRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

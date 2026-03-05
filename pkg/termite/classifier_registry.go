@@ -369,7 +369,7 @@ func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassi
 // List returns all available classifier model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *ClassifierRegistry) List() []string {
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()

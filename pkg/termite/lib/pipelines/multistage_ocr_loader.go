@@ -121,7 +121,7 @@ func LoadMultiStageOCRPipeline(
 	case "heatmap":
 		detProcessor = NewHeatmapPostProcessor(0.5, 50)
 	default:
-		detSession.Close()
+		_ = detSession.Close()
 		return nil, "", fmt.Errorf("unknown post-processor: %s", detStage.PostProcessor)
 	}
 
@@ -158,7 +158,7 @@ func LoadMultiStageOCRPipeline(
 			// Surya recognition: reuse existing Vision2SeqPipeline
 			recPipeline, _, err := LoadVision2SeqPipeline(modelPath, sessionManager, modelBackends)
 			if err != nil {
-				detSession.Close()
+				_ = detSession.Close()
 				return nil, "", fmt.Errorf("loading Vision2Seq recognizer: %w", err)
 			}
 			recognizer = NewVision2SeqRecognizer(recPipeline)
@@ -168,7 +168,7 @@ func LoadMultiStageOCRPipeline(
 			recPath := filepath.Join(modelPath, recStage.ModelFile)
 			recSession, err := factory.CreateSession(recPath)
 			if err != nil {
-				detSession.Close()
+				_ = detSession.Close()
 				return nil, "", fmt.Errorf("creating CTC recognition session: %w", err)
 			}
 
@@ -176,8 +176,8 @@ func LoadMultiStageOCRPipeline(
 			dictPath := filepath.Join(modelPath, recStage.CharDictFile)
 			charDict, err := loadCharDictFile(dictPath)
 			if err != nil {
-				detSession.Close()
-				recSession.Close()
+				_ = detSession.Close()
+				_ = recSession.Close()
 				return nil, "", fmt.Errorf("loading char dict: %w", err)
 			}
 
@@ -201,7 +201,7 @@ func LoadMultiStageOCRPipeline(
 			recognizer = NewCTCRecognizer(recSession, charDict, recImgProc)
 
 		default:
-			detSession.Close()
+			_ = detSession.Close()
 			return nil, "", fmt.Errorf("unknown recognition type: %s", recStage.Type)
 		}
 	}
@@ -227,7 +227,7 @@ func LoadMultiStageOCRPipeline(
 		layoutPath := filepath.Join(modelPath, layoutStage.ModelFile)
 		layoutSession, err := factory.CreateSession(layoutPath)
 		if err != nil {
-			pipeline.Close()
+			_ = pipeline.Close()
 			return nil, "", fmt.Errorf("creating layout session: %w", err)
 		}
 		pipeline.SetLayout(layoutSession)
@@ -239,7 +239,7 @@ func LoadMultiStageOCRPipeline(
 		orderPath := filepath.Join(modelPath, orderStage.ModelFile)
 		orderSession, err := factory.CreateSession(orderPath)
 		if err != nil {
-			pipeline.Close()
+			_ = pipeline.Close()
 			return nil, "", fmt.Errorf("creating order session: %w", err)
 		}
 		pipeline.SetOrder(orderSession)
@@ -326,7 +326,7 @@ func loadCharDictFile(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening char dict: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var dict []string
 	scanner := bufio.NewScanner(f)

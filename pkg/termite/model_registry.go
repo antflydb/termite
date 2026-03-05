@@ -64,11 +64,6 @@ type multimodalCaps struct {
 	hasAudioQuantized bool
 }
 
-// isMultimodal returns true if any multimodal capability was detected.
-func (m multimodalCaps) isMultimodal() bool {
-	return m.hasImage || m.hasAudio || m.hasImageQuantized || m.hasAudioQuantized
-}
-
 // detectMultimodalCapabilities checks a model directory for visual and audio encoder files.
 // Returns which modalities are available for both standard and quantized variants.
 // Also checks the onnx/ subdirectory for HuggingFace transformers.js models.
@@ -174,32 +169,6 @@ func discoverModelsInDir(modelsDir string, modelType modelregistry.ModelType, lo
 	}
 
 	return discovered, nil
-}
-
-// hasModelFiles checks if a directory contains model files
-func hasModelFiles(path string) bool {
-	// Check for common model indicators
-	indicators := []string{
-		"model.onnx",
-		"model_manifest.json",
-		"visual_model.onnx", // CLIP
-		"audio_model.onnx",  // CLAP
-		"encoder.onnx",      // seq2seq
-		"genai_config.json", // generator
-	}
-	for _, indicator := range indicators {
-		if fileExistsRegistry(filepath.Join(path, indicator)) {
-			return true
-		}
-	}
-	// Also check onnx/ subdirectory for HuggingFace transformers.js models
-	onnxSubdir := filepath.Join(path, "onnx")
-	for _, indicator := range []string{"audio_model.onnx", "text_model.onnx"} {
-		if fileExistsRegistry(filepath.Join(onnxSubdir, indicator)) {
-			return true
-		}
-	}
-	return false
 }
 
 // discoverSingleModel discovers a model from a directory

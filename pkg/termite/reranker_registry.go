@@ -375,7 +375,7 @@ func (r *RerankerRegistry) loadModel(info *RerankerModelInfo) (reranking.Model, 
 // Re-scans the models directory to pick up newly pulled models.
 func (r *RerankerRegistry) List() []string {
 	// Refresh discovery to pick up newly pulled models
-	r.discoverModels()
+	_ = r.discoverModels()
 
 	r.mu.RLock()
 	names := make([]string, 0, len(r.discovered))

@@ -107,7 +107,7 @@ func (a *AudioChunker) ChunkPCM(ctx context.Context, samples []float32, format a
 		var c chunking.Chunk
 		c.Id = uint32(len(chunks))
 		c.MimeType = "audio/wav"
-		c.FromBinaryContent(chunking.BinaryContent{
+		_ = c.FromBinaryContent(chunking.BinaryContent{
 			Data:        wavBytes,
 			StartTimeMs: startTimeMs,
 			EndTimeMs:   endTimeMs,

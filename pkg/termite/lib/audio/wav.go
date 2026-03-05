@@ -104,7 +104,7 @@ func ParseWAV(data []byte) ([]float32, Format, error) {
 			// Skip any extra format bytes
 			remaining := int(chunkSize) - 16
 			if remaining > 0 {
-				reader.Seek(int64(remaining), io.SeekCurrent)
+				_, _ = reader.Seek(int64(remaining), io.SeekCurrent)
 			}
 
 		case "data":
@@ -115,7 +115,7 @@ func ParseWAV(data []byte) ([]float32, Format, error) {
 
 		default:
 			// Skip unknown chunks
-			reader.Seek(int64(chunkSize), io.SeekCurrent)
+			_, _ = reader.Seek(int64(chunkSize), io.SeekCurrent)
 		}
 	}
 
@@ -158,15 +158,15 @@ func bytesToMonoSamples(data []byte, bitsPerSample, numChannels int) ([]float32,
 			switch bitsPerSample {
 			case 8:
 				var s uint8
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				sample = (float64(s) - 128) / 128.0
 			case 16:
 				var s int16
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				sample = float64(s) / 32768.0
 			case 24:
 				var buf [3]byte
-				reader.Read(buf[:])
+				_, _ = reader.Read(buf[:])
 				s := int32(buf[0]) | int32(buf[1])<<8 | int32(buf[2])<<16
 				if s&0x800000 != 0 {
 					s |= -0x1000000
@@ -174,7 +174,7 @@ func bytesToMonoSamples(data []byte, bitsPerSample, numChannels int) ([]float32,
 				sample = float64(s) / 8388608.0
 			case 32:
 				var s int32
-				binary.Read(reader, binary.LittleEndian, &s)
+				_ = binary.Read(reader, binary.LittleEndian, &s)
 				sample = float64(s) / 2147483648.0
 			default:
 				return nil, fmt.Errorf("unsupported bits per sample: %d", bitsPerSample)
@@ -211,24 +211,24 @@ func EncodeWAV(samples []float32, format Format) ([]byte, error) {
 
 	// RIFF header
 	buf.WriteString("RIFF")
-	binary.Write(buf, binary.LittleEndian, uint32(fileSize-8)) // file size minus RIFF header
+	_ = binary.Write(buf, binary.LittleEndian, uint32(fileSize-8)) // file size minus RIFF header
 	buf.WriteString("WAVE")
 
 	// fmt chunk
 	buf.WriteString("fmt ")
-	binary.Write(buf, binary.LittleEndian, uint32(16)) // chunk size
-	binary.Write(buf, binary.LittleEndian, uint16(1))  // PCM format
-	binary.Write(buf, binary.LittleEndian, uint16(format.NumChannels))
-	binary.Write(buf, binary.LittleEndian, uint32(format.SampleRate))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(16)) // chunk size
+	_ = binary.Write(buf, binary.LittleEndian, uint16(1))  // PCM format
+	_ = binary.Write(buf, binary.LittleEndian, uint16(format.NumChannels))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(format.SampleRate))
 	byteRate := format.SampleRate * format.NumChannels * bytesPerSample
-	binary.Write(buf, binary.LittleEndian, uint32(byteRate))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(byteRate))
 	blockAlign := format.NumChannels * bytesPerSample
-	binary.Write(buf, binary.LittleEndian, uint16(blockAlign))
-	binary.Write(buf, binary.LittleEndian, uint16(format.BitsPerSample))
+	_ = binary.Write(buf, binary.LittleEndian, uint16(blockAlign))
+	_ = binary.Write(buf, binary.LittleEndian, uint16(format.BitsPerSample))
 
 	// data chunk
 	buf.WriteString("data")
-	binary.Write(buf, binary.LittleEndian, uint32(dataSize))
+	_ = binary.Write(buf, binary.LittleEndian, uint32(dataSize))
 
 	// Write samples
 	for _, s := range samples {
@@ -245,16 +245,16 @@ func EncodeWAV(samples []float32, format Format) ([]byte, error) {
 			case 8:
 				// 8-bit WAV is unsigned
 				val := uint8(math.Round(float64(s)*127.0) + 128)
-				binary.Write(buf, binary.LittleEndian, val)
+				_ = binary.Write(buf, binary.LittleEndian, val)
 			case 16:
 				val := int16(math.Round(float64(s) * 32767.0))
-				binary.Write(buf, binary.LittleEndian, val)
+				_ = binary.Write(buf, binary.LittleEndian, val)
 			case 24:
 				val := int32(math.Round(float64(s) * 8388607.0))
 				buf.Write([]byte{byte(val), byte(val >> 8), byte(val >> 16)})
 			case 32:
 				val := int32(math.Round(float64(s) * 2147483647.0))
-				binary.Write(buf, binary.LittleEndian, val)
+				_ = binary.Write(buf, binary.LittleEndian, val)
 			}
 		}
 	}

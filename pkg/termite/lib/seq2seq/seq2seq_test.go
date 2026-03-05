@@ -103,7 +103,7 @@ func TestIsSeq2SeqModel(t *testing.T) {
 	assert.True(t, IsSeq2SeqModel(tmpDir), "Directory with all seq2seq files should be a seq2seq model")
 
 	// Test 3: Missing one file should return false
-	os.Remove(filepath.Join(tmpDir, "encoder.onnx"))
+	_ = os.Remove(filepath.Join(tmpDir, "encoder.onnx"))
 	assert.False(t, IsSeq2SeqModel(tmpDir), "Directory missing encoder.onnx should not be a seq2seq model")
 }
 

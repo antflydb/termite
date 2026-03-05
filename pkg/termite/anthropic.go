@@ -20,7 +20,6 @@ import (
 	stdjson "encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	json "github.com/antflydb/antfly-go/libaf/json"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
@@ -380,7 +379,7 @@ func mapAnthropicStopReason(finishReason string, hasToolCalls bool) string {
 func writeAnthropicError(w http.ResponseWriter, status int, errType, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	stdjson.NewEncoder(w).Encode(map[string]any{
+	_ = stdjson.NewEncoder(w).Encode(map[string]any{
 		"type": "error",
 		"error": map[string]string{
 			"type":    errType,
@@ -723,36 +722,6 @@ func (ln *TermiteNode) handleAnthropicStreaming(
 // sendAnthropicSSE writes a single Anthropic SSE event: event: <type>\ndata: <json>\n\n
 func sendAnthropicSSE(w http.ResponseWriter, flusher http.Flusher, eventType string, data any) {
 	payload, _ := json.Marshal(data)
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, payload)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, payload)
 	flusher.Flush()
 }
-
-// --- Helpers for testing ---
-
-// convertAnthropicRequest translates an anthropicRequest into internal generation
-// types. Exported for testing via the unexported request type's fields.
-func (ln *TermiteNode) convertAnthropicRequest(req anthropicRequest) ([]generation.Message, generation.GenerateOptions, error) {
-	messages, err := convertAnthropicMessages(req)
-	if err != nil {
-		return nil, generation.GenerateOptions{}, err
-	}
-
-	opts := generation.GenerateOptions{
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		TopK:        req.TopK,
-		StopTokens:  req.StopSequences,
-	}
-	if opts.Temperature == 0 {
-		opts.Temperature = 1.0
-	}
-	if opts.TopP == 0 {
-		opts.TopP = 1.0
-	}
-
-	return messages, opts, nil
-}
-
-// anthropicSSETimestamp is used internally; exposed for testing.
-var anthropicSSETimestamp = func() int64 { return time.Now().Unix() }

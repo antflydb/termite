@@ -120,7 +120,7 @@ func NewPooledPipelineGenerator(
 			// Clean up already-created pipelines
 			for j := 0; j < i; j++ {
 				if pipelineSlice[j] != nil {
-					pipelineSlice[j].Close()
+					_ = pipelineSlice[j].Close()
 				}
 			}
 			return nil, "", fmt.Errorf("loading text generation pipeline %d: %w", i, err)
@@ -409,11 +409,11 @@ func messagesToPrompt(messages []Message) string {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			prompt.WriteString(fmt.Sprintf("System: %s\n\n", msg.GetTextContent()))
+			fmt.Fprintf(&prompt, "System: %s\n\n", msg.GetTextContent())
 		case "user":
-			prompt.WriteString(fmt.Sprintf("User: %s\n\n", msg.GetTextContent()))
+			fmt.Fprintf(&prompt, "User: %s\n\n", msg.GetTextContent())
 		case "assistant":
-			prompt.WriteString(fmt.Sprintf("Assistant: %s\n\n", msg.GetTextContent()))
+			fmt.Fprintf(&prompt, "Assistant: %s\n\n", msg.GetTextContent())
 		default:
 			prompt.WriteString(msg.GetTextContent() + "\n\n")
 		}

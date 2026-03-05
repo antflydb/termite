@@ -254,7 +254,7 @@ func NewPooledGLiNER(
 			// Clean up already-created pipelines
 			for j := 0; j < i; j++ {
 				if pipelinesList[j] != nil {
-					pipelinesList[j].Close()
+					_ = pipelinesList[j].Close()
 				}
 			}
 			logger.Error("Failed to create GLiNER pipeline",
@@ -310,7 +310,7 @@ func (p *PooledGLiNER) Close() error {
 	p.logger.Info("Closing PooledGLiNER")
 	for _, pipeline := range p.pipelineList {
 		if pipeline != nil {
-			pipeline.Close()
+			_ = pipeline.Close()
 		}
 	}
 	p.pipelineList = nil

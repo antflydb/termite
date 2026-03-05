@@ -1292,22 +1292,6 @@ func generateCompletionID() string {
 	return "chatcmpl-" + hex.EncodeToString(b)
 }
 
-// stringValue returns the string value of a pointer, or empty string if nil.
-func stringValue(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-// boolValue returns the bool value of a pointer, or false if nil.
-func boolValue(b *bool) bool {
-	if b == nil {
-		return false
-	}
-	return *b
-}
-
 // convertChatMessage converts an API ChatMessage to a generation.Message.
 // Supports both simple string content and OpenAI-format array of content parts.
 func convertChatMessage(msg ChatMessage) generation.Message {
@@ -1656,7 +1640,7 @@ func (ln *TermiteNode) handleStreamingGenerate(
 	if !ok {
 		ln.logger.Error("generator does not support streaming",
 			zap.String("model", req.Model))
-		fmt.Fprintf(w, "data: {\"error\": \"generator does not support streaming\"}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"error\": \"generator does not support streaming\"}\n\n")
 		flusher.Flush()
 		return
 	}
@@ -1667,7 +1651,8 @@ func (ln *TermiteNode) handleStreamingGenerate(
 		ln.logger.Error("failed to start streaming generation",
 			zap.String("model", req.Model),
 			zap.Error(err))
-		fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
+		errData, _ := json.Marshal(map[string]string{"error": err.Error()})
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", errData)
 		flusher.Flush()
 		return
 	}
@@ -1688,7 +1673,7 @@ func (ln *TermiteNode) handleStreamingGenerate(
 		},
 	}
 	data, _ := json.Marshal(firstChunk)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 
 	// Stream tokens as they arrive
@@ -1711,7 +1696,7 @@ func (ln *TermiteNode) handleStreamingGenerate(
 			},
 		}
 		data, _ := json.Marshal(chunk)
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 		flusher.Flush()
 	}
 
@@ -1722,7 +1707,8 @@ func (ln *TermiteNode) handleStreamingGenerate(
 			ln.logger.Error("streaming generation error",
 				zap.String("model", req.Model),
 				zap.Error(err))
-			fmt.Fprintf(w, "data: {\"error\": \"%s\"}\n\n", err.Error())
+			errMsg, _ := json.Marshal(err.Error())
+			_, _ = fmt.Fprintf(w, "data: {\"error\": %s}\n\n", errMsg)
 			flusher.Flush()
 			return
 		}
@@ -1748,11 +1734,11 @@ func (ln *TermiteNode) handleStreamingGenerate(
 		},
 	}
 	data, _ = json.Marshal(finalChunk)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
 
 	// Send [DONE] signal
-	fmt.Fprintf(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
 	ln.logger.Info("streaming generation completed",
