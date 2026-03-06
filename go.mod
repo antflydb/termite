@@ -11,7 +11,7 @@ replace (
 
 require (
 	github.com/ajroetker/go-highway v0.0.11
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260304202045-da53f6505f4a
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260305230757-2740be37c739
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0

@@ -51,6 +51,11 @@ const (
 	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
 )
 
+// gliner2ExportNumLabels is the fixed number of [E] label tokens the GLiNER2
+// ONNX model expects. The count_embed transformer's MultiheadAttention bakes
+// this as a constant during tracing, so we must always pad to exactly this many.
+const gliner2ExportNumLabels = 5
+
 // GLiNERModelConfig holds parsed configuration for a GLiNER model.
 type GLiNERModelConfig struct {
 	// Path to the model directory
@@ -455,27 +460,69 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 		return nil, nil
 	}
 
-	// Build the prompt with labels
-	// GLiNER typically expects: <<entity_type1>><<entity_type2>>... followed by text tokens
-	prompt := p.buildPrompt(labels)
+	// GLiNER2: structured schema prompt with all labels, single pass.
+	// Output is [1, num_words, max_width, num_labels] with per-label dot-product scores.
+	// The ONNX model supports exactly gliner2ExportNumLabels (5) labels per pass.
+	// For >5 labels, we run multiple passes and merge results.
+	if p.IsGLiNER2() {
+		const maxLabelsPerPass = gliner2ExportNumLabels
+		var allEntities []GLiNEREntity
 
-	// Tokenize prompt and text
-	promptTokens := p.Tokenizer.Encode(prompt)
+		for i := 0; i < len(labels); i += maxLabelsPerPass {
+			end := i + maxLabelsPerPass
+			if end > len(labels) {
+				end = len(labels)
+			}
+			batchLabels := labels[i:end]
+
+			inputs, err := p.buildGLiNER2Inputs(words, batchLabels)
+			if err != nil {
+				return nil, fmt.Errorf("building GLiNER2 inputs: %w", err)
+			}
+
+			outputs, err := p.Session.Run(inputs)
+			if err != nil {
+				return nil, fmt.Errorf("running GLiNER2 inference: %w", err)
+			}
+
+			entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, batchLabels, text, threshold, false)
+			if err != nil {
+				return nil, fmt.Errorf("parsing GLiNER2 outputs: %w", err)
+			}
+
+			allEntities = append(allEntities, entities...)
+		}
+
+		if flatNER && len(allEntities) > 1 {
+			allEntities = p.removeOverlappingEntities(allEntities)
+		}
+
+		sort.Slice(allEntities, func(i, j int) bool {
+			if allEntities[i].Start != allEntities[j].Start {
+				return allEntities[i].Start < allEntities[j].Start
+			}
+			return allEntities[i].End < allEntities[j].End
+		})
+
+		return allEntities, nil
+	}
+
+	// GLiNER v1: all labels in one prompt, output has per-label scores
+	// via trained span-label dot products: [batch, num_spans, num_labels].
 	textTokens := p.tokenizeWords(words)
+	prompt := p.buildPrompt(labels)
+	promptTokens := p.Tokenizer.Encode(prompt)
 
-	// Build model inputs
 	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
 	if err != nil {
 		return nil, fmt.Errorf("building inputs: %w", err)
 	}
 
-	// Run model inference
 	outputs, err := p.Session.Run(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("running inference: %w", err)
 	}
 
-	// Parse outputs to extract entities
 	entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text, threshold, flatNER)
 	if err != nil {
 		return nil, fmt.Errorf("parsing outputs: %w", err)
@@ -520,43 +567,50 @@ func isWordChar(r rune) bool {
 	return r != ' ' && r != '\t' && r != '\n' && r != '\r'
 }
 
-// buildPrompt constructs the label prompt for GLiNER.
-// GLiNER ONNX models expect labels in format: <<ENT>>label1<<SEP>><<ENT>>label2<<SEP>>...
-// where <<ENT>> and <<SEP>> are special tokens in the vocabulary.
+// buildPrompt constructs the label prompt for GLiNER NER.
+//
+// GLiNER v1 uses: <<ENT>>label<<SEP>> (special tokens 128002/128003)
+// GLiNER2 uses:   [E]label[SEP_TEXT]  (special tokens 128005/128002)
 func (p *GLiNERPipeline) buildPrompt(labels []string) string {
-	var sb strings.Builder
-	for _, label := range labels {
-		sb.WriteString("<<ENT>>")
-		sb.WriteString(label)
-		sb.WriteString("<<SEP>>")
-	}
-	return sb.String()
+	return p.buildPromptForTask(labels, GLiNER2TaskNER)
 }
 
-// buildPromptForTask constructs the label prompt for different GLiNER2 tasks.
-// Each task type uses a different prompt format:
-// - NER: <<ENT>>label<<SEP>>
-// - Relations: <<REL>>entity::relation<<SEP>>
-// - Classification: <<CLS>>label<<SEP>>
+// buildPromptForTask constructs the label prompt for different GLiNER tasks.
+//
+// GLiNER v1 only supports NER with: <<ENT>>label<<SEP>>
+//
+// GLiNER2 supports multiple tasks with different prefix tokens:
+//   - NER:            [E]label[SEP_TEXT]
+//   - Relations:      [R]entity::relation[SEP_TEXT]
+//   - Classification: [C]label[SEP_TEXT]
 func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType GLiNER2TaskType) string {
 	var sb strings.Builder
 
-	var prefix string
-	switch taskType {
-	case GLiNER2TaskNER:
-		prefix = "<<ENT>>"
-	case GLiNER2TaskRelations:
-		prefix = "<<REL>>"
-	case GLiNER2TaskClassification:
-		prefix = "<<CLS>>"
-	default:
-		prefix = "<<ENT>>"
-	}
+	if p.IsGLiNER2() {
+		var prefix string
+		switch taskType {
+		case GLiNER2TaskNER:
+			prefix = "[E]"
+		case GLiNER2TaskRelations:
+			prefix = "[R]"
+		case GLiNER2TaskClassification:
+			prefix = "[C]"
+		default:
+			prefix = "[E]"
+		}
 
-	for _, label := range labels {
-		sb.WriteString(prefix)
-		sb.WriteString(label)
-		sb.WriteString("<<SEP>>")
+		for _, label := range labels {
+			sb.WriteString(prefix)
+			sb.WriteString(label)
+			sb.WriteString("[SEP_TEXT]")
+		}
+	} else {
+		// GLiNER v1: all tasks use <<ENT>>label<<SEP>>
+		for _, label := range labels {
+			sb.WriteString("<<ENT>>")
+			sb.WriteString(label)
+			sb.WriteString("<<SEP>>")
+		}
 	}
 
 	return sb.String()
@@ -779,7 +833,9 @@ func (p *GLiNERPipeline) ClassifyText(
 }
 
 // classifySingleText classifies a single text against the given labels.
-// We use the span-based approach where we score each label against the entire text.
+//
+// GLiNER2's binary classifier outputs [batch, num_spans, 1] — one score per span.
+// We run inference once per label and use the max span score as that label's confidence.
 func (p *GLiNERPipeline) classifySingleText(
 	ctx context.Context,
 	text string,
@@ -790,177 +846,154 @@ func (p *GLiNERPipeline) classifySingleText(
 		return nil, nil
 	}
 
-	// For classification, we use the same approach as NER but interpret results differently.
-	// Each label is treated as a potential "entity type" for the entire text span.
-	// We use the classification prompt format.
-	prompt := p.buildPromptForTask(labels, GLiNER2TaskClassification)
-
-	// Tokenize
 	words, _, _ := p.splitIntoWords(text)
 	if len(words) == 0 {
 		return nil, nil
 	}
 
-	promptTokens := p.Tokenizer.Encode(prompt)
-	textTokens := p.tokenizeWords(words)
+	// GLiNER2: use structured schema with [E] tokens (same as NER path).
+	// Classification score = max span logit per label across all spans.
+	if p.IsGLiNER2() {
+		results := make([]GLiNER2Classification, 0, len(labels))
 
-	// Build inputs
-	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
-	if err != nil {
-		return nil, fmt.Errorf("building inputs: %w", err)
-	}
-
-	// Run inference
-	outputs, err := p.Session.Run(inputs)
-	if err != nil {
-		return nil, fmt.Errorf("running inference: %w", err)
-	}
-
-	// Parse classification outputs
-	classifications := p.parseClassificationOutputs(outputs, labels, config)
-
-	return classifications, nil
-}
-
-// parseClassificationOutputs extracts classification results from model output.
-// For classification, we look at the highest-scoring span for each label
-// and use that as the classification confidence.
-func (p *GLiNERPipeline) parseClassificationOutputs(
-	outputs []backends.NamedTensor,
-	labels []string,
-	config *GLiNER2ClassificationConfig,
-) []GLiNER2Classification {
-	// Find the logits tensor
-	var logits []float32
-	var logitsShape []int64
-
-	for _, out := range outputs {
-		if out.Name == "logits" || len(outputs) == 1 {
-			switch data := out.Data.(type) {
-			case []float32:
-				logits = data
-				logitsShape = out.Shape
+		for i := 0; i < len(labels); i += gliner2ExportNumLabels {
+			end := i + gliner2ExportNumLabels
+			if end > len(labels) {
+				end = len(labels)
 			}
-			break
-		}
-	}
+			batchLabels := labels[i:end]
 
-	if logits == nil {
-		return nil
-	}
-
-	// For GLiNER2 classification, we aggregate span scores per label
-	// The output shape is typically [batch, num_spans, num_labels] or [batch, num_spans, 1]
-	// For classification with single span (whole text), we want the max score per label
-
-	numLabels := len(labels)
-	results := make([]GLiNER2Classification, 0, numLabels)
-
-	if len(logitsShape) >= 3 {
-		// Shape: [batch, num_spans, ...]
-		numSpans := int(logitsShape[1])
-
-		// For each label, find the maximum score across all spans
-		// In classification mode, we typically have one label encoded per run,
-		// so we need to interpret the output based on how we encoded the labels
-		if numLabels == 1 || (len(logitsShape) > 2 && logitsShape[2] == 1) {
-			// Single label per call or single output channel
-			// Find max score across spans and apply sigmoid
-			maxScore := float32(-1000)
-			for i := 0; i < numSpans && i < len(logits); i++ {
-				if logits[i] > maxScore {
-					maxScore = logits[i]
-				}
+			inputs, err := p.buildGLiNER2Inputs(words, batchLabels)
+			if err != nil {
+				return nil, fmt.Errorf("building GLiNER2 classification inputs: %w", err)
 			}
 
-			// Apply sigmoid to convert logit to probability
-			score := sigmoid(maxScore)
-
-			for _, label := range labels {
-				if config.MultiLabel || score >= config.Threshold {
-					results = append(results, GLiNER2Classification{
-						Label: label,
-						Score: score,
-					})
-				}
-			}
-		} else {
-			// Multiple labels with separate output channels
-			labelsPerSpan := 1
-			if len(logitsShape) > 2 {
-				labelsPerSpan = int(logitsShape[2])
+			outputs, err := p.Session.Run(inputs)
+			if err != nil {
+				return nil, fmt.Errorf("running GLiNER2 classification inference: %w", err)
 			}
 
-			for labelIdx, label := range labels {
-				if labelIdx >= labelsPerSpan {
-					break
+			// Extract per-label max scores from [1, num_words, max_width, num_labels]
+			for li, label := range batchLabels {
+				score := p.maxLabelScore(outputs, li)
+				if config.MultiLabel && score < config.Threshold {
+					continue
 				}
-
-				// Find max score for this label across all spans
-				maxScore := float32(-1000)
-				for spanIdx := range numSpans {
-					idx := spanIdx*labelsPerSpan + labelIdx
-					if idx < len(logits) && logits[idx] > maxScore {
-						maxScore = logits[idx]
-					}
-				}
-
-				score := sigmoid(maxScore)
 				results = append(results, GLiNER2Classification{
 					Label: label,
 					Score: score,
 				})
 			}
 		}
-	} else {
-		// Fallback: treat as flat array of scores
-		for i, label := range labels {
-			if i >= len(logits) {
-				break
-			}
-			score := sigmoid(logits[i])
-			results = append(results, GLiNER2Classification{
-				Label: label,
-				Score: score,
-			})
-		}
-	}
 
-	// Apply filtering based on config
-	if !config.MultiLabel {
-		// Single-label: return only the highest scoring
-		if len(results) > 0 {
-			sort.Slice(results, func(i, j int) bool {
-				return results[i].Score > results[j].Score
-			})
-			if config.TopK > 0 && len(results) > config.TopK {
-				results = results[:config.TopK]
-			} else {
-				results = results[:1]
-			}
-		}
-	} else {
-		// Multi-label: filter by threshold
-		filtered := make([]GLiNER2Classification, 0, len(results))
-		for _, r := range results {
-			if r.Score >= config.Threshold {
-				filtered = append(filtered, r)
-			}
-		}
-		results = filtered
-
-		// Sort by score descending
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Score > results[j].Score
 		})
 
-		// Apply TopK if configured
-		if config.TopK > 0 && len(results) > config.TopK {
+		if !config.MultiLabel && len(results) > 0 {
+			k := 1
+			if config.TopK > 0 {
+				k = config.TopK
+			}
+			if len(results) > k {
+				results = results[:k]
+			}
+		} else if config.TopK > 0 && len(results) > config.TopK {
 			results = results[:config.TopK]
 		}
+
+		return results, nil
 	}
 
-	return results
+	// GLiNER v1: per-label inference with old prompt format.
+	textTokens := p.tokenizeWords(words)
+
+	results := make([]GLiNER2Classification, 0, len(labels))
+	for _, label := range labels {
+		singleLabel := []string{label}
+		prompt := p.buildPromptForTask(singleLabel, GLiNER2TaskClassification)
+		promptTokens := p.Tokenizer.Encode(prompt)
+
+		inputs, err := p.buildInputs(promptTokens, textTokens, words, singleLabel)
+		if err != nil {
+			return nil, fmt.Errorf("building inputs for label %s: %w", label, err)
+		}
+
+		outputs, err := p.Session.Run(inputs)
+		if err != nil {
+			return nil, fmt.Errorf("running inference for label %s: %w", label, err)
+		}
+
+		score := p.maxSpanScore(outputs)
+		if config.MultiLabel && score < config.Threshold {
+			continue
+		}
+
+		results = append(results, GLiNER2Classification{
+			Label: label,
+			Score: score,
+		})
+	}
+
+	// Sort by score descending
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	// Apply single-label / TopK filtering
+	if !config.MultiLabel && len(results) > 0 {
+		k := 1
+		if config.TopK > 0 {
+			k = config.TopK
+		}
+		if len(results) > k {
+			results = results[:k]
+		}
+	} else if config.TopK > 0 && len(results) > config.TopK {
+		results = results[:config.TopK]
+	}
+
+	return results, nil
+}
+
+// maxLabelScore extracts the maximum sigmoid-activated score for a specific label
+// from GLiNER2 output with shape [1, num_words, max_width, num_labels].
+func (p *GLiNERPipeline) maxLabelScore(outputs []backends.NamedTensor, labelIdx int) float32 {
+	numLabels := gliner2ExportNumLabels
+	for _, out := range outputs {
+		if out.Name == "logits" || len(outputs) == 1 {
+			if logits, ok := out.Data.([]float32); ok {
+				maxLogit := float32(-1000)
+				// logits is flat: [num_words * max_width * num_labels]
+				// stride through by numLabels, picking labelIdx
+				for i := labelIdx; i < len(logits); i += numLabels {
+					if logits[i] > maxLogit {
+						maxLogit = logits[i]
+					}
+				}
+				return sigmoid(maxLogit)
+			}
+		}
+	}
+	return 0
+}
+
+// maxSpanScore extracts the maximum sigmoid-activated span score from model outputs.
+func (p *GLiNERPipeline) maxSpanScore(outputs []backends.NamedTensor) float32 {
+	for _, out := range outputs {
+		if out.Name == "logits" || len(outputs) == 1 {
+			if logits, ok := out.Data.([]float32); ok {
+				maxLogit := float32(-1000)
+				for _, v := range logits {
+					if v > maxLogit {
+						maxLogit = v
+					}
+				}
+				return sigmoid(maxLogit)
+			}
+		}
+	}
+	return 0
 }
 
 // sigmoid converts a logit to a probability.
@@ -977,7 +1010,171 @@ func (p *GLiNERPipeline) tokenizeWords(words []string) [][]int {
 	return result
 }
 
-// buildInputs constructs the model inputs for GLiNER inference.
+// buildGLiNER2Inputs constructs inputs for GLiNER2 models.
+//
+// GLiNER2 uses a structured schema prompt format:
+//
+//	( [P] entities ( [E] label1 [E] label2 ... ) ) [SEP_TEXT] word1 word2 ...
+//
+// Each part is tokenized individually (not as a single string).
+// Text words are lowercased before tokenization.
+// No [CLS]/[SEP] wrapping — the model was trained without them.
+//
+// The ONNX model takes 4 inputs:
+//   - input_ids: [1, seq_len]
+//   - attention_mask: [1, seq_len]
+//   - words_mask: [1, seq_len] (>0 for text tokens, value = word index 1-indexed)
+//   - span_idx: [1, num_spans, 2] (word-level span indices)
+//
+// Output: [1, num_words, max_width, num_labels]
+func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]backends.NamedTensor, error) {
+	// The ONNX model's count_embed transformer has a fixed num_labels dimension
+	// baked in during export. We must always provide exactly that many [E] tokens.
+	// If fewer labels are requested, pad with dummy labels.
+	// The output's num_labels dimension will be gliner2ExportNumLabels;
+	// we only use the first len(labels) columns.
+	if len(labels) > gliner2ExportNumLabels {
+		return nil, fmt.Errorf("GLiNER2 ONNX model supports at most %d labels per pass, got %d", gliner2ExportNumLabels, len(labels))
+	}
+	paddedLabels := make([]string, gliner2ExportNumLabels)
+	copy(paddedLabels, labels)
+	for i := len(labels); i < gliner2ExportNumLabels; i++ {
+		paddedLabels[i] = "_pad_"
+	}
+
+	// Build schema parts: ( [P] entities ( [E] label1 [E] label2 ... ) ) [SEP_TEXT]
+	schemaParts := []string{"(", "[P]", "entities", "("}
+	for _, label := range paddedLabels {
+		schemaParts = append(schemaParts, "[E]", label)
+	}
+	schemaParts = append(schemaParts, ")", ")", "[SEP_TEXT]")
+
+	// Tokenize each schema part individually, stripping CLS/SEP added by tokenizer
+	var schemaTokenIDs []int
+	for _, part := range schemaParts {
+		tokens := p.Tokenizer.Encode(part)
+		for _, tok := range tokens {
+			if tok != 0 && tok != 1 && tok != 2 { // Skip PAD, CLS, SEP
+				schemaTokenIDs = append(schemaTokenIDs, tok)
+			}
+		}
+	}
+
+	// Tokenize text words (lowercased, each word individually)
+	type wordTokenInfo struct {
+		tokens   []int
+		firstIdx int // index of first sub-token in final sequence
+	}
+	wordInfos := make([]wordTokenInfo, len(words))
+	for i, word := range words {
+		tokens := p.Tokenizer.Encode(strings.ToLower(word))
+		clean := make([]int, 0, len(tokens))
+		for _, tok := range tokens {
+			if tok != 0 && tok != 1 && tok != 2 {
+				clean = append(clean, tok)
+			}
+		}
+		wordInfos[i] = wordTokenInfo{tokens: clean}
+	}
+
+	// Count total text sub-tokens
+	totalTextSubTokens := 0
+	for _, wi := range wordInfos {
+		totalTextSubTokens += len(wi.tokens)
+	}
+
+	// Build full sequence
+	seqLen := len(schemaTokenIDs) + totalTextSubTokens
+	maxLen := p.Config.MaxLength
+	if seqLen > maxLen {
+		seqLen = maxLen
+	}
+
+	inputIDs := make([]int64, seqLen)
+	attentionMask := make([]int64, seqLen)
+	wordsMask := make([]int64, seqLen)
+
+	// Fill schema tokens
+	idx := 0
+	for _, tok := range schemaTokenIDs {
+		if idx >= seqLen {
+			break
+		}
+		inputIDs[idx] = int64(tok)
+		attentionMask[idx] = 1
+		idx++
+	}
+
+	// Fill text tokens with word tracking
+	numWords := 0
+	for i := range wordInfos {
+		if idx >= seqLen {
+			break
+		}
+		wordInfos[i].firstIdx = idx
+		for j, tok := range wordInfos[i].tokens {
+			if idx >= seqLen {
+				break
+			}
+			inputIDs[idx] = int64(tok)
+			attentionMask[idx] = 1
+			wordsMask[idx] = int64(i + 1) // 1-indexed word ID
+			_ = j
+			idx++
+		}
+		numWords = i + 1
+	}
+
+	// Pad remaining
+	for ; idx < seqLen; idx++ {
+		inputIDs[idx] = 0
+		attentionMask[idx] = 0
+	}
+
+	// Build word-level span indices
+	maxWidth := p.PipelineConfig.MaxWidth
+	numSpans := numWords * maxWidth
+	if numSpans == 0 {
+		numSpans = maxWidth
+	}
+	spanIdx := make([]int64, numSpans*2)
+
+	for w := 0; w < numWords; w++ {
+		for wi := 0; wi < maxWidth; wi++ {
+			si := w*maxWidth + wi
+			endWord := w + wi
+			if endWord < numWords {
+				spanIdx[si*2] = int64(w)
+				spanIdx[si*2+1] = int64(endWord)
+			}
+		}
+	}
+
+	return []backends.NamedTensor{
+		{
+			Name:  "input_ids",
+			Shape: []int64{1, int64(seqLen)},
+			Data:  inputIDs,
+		},
+		{
+			Name:  "attention_mask",
+			Shape: []int64{1, int64(seqLen)},
+			Data:  attentionMask,
+		},
+		{
+			Name:  "words_mask",
+			Shape: []int64{1, int64(seqLen)},
+			Data:  wordsMask,
+		},
+		{
+			Name:  "span_idx",
+			Shape: []int64{1, int64(numSpans), 2},
+			Data:  spanIdx,
+		},
+	}, nil
+}
+
+// buildInputs constructs the model inputs for GLiNER v1 inference.
 func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, words []string, labels []string) ([]backends.NamedTensor, error) {
 	// Count total text tokens (excluding special tokens added by tokenizer)
 	totalTextTokens := 0
@@ -1042,11 +1239,17 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	// Track position of first text token
 	textStartIdx := idx
 
-	// Add text tokens with word tracking
-	// Skip special tokens (CLS=1, SEP=2, PAD=0) that tokenizer may add to each word
+	// Add text tokens with word tracking.
+	// Track per-word sub-token boundaries so we can build word-level spans.
+	// wordFirstToken[w] = index of first sub-token for word w (relative to textStartIdx)
+	// wordLastToken[w]  = index of last sub-token for word w (relative to textStartIdx)
+	wordFirstToken := make([]int, 0, len(textTokens))
+	wordLastToken := make([]int, 0, len(textTokens))
+
 	wordIdx := int64(1) // Start at 1 (0 reserved for non-word tokens)
 	for _, wordTokens := range textTokens {
-		hasRealToken := false
+		first := -1
+		last := -1
 		for _, tok := range wordTokens {
 			// Skip special tokens that tokenizer adds
 			if tok == 0 || tok == 1 || tok == 2 {
@@ -1055,13 +1258,19 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 			if idx >= seqLen-1 {
 				break
 			}
+			relPos := idx - textStartIdx
+			if first < 0 {
+				first = relPos
+			}
+			last = relPos
 			inputIDs[idx] = int64(tok)
 			attentionMask[idx] = 1
 			wordsMask[idx] = wordIdx
 			idx++
-			hasRealToken = true
 		}
-		if hasRealToken {
+		if first >= 0 {
+			wordFirstToken = append(wordFirstToken, first)
+			wordLastToken = append(wordLastToken, last)
 			wordIdx++
 		}
 		if idx >= seqLen-1 {
@@ -1069,9 +1278,10 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 		}
 	}
 
-	// Record text length (number of text tokens)
+	// Record text length (number of sub-tokens)
 	numTextTokens := idx - textStartIdx
 	textLengths[0] = int64(numTextTokens)
+	numWords := len(wordFirstToken)
 
 	// Add final separator
 	if idx < seqLen {
@@ -1086,32 +1296,60 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 		attentionMask[idx] = 0
 	}
 
-	// Build span indices as a flat list of [numTextTokens * maxWidth] spans
-	// The model operates on token positions, not word positions
-	// It internally reshapes to [numTextTokens, maxWidth, ...]
 	maxWidth := p.PipelineConfig.MaxWidth
 
-	// Ensure at least 1 token
-	if numTextTokens < 1 {
-		numTextTokens = 1
-	}
+	var numSpans int
+	var spanIdx []int64
+	var spanMask []bool
 
-	// Total number of spans = numTextTokens * maxWidth (fixed grid)
-	numSpans := numTextTokens * maxWidth
+	if p.IsGLiNER2() {
+		// GLiNER2: Build span indices at word level.
+		// The ONNX wrapper uses torch.gather on span_idx positions directly,
+		// so we map word pairs to their sub-token boundaries.
+		// For span (w, w+wi): start = first sub-token of word w, end = last sub-token of word w+wi.
+		// This gives numSpans = numWords * maxWidth, aligned with parseOutputs.
+		if numWords < 1 {
+			numWords = 1
+		}
+		numSpans = numWords * maxWidth
+		spanIdx = make([]int64, numSpans*2)
+		spanMask = make([]bool, numSpans)
 
-	// Build span_idx as [1, numSpans, 2] and span_mask as [1, numSpans]
-	spanIdx := make([]int64, numSpans*2)
-	spanMask := make([]bool, numSpans)
+		for w := 0; w < numWords; w++ {
+			for wi := range maxWidth {
+				spanI := w*maxWidth + wi
+				endWord := w + wi
+				if w < len(wordFirstToken) && endWord < len(wordLastToken) {
+					spanIdx[spanI*2] = int64(wordFirstToken[w])
+					spanIdx[spanI*2+1] = int64(wordLastToken[endWord])
+					spanMask[spanI] = true
+				} else {
+					spanIdx[spanI*2] = 0
+					spanIdx[spanI*2+1] = 0
+					spanMask[spanI] = false
+				}
+			}
+		}
+	} else {
+		// GLiNER v1: Build span indices at sub-token level.
+		// The v1 ONNX model has an internal Reshape that expects
+		// numSpans = numTextTokens * maxWidth.
+		if numTextTokens < 1 {
+			numTextTokens = 1
+		}
+		numSpans = numTextTokens * maxWidth
+		spanIdx = make([]int64, numSpans*2)
+		spanMask = make([]bool, numSpans)
 
-	for t := 0; t < numTextTokens; t++ {
-		for wi := range maxWidth {
-			spanI := t*maxWidth + wi
-			start := t
-			end := t + wi // span end position (token index)
-			spanIdx[spanI*2] = int64(start)
-			spanIdx[spanI*2+1] = int64(end)
-			// Mask is true if the span end is within bounds
-			spanMask[spanI] = end < numTextTokens
+		for t := 0; t < numTextTokens; t++ {
+			for wi := range maxWidth {
+				spanI := t*maxWidth + wi
+				start := t
+				end := t + wi
+				spanIdx[spanI*2] = int64(start)
+				spanIdx[spanI*2+1] = int64(end)
+				spanMask[spanI] = end < numTextTokens
+			}
 		}
 	}
 
@@ -1183,22 +1421,17 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		return nil, fmt.Errorf("no logits output found")
 	}
 
-	// Logits shape varies by model:
-	// - GLiNER v1: [batch, num_tokens, max_width, num_labels] (4D)
-	// - GLiNER2:   [batch, num_spans, 1] where num_spans = num_tokens * max_width (3D)
-	// Both have identical flat data layout for single-label queries.
-	// We need to use the actual shape from the output, not numWords.
+	// Logits shape: [batch, num_words, max_width, num_labels] (4D)
+	// Both GLiNER v1 and GLiNER2 now produce this format.
 	numLabels := len(labels)
 	numWords := len(words)
 	maxWidth := p.PipelineConfig.MaxWidth
 
 	// Get dimensions from logits shape
 	if len(logitsShape) >= 4 {
-		// GLiNER v1 format: [batch, num_tokens, max_width, num_labels]
 		maxWidth = int(logitsShape[2])
 		numLabels = int(logitsShape[3])
 	} else if len(logitsShape) == 3 {
-		// GLiNER2 format: [batch, num_spans, 1]
 		numLabels = int(logitsShape[2])
 	}
 

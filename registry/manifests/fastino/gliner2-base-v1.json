@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "name": "gliner2-base-v1",
   "type": "recognizer",
-  "description": "GLiNER2 unified multi-task model for NER, classification, structured extraction, and relation extraction. Uses DeBERTa-v3-base encoder.",
+  "description": "",
   "source": "fastino/gliner2-base-v1",
   "files": [
     {
@@ -17,13 +17,13 @@
     },
     {
       "name": "gliner_config.json",
-      "digest": "sha256:ccf66b272190b028e325553445766af9b355298de4b87a0c78d0f27c6a2f506a",
-      "size": 1188
+      "digest": "sha256:65f14c2ed45736a77c920e53de9f07df282ea18e5288431ee876b33ce9cf3d56",
+      "size": 1185
     },
     {
       "name": "model.onnx",
-      "digest": "sha256:cbcdc4bb5eeca10b93637a132424fcb0cbaee9f73f4b0c1e65de682578997902",
-      "size": 806806486
+      "digest": "sha256:3b48ea7f99ab22fbe010c8c4f09beaf66e488e949dd89e2e1aed44b785e5483e",
+      "size": 806806828
     },
     {
       "name": "special_tokens_map.json",
@@ -42,30 +42,33 @@
     },
     {
       "name": "tokenizer_config.json",
-      "digest": "sha256:4e6c6a8d26478b670692916266438485403b0c54af31fd1a12bab8a465d062e9",
-      "size": 3240
+      "digest": "sha256:d53b9e4665ea984792aab93a0b49a326500105b1144e763da1550957b57a7ffa",
+      "size": 3236
     }
   ],
   "owner": "fastino",
   "provenance": {
     "downloadedFrom": "https://huggingface.co/fastino/gliner2-base-v1",
-    "downloadedAt": "2026-02-22T22:02:24.988565+00:00"
+    "downloadedAt": "2026-03-06T05:55:58.177801+00:00"
   },
   "capabilities": [
     "labels",
     "zeroshot",
     "classification",
-    "relations",
-    "extraction"
+    "relations"
   ],
   "variants": {
-    "f16": {
-      "name": "model_f16.onnx",
-      "digest": "sha256:0844737d799279619e3825f0e57d0875e679b1c972fca90f779dc400c1187930",
-      "size": 404207362
-    }
-  },
-  "backends": [
-    "onnx"
-  ]
+    "f16": [
+      {
+        "name": "model_f16.onnx",
+        "digest": "sha256:f9b377af7d29cc88edc07934358b5894623a286941e63f513c234c64897853cf",
+        "size": 931433
+      },
+      {
+        "name": "model_f16.onnx_data",
+        "digest": "sha256:87b7760abcfdf18469e6ab4d418e59be416350bc7b1d82a43bec220cba8f45c8",
+        "size": 1206469632
+      }
+    ]
+  }
 }
