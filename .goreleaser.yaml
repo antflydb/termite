@@ -222,29 +222,6 @@ release:
 homebrew_casks:
   - name: termite
     ids:
-      - default
-    skip_upload: auto
-    repository:
-      owner: antflydb
-      name: homebrew-antfly
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://docs.antfly.io/docs/guides/termite"
-    description: "Termite - ML inference service for embeddings, chunking, and reranking"
-    url:
-      template: "https://releases.antfly.io/termite/{{ .Tag }}/{{ .ArtifactName }}"
-    binary: "termite"
-    conflicts:
-      - cask: termite-omni
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite"]
-          end
-
-  # OMNI version with both ONNX Runtime and XLA backends
-  - name: termite-omni
-    ids:
       - omni
     skip_upload: auto
     repository:
@@ -252,28 +229,19 @@ homebrew_casks:
       name: homebrew-antfly
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://docs.antfly.io/docs/guides/termite"
-    description: "Termite with ONNX Runtime + XLA - multi-backend ML inference"
+    description: "Termite - ML inference service with ONNX Runtime + XLA multi-backend inference"
     url:
       template: "https://releases.antfly.io/termite/{{ .Tag }}/{{ .ArtifactName }}"
-    binary: "termite"
-    conflicts:
-      - cask: termite
+    binaries:
+      - termite
     caveats: |
-      termite-omni includes both ONNX Runtime and XLA backends for ML inference.
+      termite includes both ONNX Runtime and XLA backends for ML inference.
       Bundled libraries are auto-discovered from lib/ next to the binary.
-
-      Backend priority can be configured in termite.yaml:
-        backend_priority: ['onnx:coreml', 'xla:cpu', 'go']
-
-      For the standard version without ML dependencies, use:
-        brew install --cask termite
     hooks:
       post:
         install: |
           if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite"]
-            # Also clear quarantine on bundled libraries
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/lib"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/termite", "#{staged_path}/lib"]
           end
 
 # Linux packages
