@@ -199,6 +199,54 @@ def _quantize_to_int8(input_path: Path, output_path: Path) -> None:
         logger.warning(f"  INT8 quantization failed: {e}")
 
 
+def _patch_mha_for_dynamic_export(module: Any) -> None:
+    """Monkey-patch nn.MultiheadAttention.forward for dynamic-shape ONNX export.
+
+    PyTorch's nn.MultiheadAttention internally does view(tgt_len, bsz * num_heads,
+    head_dim) which bakes tgt_len (= num_labels) as a constant during ONNX tracing.
+    We replace just the forward method with one using F.scaled_dot_product_attention
+    which traces cleanly with dynamic sequence lengths. This preserves all the
+    original attributes that TransformerEncoder/Layer inspect.
+    """
+    import types
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    def _dynamic_mha_forward(self, query, key=None, value=None, attn_mask=None,
+                             key_padding_mask=None, need_weights=False,
+                             is_causal=False, **kwargs):
+        # Self-attention: query == key == value
+        # Input shape: [seq_len, batch, embed_dim]
+        # In count_embed's transformer: seq_len=count(=1), batch=num_labels
+        x = query
+        S, B, D = x.shape
+        num_heads = self.num_heads
+        head_dim = self.embed_dim // num_heads
+
+        # Project q, k, v in one shot: [S, B, D] -> [S, B, 3*D]
+        qkv = F.linear(x, self.in_proj_weight, self.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)  # each [S, B, D]
+
+        # Reshape for multi-head: [S, B, D] -> [B, num_heads, S, head_dim]
+        q = q.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+        k = k.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+        v = v.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+
+        # Scaled dot-product attention (traces cleanly with dynamic B)
+        attn_out = F.scaled_dot_product_attention(q, k, v)
+
+        # Reshape back: [B, num_heads, S, head_dim] -> [S, B, D]
+        attn_out = attn_out.transpose(1, 2).reshape(B, S, self.embed_dim).permute(1, 0, 2)
+
+        return self.out_proj(attn_out), None
+
+    # Walk all submodules and patch MHA forward methods in-place
+    for child in module.modules():
+        if isinstance(child, nn.MultiheadAttention):
+            child.forward = types.MethodType(_dynamic_mha_forward, child)
+
+
 class _SpanWrapper:
     """ONNX-exportable wrapper for GLiNER2 models.
 
@@ -231,6 +279,9 @@ class _SpanWrapper:
                 self.hidden_size = model.hidden_size
                 self.e_token_id = _E_TOKEN_ID
                 self.p_token_id = _P_TOKEN_ID
+
+                # Patch MultiheadAttention in count_embed for dynamic ONNX export
+                _patch_mha_for_dynamic_export(self.count_embed)
 
             def forward(
                 self,

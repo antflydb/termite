@@ -51,11 +51,6 @@ const (
 	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
 )
 
-// gliner2ExportNumLabels is the fixed number of [E] label tokens the GLiNER2
-// ONNX model expects. The count_embed transformer's MultiheadAttention bakes
-// this as a constant during tracing, so we must always pad to exactly this many.
-const gliner2ExportNumLabels = 5
-
 // GLiNERModelConfig holds parsed configuration for a GLiNER model.
 type GLiNERModelConfig struct {
 	// Path to the model directory
@@ -460,51 +455,33 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 		return nil, nil
 	}
 
-	// GLiNER2: structured schema prompt with all labels, single pass.
+	// GLiNER2: structured schema prompt with all labels in a single pass.
+	// The ONNX model supports dynamic label counts.
 	// Output is [1, num_words, max_width, num_labels] with per-label dot-product scores.
-	// The ONNX model supports exactly gliner2ExportNumLabels (5) labels per pass.
-	// For >5 labels, we run multiple passes and merge results.
 	if p.IsGLiNER2() {
-		const maxLabelsPerPass = gliner2ExportNumLabels
-		var allEntities []GLiNEREntity
-
-		for i := 0; i < len(labels); i += maxLabelsPerPass {
-			end := i + maxLabelsPerPass
-			if end > len(labels) {
-				end = len(labels)
-			}
-			batchLabels := labels[i:end]
-
-			inputs, err := p.buildGLiNER2Inputs(words, batchLabels)
-			if err != nil {
-				return nil, fmt.Errorf("building GLiNER2 inputs: %w", err)
-			}
-
-			outputs, err := p.Session.Run(inputs)
-			if err != nil {
-				return nil, fmt.Errorf("running GLiNER2 inference: %w", err)
-			}
-
-			entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, batchLabels, text, threshold, false)
-			if err != nil {
-				return nil, fmt.Errorf("parsing GLiNER2 outputs: %w", err)
-			}
-
-			allEntities = append(allEntities, entities...)
+		inputs, err := p.buildGLiNER2Inputs(words, labels)
+		if err != nil {
+			return nil, fmt.Errorf("building GLiNER2 inputs: %w", err)
 		}
 
-		if flatNER && len(allEntities) > 1 {
-			allEntities = p.removeOverlappingEntities(allEntities)
+		outputs, err := p.Session.Run(inputs)
+		if err != nil {
+			return nil, fmt.Errorf("running GLiNER2 inference: %w", err)
 		}
 
-		sort.Slice(allEntities, func(i, j int) bool {
-			if allEntities[i].Start != allEntities[j].Start {
-				return allEntities[i].Start < allEntities[j].Start
+		entities, err := p.parseOutputs(outputs, words, wordStartChars, wordEndChars, labels, text, threshold, flatNER)
+		if err != nil {
+			return nil, fmt.Errorf("parsing GLiNER2 outputs: %w", err)
+		}
+
+		sort.Slice(entities, func(i, j int) bool {
+			if entities[i].Start != entities[j].Start {
+				return entities[i].Start < entities[j].Start
 			}
-			return allEntities[i].End < allEntities[j].End
+			return entities[i].End < entities[j].End
 		})
 
-		return allEntities, nil
+		return entities, nil
 	}
 
 	// GLiNER v1: all labels in one prompt, output has per-label scores
@@ -852,38 +829,30 @@ func (p *GLiNERPipeline) classifySingleText(
 	}
 
 	// GLiNER2: use structured schema with [E] tokens (same as NER path).
+	// All labels in a single pass — the ONNX model supports dynamic label counts.
 	// Classification score = max span logit per label across all spans.
 	if p.IsGLiNER2() {
+		inputs, err := p.buildGLiNER2Inputs(words, labels)
+		if err != nil {
+			return nil, fmt.Errorf("building GLiNER2 classification inputs: %w", err)
+		}
+
+		outputs, err := p.Session.Run(inputs)
+		if err != nil {
+			return nil, fmt.Errorf("running GLiNER2 classification inference: %w", err)
+		}
+
+		// Extract per-label max scores from [1, num_words, max_width, num_labels]
 		results := make([]GLiNER2Classification, 0, len(labels))
-
-		for i := 0; i < len(labels); i += gliner2ExportNumLabels {
-			end := i + gliner2ExportNumLabels
-			if end > len(labels) {
-				end = len(labels)
+		for li, label := range labels {
+			score := p.maxLabelScore(outputs, li, len(labels))
+			if config.MultiLabel && score < config.Threshold {
+				continue
 			}
-			batchLabels := labels[i:end]
-
-			inputs, err := p.buildGLiNER2Inputs(words, batchLabels)
-			if err != nil {
-				return nil, fmt.Errorf("building GLiNER2 classification inputs: %w", err)
-			}
-
-			outputs, err := p.Session.Run(inputs)
-			if err != nil {
-				return nil, fmt.Errorf("running GLiNER2 classification inference: %w", err)
-			}
-
-			// Extract per-label max scores from [1, num_words, max_width, num_labels]
-			for li, label := range batchLabels {
-				score := p.maxLabelScore(outputs, li)
-				if config.MultiLabel && score < config.Threshold {
-					continue
-				}
-				results = append(results, GLiNER2Classification{
-					Label: label,
-					Score: score,
-				})
-			}
+			results = append(results, GLiNER2Classification{
+				Label: label,
+				Score: score,
+			})
 		}
 
 		sort.Slice(results, func(i, j int) bool {
@@ -958,8 +927,7 @@ func (p *GLiNERPipeline) classifySingleText(
 
 // maxLabelScore extracts the maximum sigmoid-activated score for a specific label
 // from GLiNER2 output with shape [1, num_words, max_width, num_labels].
-func (p *GLiNERPipeline) maxLabelScore(outputs []backends.NamedTensor, labelIdx int) float32 {
-	numLabels := gliner2ExportNumLabels
+func (p *GLiNERPipeline) maxLabelScore(outputs []backends.NamedTensor, labelIdx int, numLabels int) float32 {
 	for _, out := range outputs {
 		if out.Name == "logits" || len(outputs) == 1 {
 			if logits, ok := out.Data.([]float32); ok {
@@ -1028,23 +996,10 @@ func (p *GLiNERPipeline) tokenizeWords(words []string) [][]int {
 //
 // Output: [1, num_words, max_width, num_labels]
 func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]backends.NamedTensor, error) {
-	// The ONNX model's count_embed transformer has a fixed num_labels dimension
-	// baked in during export. We must always provide exactly that many [E] tokens.
-	// If fewer labels are requested, pad with dummy labels.
-	// The output's num_labels dimension will be gliner2ExportNumLabels;
-	// we only use the first len(labels) columns.
-	if len(labels) > gliner2ExportNumLabels {
-		return nil, fmt.Errorf("GLiNER2 ONNX model supports at most %d labels per pass, got %d", gliner2ExportNumLabels, len(labels))
-	}
-	paddedLabels := make([]string, gliner2ExportNumLabels)
-	copy(paddedLabels, labels)
-	for i := len(labels); i < gliner2ExportNumLabels; i++ {
-		paddedLabels[i] = "_pad_"
-	}
-
 	// Build schema parts: ( [P] entities ( [E] label1 [E] label2 ... ) ) [SEP_TEXT]
+	// The ONNX model supports dynamic label counts — no padding needed.
 	schemaParts := []string{"(", "[P]", "entities", "("}
-	for _, label := range paddedLabels {
+	for _, label := range labels {
 		schemaParts = append(schemaParts, "[E]", label)
 	}
 	schemaParts = append(schemaParts, ")", ")", "[SEP_TEXT]")
