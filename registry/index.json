@@ -53,9 +53,9 @@
     {
       "name": "gliner2-base-v1",
       "type": "recognizer",
-      "description": "GLiNER2 unified multi-task model for NER, classification, structured extraction, and relation extraction. Uses DeBERTa-v3-base encoder.",
+      "description": "",
       "source": "fastino/gliner2-base-v1",
-      "size": 1222136473,
+      "size": 817929446,
       "variants": [
         "f16"
       ],
@@ -64,11 +64,7 @@
         "labels",
         "zeroshot",
         "classification",
-        "relations",
-        "extraction"
-      ],
-      "backends": [
-        "onnx"
+        "relations"
       ]
     },
     {

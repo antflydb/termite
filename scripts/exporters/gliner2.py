@@ -12,58 +12,74 @@ from .embedder import convert_to_fp16
 
 logger = logging.getLogger(__name__)
 
+# GLiNER2 special token IDs (DeBERTa-v3 with added tokens)
+_E_TOKEN_ID = 128005  # [E] entity marker
+_P_TOKEN_ID = 128003  # [P] prompt/schema marker
+_SEP_TEXT_ID = 128002  # [SEP_TEXT] separator
+
 
 def _create_dummy_inputs(
-    batch_size: int, seq_len: int, num_tokens: int, max_width: int
+    batch_size: int, seq_len: int, num_words: int, num_labels: int, max_width: int
 ) -> dict:
     """Create dummy inputs for GLiNER2 ONNX export.
 
-    Creates a realistic input structure matching Termite's GLiNER pipeline:
-    - Sequence: [CLS] [label tokens] [SEP] [text tokens] [SEP] [PAD...]
-    - words_mask: 0 for non-text, >0 for text tokens (word index)
-    - span_idx: indices relative to text token start (0 to num_tokens-1)
+    Simulates the structured schema prompt format:
+    ( [P] entities ( [E] label1 [E] label2 [E] label3 ) ) [SEP_TEXT] word1 word2 ...
+
+    The input_ids must contain the actual special token IDs so the wrapper
+    can find [E] and [P] positions.
     """
     import torch
 
-    num_spans = num_tokens * max_width
+    num_spans = num_words * max_width
 
-    # Simulate a realistic sequence structure:
-    # [CLS] + 5 label tokens + [SEP] + num_tokens text tokens + [SEP] + padding
-    text_start_idx = 7  # After [CLS](1) + 5 labels + [SEP](1) = 7
+    # Build a realistic input_ids with proper special tokens
+    # ( [P] entities ( [E] label1 [E] label2 [E] label3 ) ) [SEP_TEXT] w1 w2 ... wN [PAD...]
+    schema_tokens = [287, _P_TOKEN_ID, 6967, 287]  # ( [P] entities (
+    for i in range(num_labels):
+        schema_tokens.extend([_E_TOKEN_ID, 604 + i])  # [E] labelN
+    schema_tokens.extend([1263, 1263, _SEP_TEXT_ID])  # ) ) [SEP_TEXT]
 
-    inputs = {
-        "input_ids": torch.randint(0, 30000, (batch_size, seq_len)),
-        "attention_mask": torch.ones(batch_size, seq_len, dtype=torch.long),
-        "words_mask": torch.zeros(batch_size, seq_len, dtype=torch.long),
-        "text_lengths": torch.tensor([[num_tokens]], dtype=torch.long),
-        "span_idx": torch.zeros(batch_size, num_spans, 2, dtype=torch.long),
-        "span_mask": torch.ones(batch_size, num_spans, dtype=torch.bool),
+    # Text tokens (one sub-token per word for simplicity)
+    text_tokens = [300 + i for i in range(num_words)]
+
+    all_tokens = schema_tokens + text_tokens
+    # Pad to seq_len
+    while len(all_tokens) < seq_len:
+        all_tokens.append(0)
+    all_tokens = all_tokens[:seq_len]
+
+    text_start = len(schema_tokens)
+
+    input_ids = torch.tensor([all_tokens], dtype=torch.long)
+    attention_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
+    attention_mask[0, : text_start + num_words] = 1
+
+    words_mask = torch.zeros(batch_size, seq_len, dtype=torch.long)
+    for w in range(num_words):
+        pos = text_start + w
+        if pos < seq_len:
+            words_mask[0, pos] = w + 1  # 1-indexed
+
+    # Word-level span indices
+    span_idx = torch.zeros(batch_size, num_spans, 2, dtype=torch.long)
+    span_mask = torch.zeros(batch_size, num_spans, dtype=torch.bool)
+    for w in range(num_words):
+        for wi in range(max_width):
+            si = w * max_width + wi
+            end_word = w + wi
+            if end_word < num_words:
+                span_idx[0, si, 0] = w
+                span_idx[0, si, 1] = end_word
+                span_mask[0, si] = True
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "words_mask": words_mask,
+        "span_idx": span_idx,
+        "span_mask": span_mask,
     }
-
-    # Set attention mask (1 for real tokens, 0 for padding)
-    text_end_idx = text_start_idx + num_tokens + 1  # +1 for final [SEP]
-    for b in range(batch_size):
-        # Attention mask covers [CLS] + labels + [SEP] + text + [SEP]
-        inputs["attention_mask"][b, text_end_idx:] = 0
-
-        # words_mask: >0 for text tokens (use word index starting at 1)
-        for t in range(num_tokens):
-            if text_start_idx + t < seq_len:
-                inputs["words_mask"][b, text_start_idx + t] = t + 1  # Word index
-
-    # Build span indices (text-relative: 0 to num_tokens-1)
-    for b in range(batch_size):
-        for t in range(num_tokens):
-            for w in range(max_width):
-                idx = t * max_width + w
-                start = t
-                end = min(t + w, num_tokens - 1)
-                inputs["span_idx"][b, idx, 0] = start
-                inputs["span_idx"][b, idx, 1] = end
-                # Mask is True if span end is within bounds
-                inputs["span_mask"][b, idx] = (t + w) < num_tokens
-
-    return inputs
 
 
 def _analyze_model(model_id: str) -> tuple[dict[str, Any], Any]:
@@ -82,7 +98,6 @@ def _analyze_model(model_id: str) -> tuple[dict[str, Any], Any]:
         "has_classifier": hasattr(model, "classifier"),
     }
 
-    # Check encoder
     if hasattr(model, "encoder") and hasattr(model.encoder, "config"):
         info["encoder_config"] = {
             "hidden_size": getattr(model.encoder.config, "hidden_size", None),
@@ -106,7 +121,7 @@ def _save_config(
         "default_labels": ["person", "organization", "location", "date", "product"],
         "threshold": 0.5,
         "flat_ner": True,
-        "multi_label": False,
+        "multi_label": True,
         "model_type": "gliner2",
         "model_id": model_id,
         "capabilities": ["ner", "zeroshot", "classification", "relations"],
@@ -115,20 +130,17 @@ def _save_config(
                 "model_file": "model.onnx",
                 "threshold": 0.5,
                 "flat_ner": True,
-                "prompt_format": "<<ENT>>{label}<<SEP>>",
             },
             "relations": {
                 "model_file": "model.onnx",
                 "threshold": 0.3,
                 "default_entity_labels": ["person", "organization", "location"],
                 "default_relation_labels": ["works_for", "located_in", "founded"],
-                "prompt_format": "<<REL>>{entity}::{relation}<<SEP>>",
             },
             "classification": {
                 "model_file": "model.onnx",
                 "threshold": 0.5,
                 "multi_label": True,
-                "prompt_format": "<<CLS>>{label}<<SEP>>",
             },
         },
         "relation_labels": [
@@ -187,23 +199,70 @@ def _quantize_to_int8(input_path: Path, output_path: Path) -> None:
         logger.warning(f"  INT8 quantization failed: {e}")
 
 
+def _patch_mha_for_dynamic_export(module: Any) -> None:
+    """Monkey-patch nn.MultiheadAttention.forward for dynamic-shape ONNX export.
+
+    PyTorch's nn.MultiheadAttention internally does view(tgt_len, bsz * num_heads,
+    head_dim) which bakes tgt_len (= num_labels) as a constant during ONNX tracing.
+    We replace just the forward method with one using F.scaled_dot_product_attention
+    which traces cleanly with dynamic sequence lengths. This preserves all the
+    original attributes that TransformerEncoder/Layer inspect.
+    """
+    import types
+
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    def _dynamic_mha_forward(self, query, key=None, value=None, attn_mask=None,
+                             key_padding_mask=None, need_weights=False,
+                             is_causal=False, **kwargs):
+        # Self-attention: query == key == value
+        # Input shape: [seq_len, batch, embed_dim]
+        # In count_embed's transformer: seq_len=count(=1), batch=num_labels
+        x = query
+        S, B, D = x.shape
+        num_heads = self.num_heads
+        head_dim = self.embed_dim // num_heads
+
+        # Project q, k, v in one shot: [S, B, D] -> [S, B, 3*D]
+        qkv = F.linear(x, self.in_proj_weight, self.in_proj_bias)
+        q, k, v = qkv.chunk(3, dim=-1)  # each [S, B, D]
+
+        # Reshape for multi-head: [S, B, D] -> [B, num_heads, S, head_dim]
+        q = q.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+        k = k.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+        v = v.permute(1, 0, 2).reshape(B, S, num_heads, head_dim).transpose(1, 2)
+
+        # Scaled dot-product attention (traces cleanly with dynamic B)
+        attn_out = F.scaled_dot_product_attention(q, k, v)
+
+        # Reshape back: [B, num_heads, S, head_dim] -> [S, B, D]
+        attn_out = attn_out.transpose(1, 2).reshape(B, S, self.embed_dim).permute(1, 0, 2)
+
+        return self.out_proj(attn_out), None
+
+    # Walk all submodules and patch MHA forward methods in-place
+    for child in module.modules():
+        if isinstance(child, nn.MultiheadAttention):
+            child.forward = types.MethodType(_dynamic_mha_forward, child)
+
+
 class _SpanWrapper:
     """ONNX-exportable wrapper for GLiNER2 models.
 
-    This wrapper extracts the core components from GLiNER2 and creates
-    an ONNX-exportable forward pass that matches the GLiNER v1 interface.
+    GLiNER2's inference pipeline:
+    1. Encode structured schema prompt + text through DeBERTa
+    2. Extract [P] embedding and [E] embeddings from schema positions
+    3. Extract word-level text embeddings (first sub-token per word)
+    4. Compute span representations from text embeddings
+    5. Predict entity count from [P] embedding (hardcoded to 1 for ONNX)
+    6. Project schema embeddings through count_embed
+    7. Score spans via dot product: einsum(span_rep, projected_schema)
 
-    The key challenge is that:
-    - span_idx contains indices relative to text tokens (0 to text_length-1)
-    - hidden_states has shape [batch, seq_len, hidden] where text tokens
-      start at some offset in the sequence (after [CLS] and label tokens)
-    - GLiNER2's SpanRepLayer expects hidden_states size to match num_spans
+    The Go code must build the full structured prompt:
+      ( [P] entities ( [E] label1 [E] label2 ... ) ) [SEP_TEXT] text_tokens...
 
-    Solution: We extract the projection layers from GLiNER2's span_rep and
-    implement our own span representation that:
-    1. Finds text token offset using words_mask
-    2. Adjusts span_idx to absolute sequence positions
-    3. Gathers start/end representations correctly
+    Output: [batch, num_words, max_width, num_labels] logits
     """
 
     def __new__(cls, gliner2_model: Any, max_width: int = 8):
@@ -214,68 +273,93 @@ class _SpanWrapper:
             def __init__(self, model, max_width: int):
                 super().__init__()
                 self.encoder = model.encoder
-                self.classifier = model.classifier
-
-                # Extract projection layers from span_rep's internal span_rep_layer
-                span_layer = model.span_rep.span_rep_layer
-                self.project_start = span_layer.project_start
-                self.project_end = span_layer.project_end
-                self.out_project = span_layer.out_project
-
+                self.span_rep = model.span_rep
+                self.count_embed = model.count_embed
                 self.max_width = max_width
                 self.hidden_size = model.hidden_size
+                self.e_token_id = _E_TOKEN_ID
+                self.p_token_id = _P_TOKEN_ID
+
+                # Patch MultiheadAttention in count_embed for dynamic ONNX export
+                _patch_mha_for_dynamic_export(self.count_embed)
 
             def forward(
                 self,
-                input_ids,
-                attention_mask,
-                words_mask,
-                text_lengths,
-                span_idx,
-                span_mask,
+                input_ids,      # [1, seq_len]
+                attention_mask,  # [1, seq_len]
+                words_mask,      # [1, seq_len] — >0 for text tokens (word index)
+                span_idx,        # [1, num_spans, 2] — word-level span indices
+                span_mask,       # [1, num_spans]
             ):
-                num_spans = span_idx.shape[1]
-
-                # 1. Encode input through DeBERTa
-                encoder_outputs = self.encoder(
+                # 1. Encode through DeBERTa
+                hidden = self.encoder(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
-                )
-                hidden_states = encoder_outputs.last_hidden_state
+                ).last_hidden_state  # [1, seq_len, hidden]
 
-                # 2. Find text token offset from words_mask
-                text_mask = (words_mask > 0).long()
-                text_start_idx = text_mask.argmax(dim=1, keepdim=True)
+                # 2. Find [P] and [E] positions from input_ids
+                # [P] token embedding — used for count prediction
+                p_mask = (input_ids[0] == self.p_token_id)
+                # [E] token embeddings — one per label
+                e_mask = (input_ids[0] == self.e_token_id)
 
-                # 3. Adjust span indices from text-relative to absolute positions
-                span_idx_offset = text_start_idx.unsqueeze(-1).expand(-1, num_spans, 2)
-                span_idx_abs = span_idx + span_idx_offset
+                # Extract [P] embedding (first [P] token)
+                p_positions = p_mask.nonzero(as_tuple=True)[0]
+                p_emb = hidden[0, p_positions[0]]  # [hidden]
 
-                # 4. Clamp indices to valid range
-                seq_len = hidden_states.shape[1]
-                span_idx_abs = span_idx_abs.clamp(0, seq_len - 1)
+                # Extract [E] embeddings
+                e_positions = e_mask.nonzero(as_tuple=True)[0]
+                e_embs = hidden[0, e_positions]  # [num_labels, hidden]
+                num_labels = e_embs.shape[0]
 
-                # 5. Project hidden states
-                start_rep = self.project_start(hidden_states)
-                end_rep = self.project_end(hidden_states)
+                # 3. Extract word-level text embeddings (first sub-token per word)
+                # words_mask > 0 marks text tokens, value = word index (1-indexed)
+                text_mask = (words_mask[0] > 0)
+                text_positions = text_mask.nonzero(as_tuple=True)[0]
 
-                # 6. Gather span representations
-                start_indices = span_idx_abs[:, :, 0].unsqueeze(-1).expand(
-                    -1, -1, self.hidden_size
-                )
-                end_indices = span_idx_abs[:, :, 1].unsqueeze(-1).expand(
-                    -1, -1, self.hidden_size
-                )
+                # Group by word: take first occurrence of each word index
+                word_indices = words_mask[0, text_positions]  # word IDs for each text token
+                # Find first token for each word by detecting where word index changes
+                # word_indices is monotonically non-decreasing, so we detect transitions
+                n = word_indices.shape[0]
+                first_token_mask = torch.ones(n, dtype=torch.bool, device=input_ids.device)
+                first_token_mask[1:] = word_indices[1:] != word_indices[:-1]
 
-                start_span_rep = torch.gather(start_rep, 1, start_indices)
-                end_span_rep = torch.gather(end_rep, 1, end_indices)
+                first_positions = text_positions[first_token_mask]
+                word_embs = hidden[0, first_positions]  # [num_words, hidden]
+                num_words = word_embs.shape[0]
 
-                # 7. Combine and project
-                cat = torch.cat([start_span_rep, end_span_rep], dim=-1).relu()
-                span_reps = self.out_project(cat)
+                # 4. Compute span representations
+                # span_idx contains word-level indices (0 to num_words-1)
+                # span_rep expects [batch, num_words, hidden] and [batch, num_spans, 2]
+                span_rep = self.span_rep(
+                    word_embs.unsqueeze(0), span_idx
+                )  # [1, num_words, max_width, hidden]
 
-                # 8. Classify spans
-                logits = self.classifier(span_reps)
+                # 5. Count prediction — hardcoded to 1 for ONNX compatibility.
+                # The count_embed GRU uses dynamic sequence length based on count,
+                # which doesn't trace well. For NER, count is almost always 1.
+                pred_count = 1
+
+                # 6. Project schema embeddings through count_embed
+                struct_proj = self.count_embed(
+                    e_embs, pred_count
+                )  # [count, num_labels, hidden]
+
+                # 7. Score via dot product
+                # span_rep: [1, num_words, max_width, hidden] -> squeeze to [num_words, max_width, hidden]
+                # struct_proj: [count, num_labels, hidden]
+                # einsum: "lkd,bpd->bplk" where l=num_words, k=max_width, b=count, p=num_labels
+                span_rep_sq = span_rep.squeeze(0)  # [num_words, max_width, hidden]
+                logits = torch.einsum(
+                    "lkd,bpd->bplk", span_rep_sq, struct_proj
+                )  # [count, num_labels, num_words, max_width]
+
+                # With count=1, squeeze the count dimension
+                logits = logits.squeeze(0)  # [num_labels, num_words, max_width]
+
+                # Reshape: [num_labels, num_words, max_width] -> [1, num_words, max_width, num_labels]
+                logits = logits.permute(1, 2, 0).unsqueeze(0)
 
                 return logits
 
@@ -290,8 +374,11 @@ class GLiNER2Exporter(BaseExporter):
     extraction, and relation extraction. Unlike GLiNER v1, it requires
     manual ONNX export since there's no built-in export_to_onnx() method.
 
-    This exporter creates an ONNX-exportable wrapper that matches the
-    GLiNER v1 interface for compatibility with Termite's GLiNER pipeline.
+    This exporter creates an ONNX-exportable wrapper that includes the full
+    inference pipeline: encoder, span representations, count prediction,
+    count embedding, and dot-product scoring.
+
+    Output shape: [1, num_words, max_width, num_labels]
     """
 
     capabilities = ["labels-v2"]
@@ -322,7 +409,6 @@ class GLiNER2Exporter(BaseExporter):
         info, model = _analyze_model(self.model_id)
         model.eval()
 
-        # Auto-detect max_width from model
         max_width = self.max_width or info.get("max_width", 8)
         logger.info(f"Using max_width: {max_width}")
         logger.info(f"Model type: {info['type']}")
@@ -335,25 +421,31 @@ class GLiNER2Exporter(BaseExporter):
 
         # Test forward pass
         logger.info("Testing forward pass...")
-        test_batch = 1
-        test_seq_len = 64
-        test_num_tokens = 10
+        num_words = 10
+        num_labels = 3
 
         with torch.no_grad():
-            dummy_inputs = _create_dummy_inputs(
-                test_batch, test_seq_len, test_num_tokens, max_width
+            dummy = _create_dummy_inputs(1, 64, num_words, num_labels, max_width)
+            test_output = wrapper(
+                dummy["input_ids"],
+                dummy["attention_mask"],
+                dummy["words_mask"],
+                dummy["span_idx"],
+                dummy["span_mask"],
             )
-            test_output = wrapper(**dummy_inputs)
             logger.info(f"Forward pass successful. Output shape: {test_output.shape}")
+            assert test_output.shape == (1, num_words, max_width, num_labels), (
+                f"Expected (1, {num_words}, {max_width}, {num_labels}), got {test_output.shape}"
+            )
 
-        # Prepare export inputs
-        batch_size = 1
+        # Prepare export inputs with larger dimensions
         seq_len = self.max_seq_len
-        num_tokens = 50
+        num_words_export = 50
+        num_labels_export = 5
 
-        dummy_inputs = _create_dummy_inputs(batch_size, seq_len, num_tokens, max_width)
+        dummy = _create_dummy_inputs(1, seq_len, num_words_export, num_labels_export, max_width)
 
-        # Define ONNX export settings
+        # ONNX export
         onnx_path = self.output_dir / "model.onnx"
         logger.info(f"Exporting to ONNX: {onnx_path}")
 
@@ -361,7 +453,6 @@ class GLiNER2Exporter(BaseExporter):
             "input_ids",
             "attention_mask",
             "words_mask",
-            "text_lengths",
             "span_idx",
             "span_mask",
         ]
@@ -371,22 +462,20 @@ class GLiNER2Exporter(BaseExporter):
             "input_ids": {0: "batch", 1: "seq_len"},
             "attention_mask": {0: "batch", 1: "seq_len"},
             "words_mask": {0: "batch", 1: "seq_len"},
-            "text_lengths": {0: "batch"},
             "span_idx": {0: "batch", 1: "num_spans"},
             "span_mask": {0: "batch", 1: "num_spans"},
-            "logits": {0: "batch", 1: "num_spans"},
+            "logits": {0: "batch", 1: "num_words", 3: "num_labels"},
         }
 
         try:
             torch.onnx.export(
                 wrapper,
                 (
-                    dummy_inputs["input_ids"],
-                    dummy_inputs["attention_mask"],
-                    dummy_inputs["words_mask"],
-                    dummy_inputs["text_lengths"],
-                    dummy_inputs["span_idx"],
-                    dummy_inputs["span_mask"],
+                    dummy["input_ids"],
+                    dummy["attention_mask"],
+                    dummy["words_mask"],
+                    dummy["span_idx"],
+                    dummy["span_mask"],
                 ),
                 str(onnx_path),
                 input_names=input_names,
@@ -395,14 +484,14 @@ class GLiNER2Exporter(BaseExporter):
                 opset_version=self.opset_version,
                 do_constant_folding=True,
                 export_params=True,
-                dynamo=False,  # Use TorchScript export for speed and reliability
+                dynamo=False,
             )
             logger.info("  Saved: model.onnx")
         except Exception as e:
             logger.error(f"ONNX export failed: {e}")
             raise
 
-        # Verify the exported model
+        # Verify
         logger.info("Verifying exported ONNX model...")
         try:
             onnx_model = onnx.load(str(onnx_path))
@@ -414,11 +503,9 @@ class GLiNER2Exporter(BaseExporter):
         except Exception as e:
             logger.warning(f"  ONNX verification warning: {e}")
 
-        # Apply FP16 conversion if requested
         if "f16" in self.variants:
             convert_to_fp16(onnx_path, self.output_dir / "model_f16.onnx")
 
-        # Apply INT8 quantization if requested
         if "i8" in self.variants:
             _quantize_to_int8(onnx_path, self.output_dir / "model_i8.onnx")
 
@@ -439,7 +526,6 @@ class GLiNER2Exporter(BaseExporter):
                 logger.error(f"model.onnx not found in {self.output_dir}")
                 return False
 
-            # Load config for max_width
             config_path = self.output_dir / "gliner_config.json"
             max_width = 8
             if config_path.exists():
@@ -452,7 +538,6 @@ class GLiNER2Exporter(BaseExporter):
                 str(onnx_path), providers=["CPUExecutionProvider"]
             )
 
-            # Print input/output info
             logger.info("Model inputs:")
             input_names = set()
             for inp in session.get_inputs():
@@ -463,44 +548,52 @@ class GLiNER2Exporter(BaseExporter):
             for out in session.get_outputs():
                 logger.info(f"  {out.name}: {out.shape} ({out.type})")
 
-            # Create test inputs
-            batch_size = 1
+            # Create test inputs matching the structured schema format
+            num_words = 10
+            num_labels = 3
+            num_spans = num_words * max_width
+
+            # Build schema tokens
+            schema_tokens = [287, _P_TOKEN_ID, 6967, 287]  # ( [P] entities (
+            for i in range(num_labels):
+                schema_tokens.extend([_E_TOKEN_ID, 604 + i])
+            schema_tokens.extend([1263, 1263, _SEP_TEXT_ID])
+
+            text_tokens = [300 + i for i in range(num_words)]
+            all_tokens = schema_tokens + text_tokens
             seq_len = 64
-            num_tokens = 10
-            num_spans = num_tokens * max_width
-            text_start_idx = 7
+            while len(all_tokens) < seq_len:
+                all_tokens.append(0)
+            all_tokens = all_tokens[:seq_len]
+
+            text_start = len(schema_tokens)
 
             all_inputs = {
-                "input_ids": np.random.randint(0, 30000, (batch_size, seq_len)).astype(
-                    np.int64
-                ),
-                "attention_mask": np.ones((batch_size, seq_len), dtype=np.int64),
-                "words_mask": np.zeros((batch_size, seq_len), dtype=np.int64),
-                "text_lengths": np.array([[num_tokens]], dtype=np.int64),
-                "span_idx": np.zeros((batch_size, num_spans, 2), dtype=np.int64),
-                "span_mask": np.ones((batch_size, num_spans), dtype=np.bool_),
+                "input_ids": np.array([all_tokens], dtype=np.int64),
+                "attention_mask": np.zeros((1, seq_len), dtype=np.int64),
+                "words_mask": np.zeros((1, seq_len), dtype=np.int64),
+                "span_idx": np.zeros((1, num_spans, 2), dtype=np.int64),
+                "span_mask": np.zeros((1, num_spans), dtype=np.bool_),
             }
 
-            # Set attention mask and words_mask
-            text_end_idx = text_start_idx + num_tokens + 1
-            all_inputs["attention_mask"][0, text_end_idx:] = 0
-            for t in range(num_tokens):
-                if text_start_idx + t < seq_len:
-                    all_inputs["words_mask"][0, text_start_idx + t] = t + 1
+            all_inputs["attention_mask"][0, : text_start + num_words] = 1
+            for w in range(num_words):
+                pos = text_start + w
+                if pos < seq_len:
+                    all_inputs["words_mask"][0, pos] = w + 1
 
-            # Build span indices (text-relative)
-            for t in range(num_tokens):
-                for w in range(max_width):
-                    idx = t * max_width + w
-                    all_inputs["span_idx"][0, idx, 0] = t
-                    all_inputs["span_idx"][0, idx, 1] = min(t + w, num_tokens - 1)
-                    all_inputs["span_mask"][0, idx] = (t + w) < num_tokens
+            for w in range(num_words):
+                for wi in range(max_width):
+                    si = w * max_width + wi
+                    end_word = w + wi
+                    if end_word < num_words:
+                        all_inputs["span_idx"][0, si, 0] = w
+                        all_inputs["span_idx"][0, si, 1] = end_word
+                        all_inputs["span_mask"][0, si] = True
 
-            # Filter to only inputs the model expects
             inputs = {k: v for k, v in all_inputs.items() if k in input_names}
             logger.info(f"Using inputs: {list(inputs.keys())}")
 
-            # Run inference
             outputs = session.run(None, inputs)
             logger.info("Inference successful!")
             logger.info(f"Output shape: {outputs[0].shape}")
@@ -511,4 +604,6 @@ class GLiNER2Exporter(BaseExporter):
 
         except Exception as e:
             logger.error(f"Test failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
