@@ -205,7 +205,7 @@ func runPredictorE2E(t *testing.T, predictorsDir string, model *tabular.TabularM
 	t.Run("WrongFeatureCount", func(t *testing.T) {
 		badInput := [][]float32{{1.0, 2.0}} // Wrong number of features
 		_, err := termiteClient.Predict(ctx, apiModelName, badInput)
-		if err == nil && model.Metadata.NumFeatures != 2 {
+		if err == nil {
 			t.Error("Expected error for wrong feature count, got nil")
 		}
 	})
@@ -267,9 +267,8 @@ func buildLinearRegressionModel() *tabular.TabularModel {
 			{
 				Type: tabular.StageLinear,
 				Linear: &tabular.LinearModel{
-					Weights:    [][]float64{{1.5, -0.5, 2.0}},
-					Biases:     []float64{0.1},
-					Activation: tabular.ActivationIdentity,
+					Weights: [][]float64{{1.5, -0.5, 2.0}},
+					Biases:  []float64{0.1},
 				},
 			},
 		},

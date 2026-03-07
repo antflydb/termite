@@ -104,7 +104,9 @@ func PrintSummary(model *tabular.TabularModel, outDir string) {
 		}
 		if stage.Linear != nil {
 			lm := stage.Linear
-			fmt.Printf("  Linear: %dx%d\n", len(lm.Weights), len(lm.Weights[0]))
+			if len(lm.Weights) > 0 {
+				fmt.Printf("  Linear: %dx%d\n", len(lm.Weights), len(lm.Weights[0]))
+			}
 		}
 	}
 

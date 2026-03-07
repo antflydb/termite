@@ -893,6 +893,21 @@ func (c *TermiteClient) SparseEmbedJSON(ctx context.Context, model string, input
 	return resp.JSON200, nil
 }
 
+// Predict runs tabular model inference on a batch of feature vectors.
+func (c *TermiteClient) Predict(ctx context.Context, model string, input [][]float32) (*oapi.PredictResponse, error) {
+	resp, err := c.client.MakePredictionWithResponse(ctx, oapi.PredictRequest{
+		Model: model,
+		Input: input,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("predict request: %w", err)
+	}
+	if resp.JSON200 == nil {
+		return nil, fmt.Errorf("predict failed (status %d): %s", resp.StatusCode(), string(resp.Body))
+	}
+	return resp.JSON200, nil
+}
+
 // deserializeSparseVectors reads sparse vectors from binary format.
 // Format: [uint64 num_vectors] per vector: [uint32 nnz] [int32*nnz indices] [float32*nnz values]
 func deserializeSparseVectors(r io.Reader) ([]SparseVector, error) {

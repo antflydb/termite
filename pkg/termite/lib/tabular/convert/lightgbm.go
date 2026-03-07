@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +62,10 @@ func parseLGBJSON(data map[string]any, name string) (*tabular.TabularModel, erro
 
 	task, activation := lgbObjectiveToTask(objective, numClass)
 
+	if task == tabular.TaskMulticlass {
+		return nil, fmt.Errorf("multiclass tree ensembles (num_class=%d) are not yet supported", numClass)
+	}
+
 	var (
 		featureIndex []int32
 		threshold    []float64
@@ -86,19 +89,20 @@ func parseLGBJSON(data map[string]any, name string) (*tabular.TabularModel, erro
 
 		treeStarts = append(treeStarts, int32(len(featureIndex)))
 
-		// Collect all nodes via DFS
+		// Collect all nodes via DFS and assign sequential indices
 		var nodes []map[string]any
-		collectLGBNodes(tree, &nodes)
-
-		base := int32(len(featureIndex))
-		// Build ID map
-		nodeMap := make(map[int]int32, len(nodes))
-		for i := range nodes {
-			nodeMap[i] = base + int32(i)
+		treeDepth := collectLGBNodes(tree, &nodes)
+		if treeDepth > maxDepth {
+			maxDepth = treeDepth
 		}
 
-		for i, node := range nodes {
-			_ = i
+		base := int32(len(featureIndex))
+		// Assign a DFS index to each node so children can be looked up in O(1)
+		for i := range nodes {
+			nodes[i]["__dfs_idx__"] = i
+		}
+
+		for _, node := range nodes {
 			if _, hasLeaf := node["leaf_value"]; hasLeaf {
 				featureIndex = append(featureIndex, -1)
 				threshold = append(threshold, 0.0)
@@ -110,18 +114,20 @@ func parseLGBJSON(data map[string]any, name string) (*tabular.TabularModel, erro
 				featureIndex = append(featureIndex, int32(jsonInt(node, "split_feature")))
 				threshold = append(threshold, jsonFloat(node, "threshold"))
 
-				leftNode := jsonObj(node, "left_child")
-				rightNode := jsonObj(node, "right_child")
-
 				li := int32(-1)
 				ri := int32(-1)
-				// Find child index by searching for matching node in our collected list
-				for j, n := range nodes {
-					if sameNode(n, leftNode) {
-						li = nodeMap[j]
+				if leftNode := jsonObj(node, "left_child"); leftNode != nil {
+					if idx, ok := leftNode["__dfs_idx__"]; ok {
+						if iidx, ok2 := idx.(int); ok2 {
+							li = base + int32(iidx)
+						}
 					}
-					if sameNode(n, rightNode) {
-						ri = nodeMap[j]
+				}
+				if rightNode := jsonObj(node, "right_child"); rightNode != nil {
+					if idx, ok := rightNode["__dfs_idx__"]; ok {
+						if iidx, ok2 := idx.(int); ok2 {
+							ri = base + int32(iidx)
+						}
 					}
 				}
 
@@ -134,12 +140,12 @@ func parseLGBJSON(data map[string]any, name string) (*tabular.TabularModel, erro
 					dl = jsonBool(v)
 				}
 				defaultLeft = append(defaultLeft, dl)
-
-				depth := jsonInt(node, "depth")
-				if depth > maxDepth {
-					maxDepth = depth
-				}
 			}
+		}
+
+		// Clean up temporary index markers
+		for i := range nodes {
+			delete(nodes[i], "__dfs_idx__")
 		}
 	}
 
@@ -193,34 +199,21 @@ func parseLGBJSON(data map[string]any, name string) (*tabular.TabularModel, erro
 	}, nil
 }
 
-func collectLGBNodes(node map[string]any, nodes *[]map[string]any) {
+// collectLGBNodes collects all nodes via DFS, returning the max depth of the subtree.
+func collectLGBNodes(node map[string]any, nodes *[]map[string]any) int {
 	*nodes = append(*nodes, node)
+	d := 0
 	if left := jsonObj(node, "left_child"); left != nil {
-		collectLGBNodes(left, nodes)
+		if ld := collectLGBNodes(left, nodes) + 1; ld > d {
+			d = ld
+		}
 	}
 	if right := jsonObj(node, "right_child"); right != nil {
-		collectLGBNodes(right, nodes)
-	}
-}
-
-// sameNode checks identity by comparing pointer-like fields (split_index or leaf_index).
-func sameNode(a, b map[string]any) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	// Compare by split_index for internal nodes
-	if ai, ok := a["split_index"]; ok {
-		if bi, ok := b["split_index"]; ok {
-			return fmt.Sprint(ai) == fmt.Sprint(bi)
+		if rd := collectLGBNodes(right, nodes) + 1; rd > d {
+			d = rd
 		}
 	}
-	// Compare by leaf_index for leaf nodes
-	if ai, ok := a["leaf_index"]; ok {
-		if bi, ok := b["leaf_index"]; ok {
-			return fmt.Sprint(ai) == fmt.Sprint(bi)
-		}
-	}
-	return false
+	return d
 }
 
 var treeHeaderRe = regexp.MustCompile(`^Tree=\d+$`)
@@ -228,14 +221,14 @@ var treeHeaderRe = regexp.MustCompile(`^Tree=\d+$`)
 func parseLGBText(content string, name string) (*tabular.TabularModel, error) {
 	lines := strings.Split(content, "\n")
 
-	// Parse header parameters
+	// Parse header parameters (stop at first tree section)
 	params := make(map[string]string)
 	for _, line := range lines {
-		if strings.Contains(line, "=") && !strings.HasPrefix(line, "Tree") {
-			key, val, found := strings.Cut(line, "=")
-			if found {
-				params[strings.TrimSpace(key)] = strings.TrimSpace(val)
-			}
+		if treeHeaderRe.MatchString(line) {
+			break
+		}
+		if key, val, found := strings.Cut(line, "="); found {
+			params[strings.TrimSpace(key)] = strings.TrimSpace(val)
 		}
 	}
 
@@ -251,6 +244,10 @@ func parseLGBText(content string, name string) (*tabular.TabularModel, error) {
 	}
 
 	task, activation := lgbObjectiveToTask(objective, numClass)
+
+	if task == tabular.TaskMulticlass {
+		return nil, fmt.Errorf("multiclass tree ensembles (num_class=%d) are not yet supported", numClass)
+	}
 
 	var (
 		featureIndex []int32
@@ -326,6 +323,7 @@ func splitTreeSections(lines []string) [][]string {
 	var sections [][]string
 	var current []string
 	inTree := false
+	terminated := false
 	for _, line := range lines {
 		if treeHeaderRe.MatchString(line) {
 			if len(current) > 0 && inTree {
@@ -337,10 +335,15 @@ func splitTreeSections(lines []string) [][]string {
 			if len(current) > 0 && inTree {
 				sections = append(sections, current)
 			}
+			terminated = true
 			break
 		} else if inTree {
 			current = append(current, line)
 		}
+	}
+	// Flush last tree if file ended without "end of trees" sentinel
+	if !terminated && inTree && len(current) > 0 {
+		sections = append(sections, current)
 	}
 	return sections
 }
@@ -364,8 +367,12 @@ func parseTextTree(
 	numLeaves := parseInt(arrays["num_leaves"], 0)
 	numInternal := numLeaves - 1
 	if numInternal <= 0 {
-		// Single-leaf tree
-		lv := parseFloat(arrays["leaf_value"], 0)
+		// Single-leaf tree — leaf_value may be space-separated, take the first.
+		vals := parseFloatSlice(arrays["leaf_value"])
+		lv := 0.0
+		if len(vals) > 0 {
+			lv = vals[0]
+		}
 		*featureIndex = append(*featureIndex, -1)
 		*threshold = append(*threshold, 0.0)
 		*leftChild = append(*leftChild, -1)
@@ -381,7 +388,6 @@ func parseTextTree(
 	thresholds := parseFloatSlice(arrays["threshold"])
 	lefts := parseIntSlice(arrays["left_child"])
 	rights := parseIntSlice(arrays["right_child"])
-	defaults := strings.Fields(arrays["decision_type"])
 	leafValues := parseFloatSlice(arrays["leaf_value"])
 
 	// Internal nodes first
@@ -421,11 +427,10 @@ func parseTextTree(
 
 		*leafValue = append(*leafValue, 0.0)
 
+		// LightGBM default missing direction: use default_bin if available,
+		// otherwise default to left (LightGBM's default behavior).
+		// Note: decision_type bit 0 controls comparison type (<=/<), not default direction.
 		dl := true
-		if i < len(defaults) {
-			dt, _ := strconv.Atoi(defaults[i])
-			dl = (dt & 2) != 0
-		}
 		*defaultLeft = append(*defaultLeft, dl)
 	}
 
@@ -448,7 +453,11 @@ func parseTextTree(
 }
 
 func lgbObjectiveToTask(objective string, numClass int) (tabular.TaskType, tabular.ActivationType) {
-	obj := strings.ToLower(strings.Fields(objective)[0])
+	fields := strings.Fields(objective)
+	if len(fields) == 0 {
+		return tabular.TaskRegression, tabular.ActivationIdentity
+	}
+	obj := strings.ToLower(fields[0])
 
 	switch obj {
 	case "binary", "cross_entropy", "cross_entropy_lambda":

@@ -3312,7 +3312,6 @@ func ParseListModelsResponse(rsp *http.Response) (*ListModelsResponse, error) {
 	return response, nil
 }
 
-// ParseReadImagesResponse parses an HTTP response from a ReadImagesWithResponse call
 // ParseMakePredictionResponse parses an HTTP response from a MakePredictionWithResponse call
 func ParseMakePredictionResponse(rsp *http.Response) (*MakePredictionResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)

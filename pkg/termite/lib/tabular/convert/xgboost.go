@@ -95,6 +95,10 @@ func parseXGBoostJSON(modelData map[string]any, name string) (*tabular.TabularMo
 
 	featureNames := jsonStringArray(learner, "feature_names")
 
+	if task == tabular.TaskMulticlass {
+		return nil, fmt.Errorf("multiclass tree ensembles (num_class=%d) are not yet supported", numClass)
+	}
+
 	numOutputs := max(numClass, 1)
 	if task == tabular.TaskBinaryClassification {
 		numOutputs = 1
@@ -162,9 +166,21 @@ func flattenXGBTree(
 		nodes = collectNodesRecursive(treeData)
 	}
 
-	numNodes := len(nodes)
+	// Determine slot count from max nodeid (may differ from len(nodes) in legacy format)
+	maxNodeID := 0
+	for _, nRaw := range nodes {
+		if n, ok := nRaw.(map[string]any); ok {
+			if nid := jsonInt(n, "nodeid"); nid > maxNodeID {
+				maxNodeID = nid
+			}
+		}
+	}
+	numSlots := maxNodeID + 1
+	if numSlots < len(nodes) {
+		numSlots = len(nodes)
+	}
 	// Pre-allocate
-	for range numNodes {
+	for range numSlots {
 		*featureIndex = append(*featureIndex, -1)
 		*threshold = append(*threshold, 0.0)
 		*leftChild = append(*leftChild, -1)
@@ -189,13 +205,13 @@ func flattenXGBTree(
 			(*rightChild)[idx] = -1
 		} else {
 			fi := jsonInt(node, "split_feature_id")
-			if fi == 0 {
+			if !jsonHasKey(node, "split_feature_id") {
 				fi = jsonInt(node, "split")
 			}
 			(*featureIndex)[idx] = int32(fi)
 
 			th := jsonFloat(node, "split_condition")
-			if th == 0 {
+			if !jsonHasKey(node, "split_condition") {
 				th = jsonFloat(node, "threshold")
 			}
 			(*threshold)[idx] = th
@@ -249,8 +265,10 @@ func parseXGBScalar(s string, fallback float64) float64 {
 
 func xgbObjectiveToTask(objective string, numClass int) (tabular.TaskType, tabular.ActivationType) {
 	switch objective {
-	case "binary:logistic", "binary:logitraw":
+	case "binary:logistic":
 		return tabular.TaskBinaryClassification, tabular.ActivationSigmoid
+	case "binary:logitraw":
+		return tabular.TaskBinaryClassification, tabular.ActivationIdentity
 	case "binary:hinge":
 		return tabular.TaskBinaryClassification, tabular.ActivationIdentity
 	case "multi:softmax", "multi:softprob":

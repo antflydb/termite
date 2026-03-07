@@ -97,6 +97,12 @@ func NewPredictorWithOpts(m *TabularModel, opts OptimizeOptions) (Predictor, err
 		return nil, fmt.Errorf("no model engine found in pipeline")
 	}
 
+	// Multiclass tree ensembles (interleaved trees per class) are not yet
+	// implemented. Reject at construction time rather than producing wrong output.
+	if p.treeEngine != nil && m.Output.NumOutputs > 1 {
+		return nil, fmt.Errorf("multiclass tree ensembles (num_outputs=%d) are not yet supported", m.Output.NumOutputs)
+	}
+
 	// Set up scratch pool if we have preprocessors
 	if len(p.preprocessors) > 0 {
 		numFeatures := m.Metadata.NumFeatures
@@ -220,6 +226,8 @@ func (p *pipelinePredictor) predictWithPreprocessing(features []float32) []float
 		raw = p.linearEngine.predictSingle(f64)
 	} else if p.svmEngine != nil {
 		raw = p.svmEngine.predictSingle(f64)
+	} else {
+		return []float32{0}
 	}
 
 	applyActivation(raw, p.model.Output.Activation)
@@ -264,6 +272,61 @@ func optimizeModel(m *TabularModel, opts OptimizeOptions) {
 	}
 }
 
+// deadLeafElimination prunes negligible leaves in-place.
+// Leaves with |value| < thresholdFraction * max|leafValue| are zeroed.
+// When both children are dead, the parent collapses into a zero-value leaf.
+func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
+	nodes := &te.Nodes
+	n := len(nodes.FeatureIndex)
+	if n == 0 {
+		return 0
+	}
+
+	var maxVal float64
+	for i := 0; i < n; i++ {
+		if nodes.FeatureIndex[i] < 0 {
+			v := math.Abs(nodes.LeafValue[i])
+			if v > maxVal {
+				maxVal = v
+			}
+		}
+	}
+	if maxVal == 0 {
+		return 0
+	}
+
+	absThreshold := thresholdFraction * maxVal
+	eliminated := 0
+
+	isDead := make([]bool, n)
+	for i := 0; i < n; i++ {
+		if nodes.FeatureIndex[i] < 0 && math.Abs(nodes.LeafValue[i]) < absThreshold {
+			isDead[i] = true
+			eliminated++
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for i := 0; i < n; i++ {
+			if nodes.FeatureIndex[i] >= 0 && !isDead[i] {
+				left := nodes.LeftChild[i]
+				right := nodes.RightChild[i]
+				if left >= 0 && right >= 0 && isDead[left] && isDead[right] {
+					nodes.FeatureIndex[i] = -1
+					nodes.LeftChild[i] = -1
+					nodes.RightChild[i] = -1
+					nodes.LeafValue[i] = 0.0
+					isDead[i] = true
+					changed = true
+				}
+			}
+		}
+	}
+
+	return eliminated
+}
+
 // annotateThresholdPrecision determines the minimum precision needed for each
 // feature's thresholds and stores the result in annotations.
 // Precision levels: "i8" (int8), "i16" (int16), "f16" (float16), "f32" (default).
@@ -300,6 +363,9 @@ func annotateThresholdPrecision(te *TreeEnsemble) {
 
 // minPrecision determines the minimum precision for a set of threshold values.
 func minPrecision(values []float64) string {
+	if len(values) == 0 {
+		return "f32"
+	}
 	allInt := true
 	minV := values[0]
 	maxV := values[0]
@@ -325,14 +391,10 @@ func minPrecision(values []float64) string {
 		}
 	}
 
-	// Check float16: values that can round-trip through float16 without
-	// significant loss (relative tolerance 1e-3).
+	// Check float16: values that round-trip through float32 without
+	// significant loss (relative tolerance 1e-3) and fit in f16 range.
 	allF16 := true
 	for _, v := range values {
-		f16 := float64(float32(float64(uint16(f64ToF16Bits(v)))))
-		_ = f16
-		// Simple heuristic: if value fits in ~[-65504, 65504] and has
-		// limited mantissa bits, it's f16-safe
 		if v != 0 {
 			ratio := v / float64(float32(v))
 			if ratio < 0.999 || ratio > 1.001 {
@@ -349,85 +411,4 @@ func minPrecision(values []float64) string {
 	return "f32"
 }
 
-// f64ToF16Bits is a simplified float64 -> float16 bit conversion for precision checking.
-func f64ToF16Bits(v float64) uint16 {
-	f := float32(v)
-	bits := math.Float32bits(f)
-	sign := (bits >> 31) & 1
-	exp := int((bits>>23)&0xFF) - 127
-	mant := bits & 0x7FFFFF
 
-	if exp < -14 {
-		return uint16(sign << 15) // underflow to zero
-	}
-	if exp > 15 {
-		return uint16(sign<<15 | 0x7C00) // overflow to inf
-	}
-
-	return uint16(sign<<15 | uint32(exp+15)<<10 | (mant >> 13))
-}
-
-// deadLeafElimination prunes negligible leaves in-place.
-// Leaves with |value| < thresholdFraction * max|leafValue| are zeroed.
-// When both children are dead, the parent collapses into a zero-value leaf.
-func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
-	nodes := &te.Nodes
-	n := len(nodes.FeatureIndex)
-	if n == 0 {
-		return 0
-	}
-
-	var maxVal float64
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 {
-			v := nodes.LeafValue[i]
-			if v < 0 {
-				v = -v
-			}
-			if v > maxVal {
-				maxVal = v
-			}
-		}
-	}
-	if maxVal == 0 {
-		return 0
-	}
-
-	absThreshold := thresholdFraction * maxVal
-	eliminated := 0
-
-	isDead := make([]bool, n)
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 {
-			v := nodes.LeafValue[i]
-			if v < 0 {
-				v = -v
-			}
-			if v < absThreshold {
-				isDead[i] = true
-				eliminated++
-			}
-		}
-	}
-
-	for changed := true; changed; {
-		changed = false
-		for i := 0; i < n; i++ {
-			if nodes.FeatureIndex[i] >= 0 && !isDead[i] {
-				left := nodes.LeftChild[i]
-				right := nodes.RightChild[i]
-				if left >= 0 && right >= 0 && isDead[left] && isDead[right] {
-					nodes.FeatureIndex[i] = -1
-					nodes.LeftChild[i] = -1
-					nodes.RightChild[i] = -1
-					nodes.LeafValue[i] = 0.0
-					isDead[i] = true
-					eliminated++
-					changed = true
-				}
-			}
-		}
-	}
-
-	return eliminated
-}

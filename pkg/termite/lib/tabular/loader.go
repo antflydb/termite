@@ -125,5 +125,28 @@ func validateTreeEnsemble(te *TreeEnsemble) error {
 	if te.NumTrees != len(te.Nodes.TreeStarts) {
 		return fmt.Errorf("num_trees (%d) does not match tree_starts length (%d)", te.NumTrees, len(te.Nodes.TreeStarts))
 	}
+	// Validate TreeStarts indices are in bounds
+	for i, start := range te.Nodes.TreeStarts {
+		if int(start) < 0 || int(start) >= n {
+			return fmt.Errorf("tree_starts[%d] = %d is out of bounds (0..%d)", i, start, n-1)
+		}
+	}
+	// Validate feature indices and child pointers are in bounds
+	for i := 0; i < n; i++ {
+		fi := te.Nodes.FeatureIndex[i]
+		if fi >= 0 {
+			if te.NumFeatures > 0 && int(fi) >= te.NumFeatures {
+				return fmt.Errorf("node %d: feature_index %d >= num_features %d", i, fi, te.NumFeatures)
+			}
+			lc := te.Nodes.LeftChild[i]
+			rc := te.Nodes.RightChild[i]
+			if lc < 0 || int(lc) >= n {
+				return fmt.Errorf("node %d: left_child %d is out of bounds (0..%d)", i, lc, n-1)
+			}
+			if rc < 0 || int(rc) >= n {
+				return fmt.Errorf("node %d: right_child %d is out of bounds (0..%d)", i, rc, n-1)
+			}
+		}
+	}
 	return nil
 }

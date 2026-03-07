@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/antflydb/antfly-go/libaf/ai"
@@ -2339,13 +2340,21 @@ func (ln *TermiteNode) handleApiPredict(w http.ResponseWriter, r *http.Request) 
 
 	predictor, err := ln.predictorRegistry.Acquire(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		} else {
+			http.Error(w, fmt.Sprintf("failed to load model %s: %v", req.Model, err), http.StatusInternalServerError)
+		}
 		return
 	}
 	defer ln.predictorRegistry.Release(req.Model)
 
 	results, err := predictor.Predict(r.Context(), req.Input)
 	if err != nil {
+		if strings.Contains(err.Error(), "expected") && strings.Contains(err.Error(), "features") {
+			http.Error(w, fmt.Sprintf("invalid input: %v", err), http.StatusBadRequest)
+			return
+		}
 		ln.logger.Error("prediction failed",
 			zap.String("model", req.Model),
 			zap.Error(err))
@@ -2359,10 +2368,12 @@ func (ln *TermiteNode) handleApiPredict(w http.ResponseWriter, r *http.Request) 
 		Task:        string(predictor.ModelMetadata().Task),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		ln.logger.Error("encoding response", zap.Error(err))
+	respData, err := json.Marshal(resp)
+	if err != nil {
+		ln.logger.Error("encoding predict response", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(respData)
 }

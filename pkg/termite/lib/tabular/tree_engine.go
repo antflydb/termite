@@ -60,6 +60,9 @@ func (e *treeEngine) predictSingle32(features []float32) float32 {
 	treeStarts := nodes.TreeStarts
 	numTrees := e.te.NumTrees
 	maxIter := e.te.MaxDepth + 2
+	if n := len(featureIdx); maxIter < n {
+		maxIter = n // safe fallback when MaxDepth is unset or too small
+	}
 
 	sum := float32(e.te.BaseScore)
 
@@ -92,6 +95,8 @@ func (e *treeEngine) predictSingle32(features []float32) float32 {
 				nodeIdx = int(rightChild[nodeIdx])
 			}
 		}
+		// If maxIter exhausted without reaching a leaf, this tree
+		// contributes 0 (no addition to sum). This is safe.
 	}
 
 	return sum
@@ -110,6 +115,9 @@ func (e *treeEngine) predictSingle(features []float64) float64 {
 	treeStarts := nodes.TreeStarts
 	numTrees := e.te.NumTrees
 	maxIter := e.te.MaxDepth + 2
+	if n := len(featureIdx); maxIter < n {
+		maxIter = n // safe fallback when MaxDepth is unset or too small
+	}
 
 	sum := e.te.BaseScore
 
@@ -138,6 +146,8 @@ func (e *treeEngine) predictSingle(features []float64) float64 {
 				nodeIdx = int(rightChild[nodeIdx])
 			}
 		}
+		// If maxIter exhausted without reaching a leaf, this tree
+		// contributes 0 (no addition to sum). This is safe.
 	}
 
 	return sum
@@ -160,6 +170,9 @@ func (e *treeEngine) predictBatch32(features [][]float32) []float32 {
 	treeStarts := nodes.TreeStarts
 	numTrees := e.te.NumTrees
 	maxIter := e.te.MaxDepth + 2
+	if n := len(featureIdx); maxIter < n {
+		maxIter = n // safe fallback when MaxDepth is unset or too small
+	}
 	baseScore := float32(e.te.BaseScore)
 
 	// Pre-allocate leaf values buffer for SIMD reduction
@@ -210,6 +223,9 @@ func (e *treeEngine) predictBatch32(features [][]float32) []float32 {
 // applyActivation applies the output activation function in-place using
 // go-highway SIMD where beneficial.
 func applyActivation(values []float64, activation ActivationType) {
+	if len(values) == 0 {
+		return
+	}
 	switch activation {
 	case ActivationSigmoid:
 		for i, v := range values {
@@ -241,6 +257,9 @@ func applyActivation(values []float64, activation ActivationType) {
 
 // applyActivation32 applies activation in float32 using go-highway SIMD.
 func applyActivation32(values []float32, activation ActivationType) {
+	if len(values) == 0 {
+		return
+	}
 	switch activation {
 	case ActivationSigmoid:
 		if len(values) >= 4 {

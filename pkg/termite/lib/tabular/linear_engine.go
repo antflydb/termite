@@ -24,7 +24,8 @@ func newLinearEngine(lm *LinearModel) *linearEngine {
 }
 
 // predictSingle computes output = W*x + b for one sample.
-// Returns [num_outputs] raw logits before output activation.
+// Returns [num_outputs] raw values. Activation is NOT applied here;
+// the caller (engine.go) applies Output.Activation uniformly for all engines.
 func (e *linearEngine) predictSingle(features []float64) []float64 {
 	numOutputs := len(e.lm.Weights)
 	result := make([]float64, numOutputs)
@@ -32,7 +33,13 @@ func (e *linearEngine) predictSingle(features []float64) []float64 {
 	for o := 0; o < numOutputs; o++ {
 		w := e.lm.Weights[o]
 		var sum float64
-		n := min(len(w), len(features))
+		// Use the shorter of weights and features to avoid out-of-bounds.
+		// A mismatch here indicates a model/input size discrepancy, but the
+		// caller (PredictSingle) already validates input feature count.
+		n := len(w)
+		if n > len(features) {
+			n = len(features)
+		}
 		for i := 0; i < n; i++ {
 			sum += w[i] * features[i]
 		}
@@ -41,9 +48,6 @@ func (e *linearEngine) predictSingle(features []float64) []float64 {
 		}
 		result[o] = sum
 	}
-
-	// Apply per-output activation if specified
-	applyActivation(result, e.lm.Activation)
 
 	return result
 }

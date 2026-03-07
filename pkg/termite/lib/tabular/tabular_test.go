@@ -169,9 +169,8 @@ func TestLinearModel(t *testing.T) {
 			{
 				Type: StageLinear,
 				Linear: &LinearModel{
-					Weights:    [][]float64{{1.0, 2.0, 3.0}},
-					Biases:     []float64{0.5},
-					Activation: ActivationIdentity,
+					Weights: [][]float64{{1.0, 2.0, 3.0}},
+					Biases:  []float64{0.5},
 				},
 			},
 		},
@@ -217,9 +216,8 @@ func TestScalerPreprocessing(t *testing.T) {
 			{
 				Type: StageLinear,
 				Linear: &LinearModel{
-					Weights:    [][]float64{{1.0, 1.0}},
-					Biases:     []float64{0.0},
-					Activation: ActivationIdentity,
+					Weights: [][]float64{{1.0, 1.0}},
+					Biases:  []float64{0.0},
 				},
 			},
 		},
@@ -265,9 +263,8 @@ func TestImputerPreprocessing(t *testing.T) {
 			{
 				Type: StageLinear,
 				Linear: &LinearModel{
-					Weights:    [][]float64{{1.0, 1.0}},
-					Biases:     []float64{0.0},
-					Activation: ActivationIdentity,
+					Weights: [][]float64{{1.0, 1.0}},
+					Biases:  []float64{0.0},
 				},
 			},
 		},

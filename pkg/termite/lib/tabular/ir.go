@@ -123,10 +123,10 @@ type TreeEnsemble struct {
 }
 
 // LinearModel represents a logistic/linear regression.
+// Activation is handled by Output.Activation in the pipeline, not here.
 type LinearModel struct {
-	Weights    [][]float64    `json:"weights"`    // [num_outputs][num_features]
-	Biases     []float64      `json:"biases"`     // [num_outputs]
-	Activation ActivationType `json:"activation"` // applied per-output before final activation
+	Weights [][]float64 `json:"weights"` // [num_outputs][num_features]
+	Biases  []float64   `json:"biases"`  // [num_outputs]
 }
 
 // SVMModel represents a support vector machine.

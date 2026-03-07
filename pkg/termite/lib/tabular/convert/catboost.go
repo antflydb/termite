@@ -60,6 +60,10 @@ func parseCatBoostJSON(data map[string]any, name string) (*tabular.TabularModel,
 	numFeatures := catboostCountFeatures(data, obliviousTrees)
 	task, activation := catboostLossToTask(lossType)
 
+	if task == tabular.TaskMulticlass {
+		return nil, fmt.Errorf("multiclass tree ensembles are not yet supported")
+	}
+
 	// Scale and bias
 	scale := 1.0
 	bias := 0.0
@@ -205,11 +209,11 @@ func convertObliviousTree(
 		}
 
 		feat := jsonInt(split, "float_feature_index")
-		if feat == 0 {
+		if !jsonHasKey(split, "float_feature_index") {
 			feat = jsonInt(split, "feature_index")
 		}
 		thresh := jsonFloat(split, "border")
-		if thresh == 0 {
+		if !jsonHasKey(split, "border") {
 			thresh = jsonFloat(split, "threshold")
 		}
 
@@ -226,11 +230,21 @@ func convertObliviousTree(
 		}
 	}
 
-	// Fill leaf nodes
+	// Fill leaf nodes.
+	// CatBoost leaf ordering uses a bit-convention where bit d (from the deepest
+	// split) is 1 when the sample goes right at depth d. The BFS leaf order is
+	// different, so we must reverse the bits of the leaf index to map correctly.
 	for i := 0; i < numLeaves; i++ {
+		// Reverse the path bits to get CatBoost's leaf index
+		cbIdx := 0
+		for d := 0; d < depth; d++ {
+			if (i>>d)&1 == 1 {
+				cbIdx |= 1 << (depth - 1 - d)
+			}
+		}
 		idx := int(base) + numInternal + i
-		if i < len(leafValues) {
-			(*leafValue)[idx] = leafValues[i] * scale
+		if cbIdx < len(leafValues) {
+			(*leafValue)[idx] = leafValues[cbIdx] * scale
 		}
 		(*featureIndex)[idx] = -1
 		(*leftChild)[idx] = -1
@@ -270,7 +284,7 @@ func catboostCountFeatures(data map[string]any, trees []any) int {
 				continue
 			}
 			fi := jsonInt(split, "float_feature_index")
-			if fi == 0 {
+			if !jsonHasKey(split, "float_feature_index") {
 				fi = jsonInt(split, "feature_index")
 			}
 			if fi > maxFeat {

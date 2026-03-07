@@ -258,7 +258,7 @@ num_class=1
 objective=binary
 
 Tree=0
-num_leaves=3
+num_leaves=2
 split_feature=0
 threshold=0.5
 decision_type=2
@@ -267,7 +267,7 @@ right_child=-2
 leaf_value=0.3 -0.2
 
 Tree=1
-num_leaves=3
+num_leaves=2
 split_feature=1
 threshold=1.0
 decision_type=0
@@ -406,29 +406,130 @@ func TestParseCatBoost(t *testing.T) {
 
 func TestValidateProducedModel(t *testing.T) {
 	// Ensure every parser produces valid IR
-	tests := []struct {
-		name string
-		fn   func() (string, error)
-	}{
-		{"xgboost", func() (string, error) {
-			p := writeJSONFile(t, makeXGBJSON(3, "binary:logistic"))
-			return p, nil
-		}},
+	t.Run("xgboost", func(t *testing.T) {
+		path := writeJSONFile(t, makeXGBJSON(3, "binary:logistic"))
+		model, err := ParseXGBoost(path, "validate-xgb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := model.Validate(); err != nil {
+			t.Errorf("validation failed: %v", err)
+		}
+	})
+
+	t.Run("lightgbm_text", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "model.txt")
+		if err := os.WriteFile(path, []byte(makeLGBTextModel()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		model, err := ParseLightGBM(path, "validate-lgb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := model.Validate(); err != nil {
+			t.Errorf("validation failed: %v", err)
+		}
+	})
+
+	t.Run("catboost", func(t *testing.T) {
+		data := map[string]any{
+			"model_info": map[string]any{
+				"params": map[string]any{
+					"loss_function": map[string]any{"type": "Logloss"},
+				},
+			},
+			"features_info": map[string]any{
+				"float_features": []any{
+					map[string]any{"flat_feature_index": float64(0)},
+					map[string]any{"flat_feature_index": float64(1)},
+				},
+			},
+			"scale_and_bias": []any{[]any{float64(1.0)}, []any{float64(0.0)}},
+			"oblivious_trees": []any{
+				map[string]any{
+					"splits": []any{
+						map[string]any{"float_feature_index": float64(0), "border": float64(0.5)},
+					},
+					"leaf_values": []any{float64(0.3), float64(-0.2)},
+				},
+			},
+		}
+		path := writeJSONFile(t, data)
+		model, err := ParseCatBoost(path, "validate-cb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := model.Validate(); err != nil {
+			t.Errorf("validation failed: %v", err)
+		}
+	})
+}
+
+func TestXGBoostFeatureZero(t *testing.T) {
+	// Verify that feature index 0 is correctly preserved (not treated as absent).
+	data := makeXGBJSON(3, "binary:logistic")
+	path := writeJSONFile(t, data)
+
+	model, err := ParseXGBoost(path, "feature-zero-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	te := model.Pipeline[0].TreeEnsemble
+
+	// Tree 0 root splits on feature 0 — must be exactly 0, not a fallback value
+	if te.Nodes.FeatureIndex[0] != 0 {
+		t.Errorf("feature index 0 was %d, want 0 (feature 0 should not be treated as absent)", te.Nodes.FeatureIndex[0])
+	}
+}
+
+func TestCatBoostDepth2LeafOrder(t *testing.T) {
+	// Depth 2 oblivious tree: verify leaf bit-reversal produces correct values.
+	data := map[string]any{
+		"model_info": map[string]any{
+			"params": map[string]any{
+				"loss_function": map[string]any{"type": "RMSE"},
+			},
+		},
+		"features_info": map[string]any{
+			"float_features": []any{
+				map[string]any{"flat_feature_index": float64(0)},
+				map[string]any{"flat_feature_index": float64(1)},
+			},
+		},
+		"scale_and_bias": []any{[]any{float64(1.0)}, []any{float64(0.0)}},
+		"oblivious_trees": []any{
+			map[string]any{
+				"splits": []any{
+					map[string]any{"float_feature_index": float64(1), "border": float64(0.5)},
+					map[string]any{"float_feature_index": float64(0), "border": float64(1.0)},
+				},
+				// CatBoost leaf order: LL=0.1, RL=0.2, LR=0.3, RR=0.4
+				"leaf_values": []any{float64(0.1), float64(0.2), float64(0.3), float64(0.4)},
+			},
+		},
+	}
+	path := writeJSONFile(t, data)
+	model, err := ParseCatBoost(path, "depth2-test")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path, err := tt.fn()
-			if err != nil {
-				t.Fatal(err)
-			}
-			model, err := ParseXGBoost(path, "validate-test")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := model.Validate(); err != nil {
-				t.Errorf("validation failed: %v", err)
-			}
-		})
+	te := model.Pipeline[0].TreeEnsemble
+	// 3 internal nodes (depth=2: 1+2) + 4 leaves = 7 total
+	if len(te.Nodes.FeatureIndex) != 7 {
+		t.Fatalf("expected 7 nodes, got %d", len(te.Nodes.FeatureIndex))
+	}
+
+	// Leaves are at indices 3,4,5,6 (BFS order: LL, LR, RL, RR)
+	// After bit-reversal: BFS leaf 0 (LL) → CatBoost idx 0 (0.1)
+	//                     BFS leaf 1 (LR) → CatBoost idx 2 (0.3)
+	//                     BFS leaf 2 (RL) → CatBoost idx 1 (0.2)
+	//                     BFS leaf 3 (RR) → CatBoost idx 3 (0.4)
+	expectedLeaves := []float64{0.1, 0.3, 0.2, 0.4}
+	for i, want := range expectedLeaves {
+		got := te.Nodes.LeafValue[3+i]
+		if got != want {
+			t.Errorf("leaf %d: got %f, want %f", i, got, want)
+		}
 	}
 }

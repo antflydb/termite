@@ -84,6 +84,15 @@ func jsonInt(m map[string]any, key string) int {
 	}
 }
 
+// jsonHasKey returns true if the key exists in the map (regardless of value).
+func jsonHasKey(m map[string]any, key string) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
+}
+
 // jsonIntDefault returns an int value or fallback.
 func jsonIntDefault(m map[string]any, key string, fallback int) int {
 	if m == nil {
