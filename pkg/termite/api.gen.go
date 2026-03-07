@@ -668,6 +668,9 @@ type ModelsResponse struct {
 	// Generators Available generator/LLM models from models_dir/generators/
 	Generators map[string]ModelInfo `json:"generators"`
 
+	// Predictors Available tabular ML predictor models from models_dir/predictors/
+	Predictors map[string]ModelInfo `json:"predictors"`
+
 	// Readers Available reader/OCR models from models_dir/readers/
 	Readers map[string]ModelInfo `json:"readers"`
 
@@ -1007,6 +1010,30 @@ type TranscribeResponse struct {
 	// Text Transcribed text from the audio
 	Text string `json:"text"`
 }
+
+// PredictRequest defines model for PredictRequest.
+type PredictRequest struct {
+	// Input Batch of feature vectors. Each inner array is one sample's features.
+	Input [][]float32 `json:"input"`
+
+	// Model Name of predictor model from models_dir/predictors/
+	Model string `json:"model"`
+}
+
+// PredictResponse defines model for PredictResponse.
+type PredictResponse struct {
+	// Model Name of model used for prediction
+	Model string `json:"model"`
+
+	// Predictions Prediction outputs per input sample.
+	Predictions [][]float32 `json:"predictions"`
+
+	// Task Task type of the model
+	Task string `json:"task,omitempty,omitzero"`
+}
+
+// MakePredictionJSONRequestBody defines body for MakePrediction for application/json ContentType.
+type MakePredictionJSONRequestBody = PredictRequest
 
 // VADOptions Options for Voice Activity Detection (VAD) based audio segmentation. Termite-specific.
 type VADOptions struct {
@@ -1453,6 +1480,9 @@ type ServerInterface interface {
 	// List available models
 	// (GET /models)
 	ListModels(w http.ResponseWriter, r *http.Request)
+	// Tabular prediction
+	// (POST /predict)
+	MakePrediction(w http.ResponseWriter, r *http.Request)
 	// Read text from images (OCR/document understanding)
 	// (POST /read)
 	ReadImages(w http.ResponseWriter, r *http.Request)
@@ -1557,6 +1587,20 @@ func (siw *ServerInterfaceWrapper) ListModels(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListModels(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// MakePrediction operation middleware
+func (siw *ServerInterfaceWrapper) MakePrediction(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.MakePrediction(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1776,6 +1820,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("POST "+options.BaseURL+"/extract", wrapper.ExtractJSON)
 	m.HandleFunc("POST "+options.BaseURL+"/generate", wrapper.GenerateContent)
 	m.HandleFunc("GET "+options.BaseURL+"/models", wrapper.ListModels)
+	m.HandleFunc("POST "+options.BaseURL+"/predict", wrapper.MakePrediction)
 	m.HandleFunc("POST "+options.BaseURL+"/read", wrapper.ReadImages)
 	m.HandleFunc("POST "+options.BaseURL+"/recognize", wrapper.RecognizeEntities)
 	m.HandleFunc("POST "+options.BaseURL+"/rerank", wrapper.RerankPrompts)

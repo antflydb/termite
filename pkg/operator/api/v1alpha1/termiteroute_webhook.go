@@ -107,13 +107,36 @@ func (r *TermiteRoute) validateMatch() error {
 
 	// Validate operations
 	validOps := map[OperationType]bool{
-		OperationEmbed:  true,
-		OperationChunk:  true,
-		OperationRerank: true,
+		OperationEmbed:      true,
+		OperationChunk:      true,
+		OperationRerank:     true,
+		OperationClassify:   true,
+		OperationGenerate:   true,
+		OperationRead:       true,
+		OperationTranscribe: true,
+		OperationPredict:    true,
 	}
 	for _, op := range match.Operations {
 		if !validOps[op] {
-			return fmt.Errorf("invalid operation '%s'. Must be one of: embed, chunk, rerank", op)
+			return fmt.Errorf("invalid operation '%s'. Must be one of: embed, chunk, rerank, classify, generate, read, transcribe, predict", op)
+		}
+	}
+
+	// Validate model types
+	validModelTypes := map[TermiteModelType]bool{
+		TermiteModelTypeEmbedder:    true,
+		TermiteModelTypeReranker:    true,
+		TermiteModelTypeChunker:     true,
+		TermiteModelTypeClassifier:  true,
+		TermiteModelTypeGenerator:   true,
+		TermiteModelTypeSeq2Seq:     true,
+		TermiteModelTypeNER:         true,
+		TermiteModelTypeTranscriber: true,
+		TermiteModelTypePredictor:   true,
+	}
+	for _, mt := range match.ModelTypes {
+		if !validModelTypes[mt] {
+			return fmt.Errorf("invalid modelType '%s'. Must be one of: embedder, reranker, chunker, classifier, generator, seq2seq, ner, transcriber, predictor", mt)
 		}
 	}
 

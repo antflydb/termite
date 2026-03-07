@@ -77,6 +77,7 @@ const (
 	ModelTypeClassifier  ModelType = "classifiers"
 	ModelTypeReader      ModelType = "readers"
 	ModelTypeTranscriber ModelType = "transcribers"
+	ModelTypePredictor   ModelType = "predictors"
 )
 
 // ensureRegistryModel downloads a model from the Antfly model registry if not present.
@@ -187,6 +188,8 @@ func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType Mode
 		regModelType = modelregistry.ModelTypeReader
 	case ModelTypeTranscriber:
 		regModelType = modelregistry.ModelTypeTranscriber
+	case ModelTypePredictor:
+		regModelType = modelregistry.ModelTypePredictor
 	default:
 		regModelType = modelregistry.ModelTypeEmbedder
 	}
@@ -255,6 +258,11 @@ func getClassifierModelsDir() string {
 // getTranscriberModelsDir returns the transcribers subdirectory
 func getTranscriberModelsDir() string {
 	return filepath.Join(testModelsDir, "transcribers")
+}
+
+// getPredictorModelsDir returns the predictors subdirectory
+func getPredictorModelsDir() string {
+	return filepath.Join(testModelsDir, "predictors")
 }
 
 // fileExists checks if a file exists and is not a directory

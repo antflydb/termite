@@ -305,14 +305,21 @@ func (r *TermitePoolReconciler) generateCompleteConfig(pool *antflyaiv1alpha1.Te
 	}
 
 	// Set model directories based on models-dir default
-	if _, exists := config["embedder_models_dir"]; !exists {
-		config["embedder_models_dir"] = "/models/embedders"
+	modelDirs := map[string]string{
+		"embedder_models_dir":    "/models/embedders",
+		"chunker_models_dir":     "/models/chunkers",
+		"reranker_models_dir":    "/models/rerankers",
+		"classifier_models_dir":  "/models/classifiers",
+		"generator_models_dir":   "/models/generators",
+		"seq2seq_models_dir":     "/models/rewriters",
+		"ner_models_dir":         "/models/recognizers",
+		"transcriber_models_dir": "/models/transcribers",
+		"predictor_models_dir":   "/models/predictors",
 	}
-	if _, exists := config["chunker_models_dir"]; !exists {
-		config["chunker_models_dir"] = "/models/chunkers"
-	}
-	if _, exists := config["reranker_models_dir"]; !exists {
-		config["reranker_models_dir"] = "/models/rerankers"
+	for key, defaultPath := range modelDirs {
+		if _, exists := config[key]; !exists {
+			config[key] = defaultPath
+		}
 	}
 
 	// Set loading strategy config

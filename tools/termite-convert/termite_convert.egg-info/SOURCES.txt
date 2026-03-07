@@ -1,0 +1,16 @@
+pyproject.toml
+termite_convert/__init__.py
+termite_convert/cli.py
+termite_convert/ir.py
+termite_convert/optimizer.py
+termite_convert.egg-info/PKG-INFO
+termite_convert.egg-info/SOURCES.txt
+termite_convert.egg-info/dependency_links.txt
+termite_convert.egg-info/entry_points.txt
+termite_convert.egg-info/requires.txt
+termite_convert.egg-info/top_level.txt
+termite_convert/parsers/__init__.py
+termite_convert/parsers/lightgbm_parser.py
+termite_convert/parsers/sklearn_parser.py
+termite_convert/parsers/xgboost_parser.py
+tests/test_xgboost_parser.py

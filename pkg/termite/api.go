@@ -119,6 +119,11 @@ func (t *TermiteAPI) ExtractJSON(w http.ResponseWriter, r *http.Request) {
 	t.node.handleApiExtract(w, r)
 }
 
+// MakePrediction implements ServerInterface
+func (t *TermiteAPI) MakePrediction(w http.ResponseWriter, r *http.Request) {
+	t.node.handleApiPredict(w, r)
+}
+
 // stringsToModelInfoMap converts a flat list of model names to a map with empty ModelInfo.
 func stringsToModelInfoMap(names []string) map[string]ModelInfo {
 	m := make(map[string]ModelInfo, len(names))
@@ -150,6 +155,7 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 		Classifiers:  map[string]ModelInfo{},
 		Readers:      map[string]ModelInfo{},
 		Transcribers: map[string]ModelInfo{},
+		Predictors:   map[string]ModelInfo{},
 	}
 
 	if t.node.chunker != nil {
@@ -199,6 +205,10 @@ func (t *TermiteAPI) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	if t.node.transcriberRegistry != nil {
 		resp.Transcribers = stringsToModelInfoMap(t.node.transcriberRegistry.List())
+	}
+
+	if t.node.predictorRegistry != nil {
+		resp.Predictors = stringsToModelInfoMap(t.node.predictorRegistry.List())
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -2274,6 +2284,79 @@ func (ln *TermiteNode) handleApiTranscribe(w http.ResponseWriter, r *http.Reques
 		Model:    req.Model,
 		Text:     result.Text,
 		Language: result.Language,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		ln.logger.Error("encoding response", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// handleApiPredict handles tabular prediction requests.
+func (ln *TermiteNode) handleApiPredict(w http.ResponseWriter, r *http.Request) {
+	defer func() { _ = r.Body.Close() }()
+
+	if ln.predictorRegistry == nil {
+		http.Error(w, "prediction not available: no models configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Apply backpressure via request queue
+	release, err := ln.requestQueue.Acquire(r.Context())
+	if err != nil {
+		switch err {
+		case ErrQueueFull:
+			RecordQueueRejection()
+			WriteQueueFullResponse(w, 5*time.Second)
+		case ErrRequestTimeout:
+			RecordQueueTimeout()
+			WriteTimeoutResponse(w)
+		default:
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+		}
+		return
+	}
+	defer release()
+
+	UpdateQueueMetrics(ln.requestQueue.Stats())
+
+	var req PredictRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+	if len(req.Input) == 0 {
+		http.Error(w, "input is required", http.StatusBadRequest)
+		return
+	}
+
+	predictor, err := ln.predictorRegistry.Acquire(req.Model)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		return
+	}
+	defer ln.predictorRegistry.Release(req.Model)
+
+	results, err := predictor.Predict(r.Context(), req.Input)
+	if err != nil {
+		ln.logger.Error("prediction failed",
+			zap.String("model", req.Model),
+			zap.Error(err))
+		http.Error(w, fmt.Sprintf("prediction failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	resp := PredictResponse{
+		Model:       req.Model,
+		Predictions: results,
+		Task:        string(predictor.ModelMetadata().Task),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

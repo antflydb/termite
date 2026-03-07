@@ -51,6 +51,11 @@ type RouteMatch struct {
 	// +optional
 	Operations []OperationType `json:"operations,omitempty"`
 
+	// ModelTypes matches model categories (embedder, reranker, predictor, etc.)
+	// When specified, only routes requests for models of these types.
+	// +optional
+	ModelTypes []TermiteModelType `json:"modelTypes,omitempty"`
+
 	// Models matches model names (supports wildcards: "bge-*", "*-rerank-*")
 	// +optional
 	Models []string `json:"models,omitempty"`
@@ -72,9 +77,14 @@ type RouteMatch struct {
 type OperationType string
 
 const (
-	OperationEmbed  OperationType = "embed"
-	OperationChunk  OperationType = "chunk"
-	OperationRerank OperationType = "rerank"
+	OperationEmbed      OperationType = "embed"
+	OperationChunk      OperationType = "chunk"
+	OperationRerank     OperationType = "rerank"
+	OperationClassify   OperationType = "classify"
+	OperationGenerate   OperationType = "generate"
+	OperationRead       OperationType = "read"
+	OperationTranscribe OperationType = "transcribe"
+	OperationPredict    OperationType = "predict"
 )
 
 // StringMatch defines how to match a string value

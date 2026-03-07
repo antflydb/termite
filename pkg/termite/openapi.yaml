@@ -894,6 +894,53 @@ components:
           description: Detected or forced language
           example: "en"
 
+    # Predictor Types
+    PredictRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+          description: Name of predictor model from models_dir/predictors/
+          example: "myorg/xgboost-classifier"
+        input:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: float
+          description: |
+            Batch of feature vectors. Each inner array is one sample's features.
+            All samples must have the same number of features matching the model's expected input.
+          example: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+
+    PredictResponse:
+      type: object
+      required:
+        - model
+        - predictions
+      properties:
+        model:
+          type: string
+          description: Name of model used for prediction
+        predictions:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: float
+          description: |
+            Prediction outputs. Each inner array contains the model's output for the
+            corresponding input sample (e.g., a single probability for binary classification,
+            or multiple values for multi-class).
+        task:
+          type: string
+          description: Task type of the model (e.g., "binary_classification", "regression")
+
     # Models Types
     ModelInfo:
       type: object
@@ -918,6 +965,7 @@ components:
         - classifiers
         - readers
         - transcribers
+        - predictors
       properties:
         chunkers:
           type: object
@@ -969,6 +1017,11 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/ModelInfo'
           description: Available transcriber/speech-to-text models from models_dir/transcribers/
+        predictors:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available tabular ML predictor models from models_dir/predictors/
 
     # Tool Calling Types (OpenAI-compatible)
     Tool:
@@ -2189,11 +2242,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /predict:
+    post:
+      summary: Run tabular ML model prediction
+      description: |
+        Runs inference on a traditional ML model (XGBoost, LightGBM, sklearn, CatBoost)
+        that has been converted to Termite's tabular IR format using `termite-convert`.
+
+        Supports tree ensembles, linear models, and SVMs with optional preprocessing
+        pipelines (scaling, imputation).
+      operationId: makePrediction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PredictRequest"
+      responses:
+        "200":
+          description: Prediction completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PredictResponse"
+        "400":
+          description: Invalid request (e.g., wrong number of features)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Prediction service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /models:
     get:
       summary: List available models
       description: |
-        Returns lists of available embedding, chunking, reranking, generator, NER, rewriter, reader, and transcriber models.
+        Returns lists of available embedding, chunking, reranking, generator, NER, rewriter, reader, transcriber, and predictor models.
 
         ## Embedders
 

@@ -47,6 +47,7 @@ type TermiteNode struct {
 	nerRegistry           NERRegistryInterface
 	seq2seqRegistry       Seq2SeqRegistryInterface
 	classifierRegistry    ClassifierRegistryInterface
+	predictorRegistry     PredictorRegistryInterface
 	contentSecurityConfig *scraping.ContentSecurityConfig
 	s3Credentials         *s3.Credentials
 
@@ -154,7 +155,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 	}
 
 	// Compute model subdirectory paths from models_dir
-	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir, readerModelsDir, transcriberModelsDir string
+	var embedderModelsDir, chunkerModelsDir, rerankerModelsDir, generatorModelsDir, readerModelsDir, transcriberModelsDir, predictorModelsDir string
 	if config.ModelsDir != "" {
 		embedderModelsDir = filepath.Join(config.ModelsDir, "embedders")
 		chunkerModelsDir = filepath.Join(config.ModelsDir, "chunkers")
@@ -162,6 +163,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		generatorModelsDir = filepath.Join(config.ModelsDir, "generators")
 		readerModelsDir = filepath.Join(config.ModelsDir, "readers")
 		transcriberModelsDir = filepath.Join(config.ModelsDir, "transcribers")
+		predictorModelsDir = filepath.Join(config.ModelsDir, "predictors")
 	}
 
 	// Create session manager for multi-backend support
@@ -441,6 +443,31 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	}
 
+	// Initialize predictor registry with lazy loading
+	// Predictor models use pure Go inference (no ONNX/session manager needed)
+	var predictorRegistry *PredictorRegistry
+	if predictorModelsDir != "" {
+		predictorRegistry, err = NewPredictorRegistry(
+			PredictorConfig{
+				ModelsDir:       predictorModelsDir,
+				KeepAlive:       keepAlive,
+				MaxLoadedModels: uint64(config.MaxLoadedModels),
+			},
+			zl.Named("predictor"),
+		)
+		if err != nil {
+			zl.Fatal("Failed to initialize predictor registry", zap.Error(err))
+		}
+		defer func() { _ = predictorRegistry.Close() }()
+
+		// If eager loading is requested, preload all models
+		if keepAlive == 0 {
+			if err := predictorRegistry.PreloadAll(); err != nil {
+				zl.Warn("Failed to preload some predictor models", zap.Error(err))
+			}
+		}
+	}
+
 	t := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
@@ -515,6 +542,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		nerRegistry:           nerRegistry,
 		seq2seqRegistry:       seq2seqRegistry,
 		classifierRegistry:    classifierRegistry,
+		predictorRegistry:     predictorRegistry,
 		readerRegistry:        readerRegistry,
 		transcriberRegistry:   transcriberRegistry,
 		contentSecurityConfig: contentSecurityConfig,

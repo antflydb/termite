@@ -31,6 +31,7 @@ type Route struct {
 
 	// Compiled matchers
 	Operations     map[OperationType]bool
+	ModelTypes     map[string]bool
 	ModelPatterns  []*regexp.Regexp
 	HeaderMatchers map[string]*StringMatcher
 	SourceTables   map[string]bool
@@ -226,6 +227,7 @@ func (rl *RateLimiter) Allow(model string) bool {
 // RouteRequest contains information about a request for routing
 type RouteRequest struct {
 	Operation   OperationType
+	ModelType   string
 	Model       string
 	Headers     map[string]string
 	SourceTable string
@@ -304,6 +306,13 @@ func (rm *RouteManager) matchRoute(route *Route, req *RouteRequest) bool {
 	// Match operations (if specified)
 	if len(route.Operations) > 0 {
 		if !route.Operations[req.Operation] {
+			return false
+		}
+	}
+
+	// Match model types (if specified)
+	if len(route.ModelTypes) > 0 {
+		if !route.ModelTypes[req.ModelType] {
 			return false
 		}
 	}

@@ -152,10 +152,31 @@ type ModelConfig struct {
 	RegistryURL string `json:"registryURL,omitempty"`
 }
 
+// TermiteModelType defines the category of a Termite model
+type TermiteModelType string
+
+const (
+	TermiteModelTypeEmbedder    TermiteModelType = "embedder"
+	TermiteModelTypeReranker    TermiteModelType = "reranker"
+	TermiteModelTypeChunker     TermiteModelType = "chunker"
+	TermiteModelTypeClassifier  TermiteModelType = "classifier"
+	TermiteModelTypeGenerator   TermiteModelType = "generator"
+	TermiteModelTypeSeq2Seq     TermiteModelType = "seq2seq"
+	TermiteModelTypeNER         TermiteModelType = "ner"
+	TermiteModelTypeTranscriber TermiteModelType = "transcriber"
+	TermiteModelTypePredictor   TermiteModelType = "predictor"
+)
+
 // ModelSpec defines a single model to load
 type ModelSpec struct {
 	// Name is the model name (e.g., "bge-small-en-v1.5")
 	Name string `json:"name"`
+
+	// Type specifies the model category. If omitted, type is inferred from
+	// model metadata at runtime.
+	// +optional
+	// +kubebuilder:validation:Enum=embedder;reranker;chunker;classifier;generator;seq2seq;ner;transcriber;predictor
+	Type TermiteModelType `json:"type,omitempty"`
 
 	// Variant specifies a model variant (e.g., "quantized")
 	// +optional

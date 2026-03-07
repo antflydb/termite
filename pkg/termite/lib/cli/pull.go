@@ -362,6 +362,7 @@ func ListLocalModels(opts ListOptions) error {
 		modelregistry.ModelTypeGenerator,
 		modelregistry.ModelTypeRecognizer,
 		modelregistry.ModelTypeRewriter,
+		modelregistry.ModelTypePredictor,
 	}
 
 	var filteredType modelregistry.ModelType
@@ -459,6 +460,10 @@ func isModelDir(dir string) bool {
 		if _, err := os.Stat(filepath.Join(dir, filename)); err == nil {
 			return true
 		}
+	}
+	// Check for tabular predictor model
+	if _, err := os.Stat(filepath.Join(dir, "tabular_model.json")); err == nil {
+		return true
 	}
 	// Check for manifest
 	if _, err := os.Stat(filepath.Join(dir, "model_manifest.json")); err == nil {

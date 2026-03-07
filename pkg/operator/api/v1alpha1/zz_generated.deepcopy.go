@@ -462,6 +462,11 @@ func (in *RouteMatch) DeepCopyInto(out *RouteMatch) {
 		*out = make([]OperationType, len(*in))
 		copy(*out, *in)
 	}
+	if in.ModelTypes != nil {
+		in, out := &in.ModelTypes, &out.ModelTypes
+		*out = make([]TermiteModelType, len(*in))
+		copy(*out, *in)
+	}
 	if in.Models != nil {
 		in, out := &in.Models, &out.Models
 		*out = make([]string, len(*in))

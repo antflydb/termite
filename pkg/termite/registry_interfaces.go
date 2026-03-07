@@ -26,6 +26,7 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
 	"github.com/antflydb/termite/pkg/termite/lib/seq2seq"
+	"github.com/antflydb/termite/pkg/termite/lib/tabular"
 	"github.com/antflydb/termite/pkg/termite/lib/transcribing"
 )
 
@@ -155,6 +156,20 @@ type TranscriberRegistryInterface interface {
 	Close() error
 }
 
+// PredictorRegistryInterface defines the interface for tabular predictor model registries.
+// This enables testing with mock implementations.
+type PredictorRegistryInterface interface {
+	// Acquire retrieves a predictor and increments reference count to prevent eviction.
+	// Caller MUST call Release when done.
+	Acquire(modelName string) (tabular.Predictor, error)
+	// Release decrements reference count, allowing the model to be evicted.
+	Release(modelName string)
+	// List returns all available model names
+	List() []string
+	// Close shuts down the registry and releases resources
+	Close() error
+}
+
 // ChunkerInterface defines the interface for chunking services.
 // It handles both text chunking and media chunking (audio, etc.) through a unified interface.
 // This enables testing with mock implementations.
@@ -186,4 +201,5 @@ var (
 	_ ReaderRegistryInterface      = (*ReaderRegistry)(nil)
 	_ TranscriberRegistryInterface = (*TranscriberRegistry)(nil)
 	_ ChunkerInterface             = (*CachedChunker)(nil)
+	_ PredictorRegistryInterface   = (*PredictorRegistry)(nil)
 )

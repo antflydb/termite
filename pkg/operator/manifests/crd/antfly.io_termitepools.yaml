@@ -1364,6 +1364,21 @@ spec:
                           - lazy
                           - bounded
                           type: string
+                        type:
+                          description: |-
+                            Type specifies the model category. If omitted, type is inferred from
+                            model metadata at runtime.
+                          enum:
+                          - embedder
+                          - reranker
+                          - chunker
+                          - classifier
+                          - generator
+                          - seq2seq
+                          - ner
+                          - transcriber
+                          - predictor
+                          type: string
                         variant:
                           description: Variant specifies a model variant (e.g., "quantized")
                           type: string

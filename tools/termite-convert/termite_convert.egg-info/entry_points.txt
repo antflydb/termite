@@ -1,0 +1,2 @@
+[console_scripts]
+termite-convert = termite_convert.cli:main

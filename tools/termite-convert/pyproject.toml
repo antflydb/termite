@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "termite-convert"
+version = "0.1.0"
+description = "Convert XGBoost, LightGBM, sklearn, CatBoost, and ONNX models to Termite's tabular IR format"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [{name = "Antfly, Inc."}]
+
+dependencies = [
+    "click>=8.0",
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+xgboost = ["xgboost>=1.5"]
+lightgbm = ["lightgbm>=3.0"]
+sklearn = ["scikit-learn>=1.0"]
+catboost = ["catboost>=1.0"]
+onnx = ["onnx>=1.12"]
+all = [
+    "xgboost>=1.5",
+    "lightgbm>=3.0",
+    "scikit-learn>=1.0",
+    "catboost>=1.0",
+    "onnx>=1.12",
+]
+dev = [
+    "pytest>=7.0",
+    "xgboost>=1.5",
+    "lightgbm>=3.0",
+    "scikit-learn>=1.0",
+    "onnx>=1.12",
+]
+
+[project.scripts]
+termite-convert = "termite_convert.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["termite_convert*"]

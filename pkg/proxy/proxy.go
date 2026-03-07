@@ -678,6 +678,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/embed", p.handleEmbed)
 	apiMux.HandleFunc("/api/chunk", p.handleChunk)
 	apiMux.HandleFunc("/api/rerank", p.handleRerank)
+	apiMux.HandleFunc("/api/predict", p.handlePredict)
 	apiMux.HandleFunc("/healthz", p.handleHealth)
 	apiMux.HandleFunc("/readyz", p.handleReady)
 
@@ -722,6 +723,36 @@ func (p *Proxy) handleRerank(w http.ResponseWriter, r *http.Request) {
 	p.proxyRequest(w, r, "rerank")
 }
 
+// handlePredict routes tabular prediction requests
+func (p *Proxy) handlePredict(w http.ResponseWriter, r *http.Request) {
+	p.proxyRequest(w, r, "predict")
+}
+
+// operationToModelType maps an API operation to its corresponding model type
+// for route matching against TermiteRoute modelTypes filters.
+func operationToModelType(operation string) string {
+	switch operation {
+	case "embed":
+		return "embedder"
+	case "chunk":
+		return "chunker"
+	case "rerank":
+		return "reranker"
+	case "classify":
+		return "classifier"
+	case "generate":
+		return "generator"
+	case "read":
+		return "reader"
+	case "transcribe":
+		return "transcriber"
+	case "predict":
+		return "predictor"
+	default:
+		return ""
+	}
+}
+
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation string) {
 	start := time.Now()
 
@@ -750,6 +781,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 	var pool string
 	routeReq := &RouteRequest{
 		Operation: OperationType(operation),
+		ModelType: operationToModelType(operation),
 		Model:     req.Model,
 		Headers:   headers,
 		Timestamp: start,
@@ -801,7 +833,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 	workloadType := WorkloadType(r.Header.Get("X-Termite-Workload-Type"))
 	if workloadType == "" {
 		switch operation {
-		case "embed", "rerank":
+		case "embed", "rerank", "predict":
 			workloadType = WorkloadTypeReadHeavy
 		case "chunk":
 			workloadType = WorkloadTypeWriteHeavy

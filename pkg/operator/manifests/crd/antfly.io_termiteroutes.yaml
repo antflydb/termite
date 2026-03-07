@@ -108,6 +108,15 @@ spec:
                       type: object
                     description: Headers matches request headers
                     type: object
+                  modelTypes:
+                    description: |-
+                      ModelTypes matches model categories (embedder, reranker, predictor, etc.)
+                      When specified, only routes requests for models of these types.
+                    items:
+                      description: TermiteModelType defines the category of a Termite
+                        model
+                      type: string
+                    type: array
                   models:
                     description: 'Models matches model names (supports wildcards:
                       "bge-*", "*-rerank-*")'

@@ -668,6 +668,9 @@ type ModelsResponse struct {
 	// Generators Available generator/LLM models from models_dir/generators/
 	Generators map[string]ModelInfo `json:"generators"`
 
+	// Predictors Available tabular ML predictor models from models_dir/predictors/
+	Predictors map[string]ModelInfo `json:"predictors"`
+
 	// Readers Available reader/OCR models from models_dir/readers/
 	Readers map[string]ModelInfo `json:"readers"`
 
@@ -1007,6 +1010,30 @@ type TranscribeResponse struct {
 	// Text Transcribed text from the audio
 	Text string `json:"text"`
 }
+
+// PredictRequest defines model for PredictRequest.
+type PredictRequest struct {
+	// Input Batch of feature vectors. Each inner array is one sample's features.
+	Input [][]float32 `json:"input"`
+
+	// Model Name of predictor model from models_dir/predictors/
+	Model string `json:"model"`
+}
+
+// PredictResponse defines model for PredictResponse.
+type PredictResponse struct {
+	// Model Name of model used for prediction
+	Model string `json:"model"`
+
+	// Predictions Prediction outputs per input sample.
+	Predictions [][]float32 `json:"predictions"`
+
+	// Task Task type of the model
+	Task string `json:"task,omitempty,omitzero"`
+}
+
+// MakePredictionJSONRequestBody defines body for MakePrediction for application/json ContentType.
+type MakePredictionJSONRequestBody = PredictRequest
 
 // VADOptions Options for Voice Activity Detection (VAD) based audio segmentation. Termite-specific.
 type VADOptions struct {
@@ -1534,6 +1561,11 @@ type ClientInterface interface {
 	// ListModels request
 	ListModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// MakePredictionWithBody request with any body
+	MakePredictionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	MakePrediction(ctx context.Context, body MakePredictionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ReadImagesWithBody request with any body
 	ReadImagesWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1685,6 +1717,30 @@ func (c *Client) GenerateContent(ctx context.Context, body GenerateContentJSONRe
 
 func (c *Client) ListModels(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListModelsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MakePredictionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMakePredictionRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MakePrediction(ctx context.Context, body MakePredictionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMakePredictionRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2054,6 +2110,46 @@ func NewListModelsRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewMakePredictionRequest calls the generic MakePrediction builder with application/json body
+func NewMakePredictionRequest(server string, body MakePredictionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMakePredictionRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewMakePredictionRequestWithBody generates requests for MakePrediction with any type of body
+func NewMakePredictionRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/predict")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewReadImagesRequest calls the generic ReadImages builder with application/json body
 func NewReadImagesRequest(server string, body ReadImagesJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -2352,6 +2448,11 @@ type ClientWithResponsesInterface interface {
 	// ListModelsWithResponse request
 	ListModelsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListModelsResponse, error)
 
+	// MakePredictionWithBodyWithResponse request with any body
+	MakePredictionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MakePredictionResponse, error)
+
+	MakePredictionWithResponse(ctx context.Context, body MakePredictionJSONRequestBody, reqEditors ...RequestEditorFn) (*MakePredictionResponse, error)
+
 	// ReadImagesWithBodyWithResponse request with any body
 	ReadImagesWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ReadImagesResponse, error)
 
@@ -2526,6 +2627,32 @@ func (r ListModelsResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListModelsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type MakePredictionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PredictResponse
+	JSON400      *Error
+	JSON404      *Error
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r MakePredictionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MakePredictionResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -2777,6 +2904,23 @@ func (c *ClientWithResponses) ListModelsWithResponse(ctx context.Context, reqEdi
 		return nil, err
 	}
 	return ParseListModelsResponse(rsp)
+}
+
+// MakePredictionWithBodyWithResponse request with arbitrary body returning *MakePredictionResponse
+func (c *ClientWithResponses) MakePredictionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MakePredictionResponse, error) {
+	rsp, err := c.MakePredictionWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMakePredictionResponse(rsp)
+}
+
+func (c *ClientWithResponses) MakePredictionWithResponse(ctx context.Context, body MakePredictionJSONRequestBody, reqEditors ...RequestEditorFn) (*MakePredictionResponse, error) {
+	rsp, err := c.MakePrediction(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMakePredictionResponse(rsp)
 }
 
 // ReadImagesWithBodyWithResponse request with arbitrary body returning *ReadImagesResponse
@@ -3169,6 +3313,60 @@ func ParseListModelsResponse(rsp *http.Response) (*ListModelsResponse, error) {
 }
 
 // ParseReadImagesResponse parses an HTTP response from a ReadImagesWithResponse call
+// ParseMakePredictionResponse parses an HTTP response from a MakePredictionWithResponse call
+func ParseMakePredictionResponse(rsp *http.Response) (*MakePredictionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MakePredictionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PredictResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 func ParseReadImagesResponse(rsp *http.Response) (*ReadImagesResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()

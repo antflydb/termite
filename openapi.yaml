@@ -712,6 +712,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+  /predict:
+    post:
+      summary: Tabular prediction
+      description: |
+        Runs inference on traditional ML models (tree ensembles, linear models)
+        using a SIMD-accelerated pure Go engine. Supports XGBoost, LightGBM,
+        sklearn, and CatBoost models converted to Termite's tabular IR format.
+
+        ## Models
+
+        - Models are auto-discovered from `models_dir/predictors/`
+        - Each model directory must contain a `tabular_model.json` file
+        - Convert models using the `termite-convert` tool
+
+        ## Performance
+
+        Tree ensemble inference uses go-highway SIMD acceleration for
+        microsecond-latency predictions — 20-50x faster than ONNX Runtime
+        for tree models.
+      operationId: makePrediction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictRequest'
+      responses:
+        '200':
+          description: Prediction completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Model not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Prediction service unavailable (no models configured)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /models:
     get:
       summary: List available models
@@ -1637,6 +1694,7 @@ components:
         - classifiers
         - readers
         - transcribers
+        - predictors
       properties:
         chunkers:
           type: object
@@ -1688,6 +1746,11 @@ components:
           additionalProperties:
             $ref: '#/components/schemas/ModelInfo'
           description: Available transcriber/speech-to-text models from models_dir/transcribers/
+        predictors:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelInfo'
+          description: Available tabular ML predictor models from models_dir/predictors/
     Tool:
       type: object
       description: A tool (function) that the model can call
@@ -2389,6 +2452,57 @@ components:
         - noop
       default: terminal
       example: terminal
+    PredictRequest:
+      type: object
+      required:
+        - model
+        - input
+      properties:
+        model:
+          type: string
+          description: Name of the predictor model from models_dir/predictors/
+          example: my-org/fraud-detector
+        input:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: float
+          description: |
+            Batch of feature vectors. Each inner array is one sample with
+            positional features matching the model's expected input schema.
+          example:
+            - [0.5, 1.2, 3.0]
+            - [0.1, 0.8, 2.5]
+    PredictResponse:
+      type: object
+      required:
+        - model
+        - predictions
+      properties:
+        model:
+          type: string
+          description: Name of model used for prediction
+        predictions:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: float
+          description: |
+            Array of prediction results. Each inner array is the model output
+            for one input sample (e.g., [probability] for binary classification,
+            [class_probs...] for multiclass).
+        task:
+          type: string
+          description: The prediction task type
+          enum:
+            - regression
+            - binary_classification
+            - multiclass
+            - ranking
     schemas-Config:
       type: object
       description: Logging configuration for Termite services

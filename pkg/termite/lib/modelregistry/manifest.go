@@ -41,6 +41,7 @@ const (
 	ModelTypeClassifier  ModelType = "classifier"
 	ModelTypeReader      ModelType = "reader"
 	ModelTypeTranscriber ModelType = "transcriber"
+	ModelTypePredictor  ModelType = "predictor"
 )
 
 // Capability represents a model capability
@@ -95,6 +96,16 @@ const (
 	// instead of dense embeddings. The model outputs vocab-dimension logits that are
 	// activated with softplus and sparsified to top-k entries.
 	CapabilitySparse Capability = "sparse"
+
+	// CapabilityTreeEnsemble indicates a tabular predictor using tree ensembles
+	// (XGBoost, LightGBM, CatBoost, sklearn GBT/RF)
+	CapabilityTreeEnsemble Capability = "tree_ensemble"
+
+	// CapabilityLinearModel indicates a tabular predictor using linear/logistic regression
+	CapabilityLinearModel Capability = "linear"
+
+	// CapabilityTabular is the generic capability for any tabular prediction model
+	CapabilityTabular Capability = "tabular"
 )
 
 // ParseModelType parses a string into a ModelType
@@ -118,8 +129,10 @@ func ParseModelType(s string) (ModelType, error) {
 		return ModelTypeReader, nil
 	case "transcriber", "transcribers":
 		return ModelTypeTranscriber, nil
+	case "predictor", "predictors":
+		return ModelTypePredictor, nil
 	default:
-		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, generator, recognizer, rewriter, classifier, reader, transcriber)", s)
+		return "", fmt.Errorf("unknown model type: %s (valid: embedder, chunker, reranker, generator, recognizer, rewriter, classifier, reader, transcriber, predictor)", s)
 	}
 }
 
@@ -149,6 +162,8 @@ func (t ModelType) DirName() string {
 		return "readers"
 	case ModelTypeTranscriber:
 		return "transcribers"
+	case ModelTypePredictor:
+		return "predictors"
 	default:
 		return string(t) + "s"
 	}
@@ -457,6 +472,22 @@ func (m *ModelManifest) Validate() error {
 		}
 	}
 
+	// Predictor models use tabular_model.json instead of ONNX files.
+	if m.Type == ModelTypePredictor {
+		hasTabular := false
+		for _, f := range m.Files {
+			if f.Name == "tabular_model.json" {
+				hasTabular = true
+				break
+			}
+		}
+		if !hasTabular {
+			return fmt.Errorf("predictor model must include tabular_model.json")
+		}
+		// Skip ONNX-specific validation for predictors
+		return m.validateVariants()
+	}
+
 	// Check for required ONNX files based on model type and capability.
 	// Specific model types enforce exact filenames; the fallback just
 	// requires at least one .onnx file (covers multistage OCR pipelines
@@ -491,7 +522,11 @@ func (m *ModelManifest) Validate() error {
 		return fmt.Errorf("manifest must include at least one .onnx model file")
 	}
 
-	// Validate variant files if present
+	return m.validateVariants()
+}
+
+// validateVariants validates variant file entries if present.
+func (m *ModelManifest) validateVariants() error {
 	for variantID, variantEntry := range m.Variants {
 		if len(variantEntry.Files) == 0 {
 			return fmt.Errorf("variant %s has no files", variantID)

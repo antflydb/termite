@@ -180,6 +180,7 @@ func (w *RouteWatcher) convertRoute(obj any) (*Route, error) {
 		Name:           fullName,
 		Priority:       getInt32(spec, "priority", 100),
 		Operations:     make(map[OperationType]bool),
+		ModelTypes:     make(map[string]bool),
 		ModelPatterns:  make([]*regexp.Regexp, 0),
 		HeaderMatchers: make(map[string]*StringMatcher),
 		SourceTables:   make(map[string]bool),
@@ -193,6 +194,15 @@ func (w *RouteWatcher) convertRoute(obj any) (*Route, error) {
 			for _, op := range ops {
 				if opStr, ok := op.(string); ok {
 					route.Operations[OperationType(opStr)] = true
+				}
+			}
+		}
+
+		// Model types
+		if modelTypes, ok := match["modelTypes"].([]any); ok {
+			for _, mt := range modelTypes {
+				if mtStr, ok := mt.(string); ok {
+					route.ModelTypes[mtStr] = true
 				}
 			}
 		}

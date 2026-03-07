@@ -181,7 +181,7 @@ func discoverSingleModel(modelPath, owner, name string, modelType modelregistry.
 		// Manifest not found or invalid - discover from files.
 		// Accept any directory that contains at least one .onnx file;
 		// architecture-specific file layouts are resolved at load time.
-		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) {
+		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) && !hasTabularModel(modelPath) {
 			return nil // No model files found
 		}
 
@@ -225,6 +225,12 @@ func hasAnyONNXFiles(dir string) bool {
 	// Also check onnx/ subdirectory (HuggingFace optimum layout)
 	matches, _ = filepath.Glob(filepath.Join(dir, "onnx", "*.onnx"))
 	return len(matches) > 0
+}
+
+// hasTabularModel reports whether dir contains a tabular_model.json file.
+func hasTabularModel(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "tabular_model.json"))
+	return err == nil
 }
 
 // generateGenaiConfig creates a genai_config.json file from a HuggingFace config.json.
