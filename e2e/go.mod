@@ -21,7 +21,7 @@ require (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.11 // indirect
+	github.com/ajroetker/go-highway v0.0.12-0.20260307202826-df1cdfa1b60d // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

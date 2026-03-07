@@ -9,6 +9,8 @@ git.sr.ht/~sbinet/gg v0.6.0/go.mod h1:uucygbfC9wVPQIfrmwM2et0imr8L7KQWywX0xpFMm9
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
 github.com/ajroetker/go-highway v0.0.11 h1:WWJfKK2oW7MheUYj7bUnJNn3XuHcWiBR5sDo9WwwP2c=
 github.com/ajroetker/go-highway v0.0.11/go.mod h1:yhghcLHlM/LHIaHUmFfl/Ej/mCKUow2RHF2+aX3UF4s=
+github.com/ajroetker/go-highway v0.0.12-0.20260307202826-df1cdfa1b60d h1:oT5msnrels0BVGst6ucxI0FBswBZu7NGCARJcFYwm+w=
+github.com/ajroetker/go-highway v0.0.12-0.20260307202826-df1cdfa1b60d/go.mod h1:un7fcrwix7UOHJrr18Lgh5eeF+1yaZiGWdTw3FbfDv4=
 github.com/ajroetker/go-huggingface v0.0.0-antfly001 h1:wBaGm+N4OKLwUhXcnlekJOAxD6SZA8mcE3Yuble9Kxo=
 github.com/ajroetker/go-huggingface v0.0.0-antfly001/go.mod h1:4GJV4gSIhU4kyyUmvD2GakxFN5fKPk+dgtCbT1rrygY=
 github.com/ajroetker/gomlx v0.0.0-antfly008 h1:gR4QU267YK+1N0tC23nip7NpVSqyGa+aZuCBVCqBnp0=

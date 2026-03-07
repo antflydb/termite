@@ -10,7 +10,7 @@ replace (
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.11
+	github.com/ajroetker/go-highway v0.0.12-0.20260307202826-df1cdfa1b60d
 	github.com/antflydb/antfly-go/libaf v0.0.0-20260305230757-2740be37c739
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
