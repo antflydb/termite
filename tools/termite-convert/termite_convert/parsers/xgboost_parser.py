@@ -163,25 +163,37 @@ def _flatten_xgb_tree(
     leaf_value: list[float],
     default_left: list[bool],
 ) -> int:
-    """Flatten an XGBoost tree from nested format into parallel arrays.
+    """Flatten an XGBoost tree into parallel arrays.
 
-    XGBoost JSON trees have nodes stored in arrays with indices:
-    - tree_data["nodes"] is an array of node objects
-    - Each node has: "nodeid", "split_feature_id"/"leaf", "yes", "no", "missing"
+    Supports three formats:
+    - XGBoost 3.x: flat parallel arrays (left_children, right_children, etc.)
+    - Modern: "nodes" array with nodeid, split_feature_id, yes, no, missing
+    - Legacy: nested tree with "children" arrays
 
     Returns the tree depth.
     """
     base = len(feature_index)
 
-    # XGBoost stores nodes in a flat array indexed by nodeid
+    # XGBoost 3.x format: flat parallel arrays
+    if "left_children" in tree_data:
+        return _flatten_xgb_tree_v3(
+            tree_data, base, feature_index, threshold,
+            left_child, right_child, leaf_value, default_left,
+        )
+
+    # Modern format with "nodes" array
     nodes = tree_data.get("nodes", [])
     if not nodes:
-        # Try the legacy format where tree_data itself is the root node
+        # Legacy nested format
         nodes = _collect_nodes_recursive(tree_data)
 
-    num_nodes = len(nodes)
+    # Use max node ID to handle sparse/non-compact node ID ranges
+    # (common in pruned XGBoost trees)
+    max_nid = max((n.get("nodeid", 0) for n in nodes), default=0)
+    num_slots = max(max_nid + 1, len(nodes))
+
     # Pre-allocate
-    for _ in range(num_nodes):
+    for _ in range(num_slots):
         feature_index.append(-1)
         threshold.append(0.0)
         left_child.append(-1)
@@ -215,6 +227,67 @@ def _flatten_xgb_tree(
 
             depth = node.get("depth", 0)
             max_depth = max(max_depth, depth)
+
+    return max_depth
+
+
+def _flatten_xgb_tree_v3(
+    tree_data: dict,
+    base: int,
+    feature_index: list[int],
+    threshold: list[float],
+    left_child: list[int],
+    right_child: list[int],
+    leaf_value: list[float],
+    default_left: list[bool],
+) -> int:
+    """Handle XGBoost 3.x flat parallel array format.
+
+    Fields: left_children, right_children, split_indices, split_conditions,
+    default_left, base_weights.
+    """
+    lefts = tree_data["left_children"]
+    rights = tree_data["right_children"]
+    split_idx = tree_data.get("split_indices", [])
+    split_cond = tree_data.get("split_conditions", [])
+    def_left = tree_data.get("default_left", [])
+    weights = tree_data.get("base_weights", [])
+
+    num_nodes = len(lefts)
+
+    # Compute depth per node
+    max_depth = 0
+    depths = [0] * num_nodes
+    for i in range(num_nodes):
+        l, r = int(lefts[i]), int(rights[i])
+        if l >= 0 and l < num_nodes:
+            depths[l] = depths[i] + 1
+            max_depth = max(max_depth, depths[l])
+        if r >= 0 and r < num_nodes:
+            depths[r] = depths[i] + 1
+            max_depth = max(max_depth, depths[r])
+
+    for i in range(num_nodes):
+        l, r = int(lefts[i]), int(rights[i])
+        is_leaf = l < 0
+
+        if is_leaf:
+            feature_index.append(-1)
+            threshold.append(0.0)
+            left_child.append(-1)
+            right_child.append(-1)
+            leaf_value.append(float(weights[i]) if i < len(weights) else 0.0)
+            default_left.append(False)
+        else:
+            fi = int(split_idx[i]) if i < len(split_idx) else 0
+            feature_index.append(fi)
+            th = float(split_cond[i]) if i < len(split_cond) else 0.0
+            threshold.append(th)
+            left_child.append(base + l)
+            right_child.append(base + r)
+            leaf_value.append(0.0)
+            dl = bool(def_left[i]) if i < len(def_left) else False
+            default_left.append(dl)
 
     return max_depth
 

@@ -33,29 +33,36 @@ func DeadLeafElimination(te *tabular.TreeEnsemble, thresholdFraction float64) in
 		return 0
 	}
 
-	// Find maximum absolute leaf value across all trees.
-	var maxVal float64
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 {
-			v := math.Abs(nodes.LeafValue[i])
-			if v > maxVal {
-				maxVal = v
+	eliminated := 0
+	isDead := make([]bool, n)
+
+	// Compute threshold per-tree so late correction trees with small leaf
+	// values aren't pruned relative to early trees with large values.
+	for t := 0; t < te.NumTrees; t++ {
+		treeStart := int(nodes.TreeStarts[t])
+		treeEnd := n
+		if t+1 < te.NumTrees {
+			treeEnd = int(nodes.TreeStarts[t+1])
+		}
+
+		var maxVal float64
+		for i := treeStart; i < treeEnd; i++ {
+			if nodes.FeatureIndex[i] < 0 {
+				if v := math.Abs(nodes.LeafValue[i]); v > maxVal {
+					maxVal = v
+				}
 			}
 		}
-	}
-	if maxVal == 0 {
-		return 0
-	}
+		if maxVal == 0 {
+			continue
+		}
 
-	absThreshold := thresholdFraction * maxVal
-	eliminated := 0
-
-	// Mark dead leaves.
-	isDead := make([]bool, n)
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 && math.Abs(nodes.LeafValue[i]) < absThreshold {
-			isDead[i] = true
-			eliminated++
+		absThreshold := thresholdFraction * maxVal
+		for i := treeStart; i < treeEnd; i++ {
+			if nodes.FeatureIndex[i] < 0 && math.Abs(nodes.LeafValue[i]) < absThreshold {
+				isDead[i] = true
+				eliminated++
+			}
 		}
 	}
 

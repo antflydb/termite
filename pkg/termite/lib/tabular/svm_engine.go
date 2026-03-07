@@ -27,7 +27,9 @@ func newSVMEngine(svm *SVMModel) *svmEngine {
 }
 
 // predictSingle computes the SVM decision function for one sample.
-// Returns [num_classes] raw decision values (before activation).
+// For binary SVMs, returns [1] decision value. Multiclass (OVO) SVMs are not
+// yet supported — DualCoefficients has shape [n_classes-1][n_SV] which requires
+// pairwise vote aggregation. The converter should reject multiclass SVMs.
 func (e *svmEngine) predictSingle(features []float64) []float64 {
 	svm := e.svm
 	numSV := len(svm.SupportVectors)

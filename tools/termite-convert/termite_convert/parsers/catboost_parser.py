@@ -66,10 +66,17 @@ def parse_catboost(
 
 def _parse_catboost_object(model: Any, name: str) -> TabularModel:
     """Parse a CatBoost model object by dumping to JSON."""
+    import os
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
-        model.save_model(f.name, format="json")
-        return _parse_catboost_json(json.load(open(f.name)), name or "catboost-model")
+        tmp_path = f.name
+        model.save_model(tmp_path, format="json")
+    try:
+        with open(tmp_path) as fh:
+            data = json.load(fh)
+        return _parse_catboost_json(data, name or "catboost-model")
+    finally:
+        os.unlink(tmp_path)
 
 
 def _parse_catboost_json(data: dict, name: str) -> TabularModel:

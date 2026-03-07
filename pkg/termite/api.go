@@ -2338,9 +2338,15 @@ func (ln *TermiteNode) handleApiPredict(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	const maxPredictBatchSize = 10000
+	if len(req.Input) > maxPredictBatchSize {
+		http.Error(w, fmt.Sprintf("batch size %d exceeds maximum %d", len(req.Input), maxPredictBatchSize), http.StatusBadRequest)
+		return
+	}
+
 	predictor, err := ln.predictorRegistry.Acquire(req.Model)
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ErrPredictorNotFound) {
 			http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
 		} else {
 			http.Error(w, fmt.Sprintf("failed to load model %s: %v", req.Model, err), http.StatusInternalServerError)
@@ -2351,6 +2357,10 @@ func (ln *TermiteNode) handleApiPredict(w http.ResponseWriter, r *http.Request) 
 
 	results, err := predictor.Predict(r.Context(), req.Input)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, "request cancelled", http.StatusRequestTimeout)
+			return
+		}
 		if strings.Contains(err.Error(), "expected") && strings.Contains(err.Error(), "features") {
 			http.Error(w, fmt.Sprintf("invalid input: %v", err), http.StatusBadRequest)
 			return

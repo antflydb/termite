@@ -427,10 +427,14 @@ func parseTextTree(
 
 		*leafValue = append(*leafValue, 0.0)
 
-		// LightGBM default missing direction: use default_bin if available,
-		// otherwise default to left (LightGBM's default behavior).
-		// Note: decision_type bit 0 controls comparison type (<=/<), not default direction.
-		dl := true
+		// LightGBM decision_type bitmask: bit 1 (value 2) = default_left.
+		dl := true // LightGBM defaults to left when decision_type is absent
+		if dtStr, ok := arrays["decision_type"]; ok {
+			dtVals := parseIntSlice(dtStr)
+			if i < len(dtVals) {
+				dl = (dtVals[i] & 2) != 0
+			}
+		}
 		*defaultLeft = append(*defaultLeft, dl)
 	}
 

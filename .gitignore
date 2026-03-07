@@ -5,6 +5,9 @@
 /pjrt
 /scripts/__pycache__/
 /scripts/exporters/__pycache__/
+**/__pycache__/
+**/.pytest_cache/
+**/*.egg-info/
 # Registry - track manifests/index, ignore large binaries
 /registry/blobs/
 /registry/models/

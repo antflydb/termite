@@ -16,15 +16,20 @@ package termite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/tabular"
 	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
+
+// ErrPredictorNotFound is returned when a requested predictor model is not available.
+var ErrPredictorNotFound = errors.New("predictor model not found")
 
 // PredictorModelInfo holds metadata about a discovered predictor model (not loaded yet).
 type PredictorModelInfo struct {
@@ -139,7 +144,7 @@ func (r *PredictorRegistry) discoverModels() error {
 	}
 
 	// Use the shared model discovery helper
-	discovered, err := discoverModelsInDir(r.modelsDir, "predictor", r.logger)
+	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypePredictor, r.logger)
 	if err != nil {
 		return fmt.Errorf("discovering predictor models: %w", err)
 	}
@@ -222,7 +227,7 @@ func (r *PredictorRegistry) get(modelName string) (tabular.Predictor, error) {
 		info, known = r.discovered[modelName]
 		r.mu.RUnlock()
 		if !known {
-			return nil, fmt.Errorf("predictor model not found: %s", modelName)
+			return nil, fmt.Errorf("%w: %s", ErrPredictorNotFound, modelName)
 		}
 	}
 

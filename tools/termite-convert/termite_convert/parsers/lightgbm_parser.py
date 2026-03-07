@@ -90,7 +90,9 @@ def _parse_json(data: dict, name: str) -> TabularModel:
         tree = tree_info.get("tree_structure", tree_info)
         tree_starts.append(len(feature_index))
         nodes = []
-        _collect_lgb_nodes(tree, nodes)
+        tree_depth = _collect_lgb_nodes(tree, nodes)
+        if tree_depth > max_depth:
+            max_depth = tree_depth
 
         base = len(feature_index)
         # Create node ID mapping
@@ -122,10 +124,6 @@ def _parse_json(data: dict, name: str) -> TabularModel:
 
                 dl = node.get("default_left", True)
                 default_left.append(bool(dl))
-
-                depth = node.get("depth", 0)
-                if depth > max_depth:
-                    max_depth = depth
 
     num_trees = len(trees_data)
     num_outputs = max(num_class, 1)
@@ -171,13 +169,15 @@ def _parse_json(data: dict, name: str) -> TabularModel:
     )
 
 
-def _collect_lgb_nodes(node: dict, nodes: list):
-    """Recursively collect LightGBM tree nodes in BFS order."""
+def _collect_lgb_nodes(node: dict, nodes: list, depth: int = 0) -> int:
+    """Recursively collect LightGBM tree nodes in DFS order. Returns max depth."""
     nodes.append(node)
+    max_d = depth
     if "left_child" in node:
-        _collect_lgb_nodes(node["left_child"], nodes)
+        max_d = max(max_d, _collect_lgb_nodes(node["left_child"], nodes, depth + 1))
     if "right_child" in node:
-        _collect_lgb_nodes(node["right_child"], nodes)
+        max_d = max(max_d, _collect_lgb_nodes(node["right_child"], nodes, depth + 1))
+    return max_d
 
 
 def _parse_text(content: str, name: str) -> TabularModel:

@@ -426,14 +426,22 @@ def _parse_svm(node, num_features: int):
 
 
 def _parse_scaler(node):
-    """Parse ONNX ML Scaler operator."""
+    """Parse ONNX ML Scaler operator.
+
+    ONNX Scaler computes Y = (X - offset) * scale, where scale is a multiplier.
+    Our IR's "standard" scaler computes (x - center) / scale, where scale is a divisor.
+    Convert by storing 1/scale so the Go engine produces the correct result.
+    """
     offset = _get_attr(node, "offset", [])
     scale = _get_attr(node, "scale", [])
+
+    # Invert scale: ONNX multiplies, our IR divides
+    inverted_scale = [1.0 / float(s) if float(s) != 0 else 0.0 for s in scale]
 
     return Scaler(
         method="standard",
         center=[float(v) for v in offset],
-        scale=[float(v) for v in scale],
+        scale=inverted_scale,
     )
 
 

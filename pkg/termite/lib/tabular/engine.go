@@ -131,6 +131,11 @@ func (p *pipelinePredictor) Predict(ctx context.Context, features [][]float32) (
 	// Only valid for single-output models (binary/regression). Multiclass models
 	// interleave trees across classes and need the per-sample path.
 	if p.treeEngine != nil && len(p.preprocessors) == 0 && p.model.Output.NumOutputs <= 1 {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		scores := p.treeEngine.predictBatch32(features)
 		applyActivation32(scores, p.model.Output.Activation)
 		results := make([][]float32, len(scores))
@@ -264,17 +269,15 @@ func optimizeModel(m *TabularModel, opts OptimizeOptions) {
 				eliminated := deadLeafElimination(stage.TreeEnsemble, opts.DeadLeafThreshold)
 				stage.TreeEnsemble.Annotations.DeadLeavesEliminated += eliminated
 			}
-			// Run threshold precision annotation if not already set
-			if len(stage.TreeEnsemble.Annotations.ThresholdPrecision) == 0 {
-				annotateThresholdPrecision(stage.TreeEnsemble)
-			}
 		}
 	}
 }
 
-// deadLeafElimination prunes negligible leaves in-place.
-// Leaves with |value| < thresholdFraction * max|leafValue| are zeroed.
-// When both children are dead, the parent collapses into a zero-value leaf.
+// deadLeafElimination prunes negligible leaves in-place using per-tree max
+// leaf values to avoid over-pruning late correction trees in gradient boosting.
+// NOTE: This is intentionally duplicated from optimizer.DeadLeafElimination
+// because the optimizer package imports tabular, creating a circular dependency.
+// Changes here must be mirrored in optimizer/dead_leaf.go.
 func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
 	nodes := &te.Nodes
 	n := len(nodes.FeatureIndex)
@@ -282,27 +285,34 @@ func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
 		return 0
 	}
 
-	var maxVal float64
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 {
-			v := math.Abs(nodes.LeafValue[i])
-			if v > maxVal {
-				maxVal = v
+	eliminated := 0
+	isDead := make([]bool, n)
+
+	for t := 0; t < te.NumTrees; t++ {
+		treeStart := int(nodes.TreeStarts[t])
+		treeEnd := n
+		if t+1 < te.NumTrees {
+			treeEnd = int(nodes.TreeStarts[t+1])
+		}
+
+		var maxVal float64
+		for i := treeStart; i < treeEnd; i++ {
+			if nodes.FeatureIndex[i] < 0 {
+				if v := math.Abs(nodes.LeafValue[i]); v > maxVal {
+					maxVal = v
+				}
 			}
 		}
-	}
-	if maxVal == 0 {
-		return 0
-	}
+		if maxVal == 0 {
+			continue
+		}
 
-	absThreshold := thresholdFraction * maxVal
-	eliminated := 0
-
-	isDead := make([]bool, n)
-	for i := 0; i < n; i++ {
-		if nodes.FeatureIndex[i] < 0 && math.Abs(nodes.LeafValue[i]) < absThreshold {
-			isDead[i] = true
-			eliminated++
+		absThreshold := thresholdFraction * maxVal
+		for i := treeStart; i < treeEnd; i++ {
+			if nodes.FeatureIndex[i] < 0 && math.Abs(nodes.LeafValue[i]) < absThreshold {
+				isDead[i] = true
+				eliminated++
+			}
 		}
 	}
 
@@ -318,6 +328,7 @@ func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
 					nodes.RightChild[i] = -1
 					nodes.LeafValue[i] = 0.0
 					isDead[i] = true
+					eliminated++
 					changed = true
 				}
 			}
@@ -325,90 +336,6 @@ func deadLeafElimination(te *TreeEnsemble, thresholdFraction float64) int {
 	}
 
 	return eliminated
-}
-
-// annotateThresholdPrecision determines the minimum precision needed for each
-// feature's thresholds and stores the result in annotations.
-// Precision levels: "i8" (int8), "i16" (int16), "f16" (float16), "f32" (default).
-func annotateThresholdPrecision(te *TreeEnsemble) {
-	nodes := &te.Nodes
-	n := len(nodes.FeatureIndex)
-	if n == 0 || te.NumFeatures == 0 {
-		return
-	}
-
-	// Collect thresholds per feature
-	featureThresholds := make(map[int][]float64)
-	for i := 0; i < n; i++ {
-		fi := nodes.FeatureIndex[i]
-		if fi >= 0 {
-			featureThresholds[int(fi)] = append(featureThresholds[int(fi)], nodes.Threshold[i])
-		}
-	}
-
-	precision := make([]string, te.NumFeatures)
-	for i := range precision {
-		precision[i] = "f32"
-	}
-
-	for fi, thresholds := range featureThresholds {
-		if fi < 0 || fi >= te.NumFeatures {
-			continue
-		}
-		precision[fi] = minPrecision(thresholds)
-	}
-
-	te.Annotations.ThresholdPrecision = precision
-}
-
-// minPrecision determines the minimum precision for a set of threshold values.
-func minPrecision(values []float64) string {
-	if len(values) == 0 {
-		return "f32"
-	}
-	allInt := true
-	minV := values[0]
-	maxV := values[0]
-
-	for _, v := range values {
-		if v != float64(int64(v)) {
-			allInt = false
-		}
-		if v < minV {
-			minV = v
-		}
-		if v > maxV {
-			maxV = v
-		}
-	}
-
-	if allInt {
-		if minV >= -128 && maxV <= 127 {
-			return "i8"
-		}
-		if minV >= -32768 && maxV <= 32767 {
-			return "i16"
-		}
-	}
-
-	// Check float16: values that round-trip through float32 without
-	// significant loss (relative tolerance 1e-3) and fit in f16 range.
-	allF16 := true
-	for _, v := range values {
-		if v != 0 {
-			ratio := v / float64(float32(v))
-			if ratio < 0.999 || ratio > 1.001 {
-				allF16 = false
-				break
-			}
-		}
-	}
-	// For f16 safety, also check range
-	if allF16 && minV >= -65504 && maxV <= 65504 {
-		return "f16"
-	}
-
-	return "f32"
 }
 
 

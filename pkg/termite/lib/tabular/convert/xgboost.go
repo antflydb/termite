@@ -160,6 +160,12 @@ func flattenXGBTree(
 ) int {
 	base := int32(len(*featureIndex))
 
+	// XGBoost 3.x format: flat parallel arrays (left_children, right_children, etc.)
+	if leftArr := jsonFloatArray(treeData, "left_children"); len(leftArr) > 0 {
+		return flattenXGBTreeV3(treeData, base, featureIndex, threshold, leftChild, rightChild, leafValue, defaultLeft)
+	}
+
+	// Modern format with "nodes" array
 	nodes := jsonArray(treeData, "nodes")
 	if len(nodes) == 0 {
 		// Legacy nested format
@@ -232,6 +238,93 @@ func flattenXGBTree(
 			if depth > maxDepth {
 				maxDepth = depth
 			}
+		}
+	}
+
+	return maxDepth
+}
+
+// flattenXGBTreeV3 handles XGBoost 3.x JSON format with flat parallel arrays.
+// Fields: left_children, right_children, split_indices, split_conditions,
+// default_left, base_weights.
+func flattenXGBTreeV3(
+	treeData map[string]any,
+	base int32,
+	featureIndex *[]int32,
+	threshold *[]float64,
+	leftChild *[]int32,
+	rightChild *[]int32,
+	leafValue *[]float64,
+	defaultLeft *[]bool,
+) int {
+	lefts := jsonFloatArray(treeData, "left_children")
+	rights := jsonFloatArray(treeData, "right_children")
+	splitIdx := jsonFloatArray(treeData, "split_indices")
+	splitCond := jsonFloatArray(treeData, "split_conditions")
+	defLeft := jsonFloatArray(treeData, "default_left")
+	weights := jsonFloatArray(treeData, "base_weights")
+
+	numNodes := len(lefts)
+
+	maxDepth := 0
+	// Compute depth per node
+	depths := make([]int, numNodes)
+	for i := 0; i < numNodes; i++ {
+		l := int(lefts[i])
+		r := int(rights[i])
+		if l >= 0 && l < numNodes {
+			depths[l] = depths[i] + 1
+			if depths[l] > maxDepth {
+				maxDepth = depths[l]
+			}
+		}
+		if r >= 0 && r < numNodes {
+			depths[r] = depths[i] + 1
+			if depths[r] > maxDepth {
+				maxDepth = depths[r]
+			}
+		}
+	}
+
+	for i := 0; i < numNodes; i++ {
+		l := int(lefts[i])
+		r := int(rights[i])
+
+		isLeaf := l < 0 // leaf nodes have left_children = -1
+
+		if isLeaf {
+			*featureIndex = append(*featureIndex, -1)
+			*threshold = append(*threshold, 0.0)
+			*leftChild = append(*leftChild, -1)
+			*rightChild = append(*rightChild, -1)
+			lv := 0.0
+			if i < len(weights) {
+				lv = weights[i]
+			}
+			*leafValue = append(*leafValue, lv)
+			*defaultLeft = append(*defaultLeft, false)
+		} else {
+			fi := int32(0)
+			if i < len(splitIdx) {
+				fi = int32(splitIdx[i])
+			}
+			*featureIndex = append(*featureIndex, fi)
+
+			th := 0.0
+			if i < len(splitCond) {
+				th = splitCond[i]
+			}
+			*threshold = append(*threshold, th)
+
+			*leftChild = append(*leftChild, base+int32(l))
+			*rightChild = append(*rightChild, base+int32(r))
+			*leafValue = append(*leafValue, 0.0)
+
+			dl := false
+			if i < len(defLeft) {
+				dl = defLeft[i] != 0
+			}
+			*defaultLeft = append(*defaultLeft, dl)
 		}
 	}
 
