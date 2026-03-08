@@ -129,6 +129,10 @@ func TestCLIPE2E(t *testing.T) {
 		testMixedModalityBatchCLIP(t, ctx, serverURL)
 	})
 
+	t.Run("BatchImageEmbedding", func(t *testing.T) {
+		testBatchImageEmbeddingCLIP(t, ctx, serverURL)
+	})
+
 	// 6. Graceful shutdown
 	t.Log("Shutting down server...")
 	serverCancel()
@@ -609,5 +613,48 @@ func testMixedModalityBatchCLIP(t *testing.T, ctx context.Context, serverURL str
 	t.Logf("Mixed batch: text-image similarity = %.4f", sim)
 	if sim > 0.99 {
 		t.Error("Mixed batch text and image embeddings are suspiciously identical")
+	}
+}
+
+// testBatchImageEmbeddingCLIP verifies that multiple images can be embedded in
+// a single batch request. This tests dynamic batch support in the ONNX model —
+// the visual encoder must handle batch > 1 without static Reshape failures.
+func testBatchImageEmbeddingCLIP(t *testing.T, ctx context.Context, serverURL string) {
+	t.Helper()
+
+	// Create 4 distinct images to form a batch (matches the enrichment pipeline batch size)
+	images := [][]byte{
+		createTestImage(t, 100, 100, color.RGBA{255, 0, 0, 255}),   // red
+		createTestImage(t, 100, 100, color.RGBA{0, 255, 0, 255}),   // green
+		createTestImage(t, 100, 100, color.RGBA{0, 0, 255, 255}),   // blue
+		createTestImage(t, 100, 100, color.RGBA{255, 255, 0, 255}), // yellow
+	}
+
+	parts := make([]oapi.ContentPart, len(images))
+	for i, imgData := range images {
+		parts[i] = makeImageContentPart(t, imgData)
+	}
+
+	embeddings := embedMultimodal(t, ctx, serverURL, clipModelName, parts)
+
+	if len(embeddings) != len(images) {
+		t.Fatalf("Expected %d embeddings, got %d", len(images), len(embeddings))
+	}
+
+	for i, emb := range embeddings {
+		if len(emb) != clipEmbeddingDim {
+			t.Errorf("Embedding %d: expected dim %d, got %d", i, clipEmbeddingDim, len(emb))
+		}
+	}
+
+	// Each pair of distinct images should produce different embeddings
+	for i := 0; i < len(embeddings); i++ {
+		for j := i + 1; j < len(embeddings); j++ {
+			sim := cosineSimilarity(embeddings[i], embeddings[j])
+			t.Logf("Batch image sim(%d, %d) = %.4f", i, j, sim)
+			if sim > 0.999 {
+				t.Errorf("Batch images %d and %d have near-identical embeddings (%.4f)", i, j, sim)
+			}
+		}
 	}
 }

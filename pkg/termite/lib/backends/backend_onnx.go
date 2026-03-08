@@ -292,6 +292,22 @@ func (l *ortModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 		return nil, fmt.Errorf("no valid input names found in model")
 	}
 
+	// Build input info for the filtered inputs
+	inputInfoMap := make(map[string]ort.InputOutputInfo, len(inputs))
+	for _, info := range inputs {
+		inputInfoMap[info.Name] = info
+	}
+	inputInfo := make([]InputOutputInfo, 0, len(inputNames))
+	for _, name := range inputNames {
+		if info, ok := inputInfoMap[name]; ok {
+			inputInfo = append(inputInfo, InputOutputInfo{
+				Name:       info.Name,
+				Dimensions: Shape(info.Dimensions),
+				DataType:   info.DataType.String(),
+			})
+		}
+	}
+
 	// Extract output names
 	outputNames := make([]string, len(outputs))
 	for i, info := range outputs {
@@ -356,6 +372,7 @@ func (l *ortModelLoader) Load(path string, opts ...LoadOption) (Model, error) {
 		sessionOpts: sessionOpts,
 		inputNames:  inputNames,
 		outputNames: outputNames,
+		inputInfo:   inputInfo,
 	}, nil
 }
 
@@ -409,6 +426,7 @@ type ortModel struct {
 	sessionOpts *ort.SessionOptions
 	inputNames  []string
 	outputNames []string
+	inputInfo   []InputOutputInfo
 }
 
 func (m *ortModel) Forward(ctx context.Context, inputs *ModelInputs) (*ModelOutput, error) {
@@ -970,6 +988,10 @@ func (m *ortModel) Name() string {
 
 func (m *ortModel) Backend() BackendType {
 	return BackendONNX
+}
+
+func (m *ortModel) InputInfo() []InputOutputInfo {
+	return m.inputInfo
 }
 
 // onnxSessionFactory implements SessionFactory for ONNX Runtime.

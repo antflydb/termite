@@ -4,6 +4,8 @@ import json
 import logging
 from pathlib import Path
 
+import numpy as np
+
 from . import register_exporter
 from .base import BaseExporter
 
@@ -65,6 +67,12 @@ class CLIPExporter(BaseExporter):
         onnx.checker.check_model(onnx_model)
         logger.info(f"  Visual encoder saved: {visual_path}")
 
+        # Fix static batch dimensions in value_info and Reshape constants.
+        # Older PyTorch exporters hardcode batch=1 in intermediate shapes,
+        # causing ORT to create internal gemm_input_reshape nodes that fail
+        # when batch > 1.
+        _fix_dynamic_batch_shapes(visual_path)
+
         # Export text encoder
         logger.info("Exporting text encoder...")
         text_path = self.output_dir / "text_model.onnx"
@@ -96,6 +104,8 @@ class CLIPExporter(BaseExporter):
         onnx_model = onnx.load(str(text_path))
         onnx.checker.check_model(onnx_model)
         logger.info(f"  Text encoder saved: {text_path}")
+
+        _fix_dynamic_batch_shapes(text_path)
 
         # Save configs
         logger.info("Saving configuration files...")
@@ -244,6 +254,30 @@ class CLIPExporter(BaseExporter):
                 )
                 return False
 
+            # Test visual encoder with batch > 1 (verifies dynamic batch support)
+            logger.info("Testing visual encoder with batch=4...")
+            batch_images = [
+                Image.new("RGB", (image_size, image_size), color=c)
+                for c in ["red", "green", "blue", "yellow"]
+            ]
+            batch_pixels = processor(images=batch_images, return_tensors="np")[
+                "pixel_values"
+            ]
+            batch_outputs = visual_session.run(None, {"pixel_values": batch_pixels})
+            batch_pooler = batch_outputs[1]
+            logger.info(f"  Batch visual embedding shape: {batch_pooler.shape}")
+
+            if batch_pooler.shape[0] != 4:
+                logger.error(
+                    f"Batch dim {batch_pooler.shape[0]} != expected 4"
+                )
+                return False
+            if batch_pooler.shape[-1] != expected_visual_dim:
+                logger.error(
+                    f"Batch visual dim {batch_pooler.shape[-1]} != expected {expected_visual_dim}"
+                )
+                return False
+
             # Test text encoder
             logger.info("Testing text encoder...")
             text_session = ort.InferenceSession(
@@ -280,3 +314,73 @@ class CLIPExporter(BaseExporter):
         except Exception as e:
             logger.error(f"Test failed: {e}")
             return False
+
+
+def _fix_dynamic_batch_shapes(onnx_path: Path, batch_dim_name: str = "batch_size") -> int:
+    """Fix intermediate shapes that have a hardcoded batch dimension.
+
+    When torch.onnx.export (legacy tracer) traces with batch=1, value_info
+    entries get shapes like [1, 50, 768] instead of [batch_size, 50, 768].
+    ONNX Runtime uses these during graph optimization to create internal
+    Reshape nodes (e.g., "gemm_input_reshape") that fail with batch > 1.
+
+    This function replaces static batch dimensions in value_info with a
+    symbolic dim_param, and fixes 2D constant Reshape targets.
+
+    Returns the number of shapes fixed.
+    """
+    import onnx
+    from onnx import numpy_helper
+
+    model = onnx.load(str(onnx_path))
+
+    # Determine the batch dim name/value from the graph input
+    batch_dim_val = None
+    for inp in model.graph.input:
+        shape = inp.type.tensor_type.shape
+        if shape and len(shape.dim) >= 2:
+            d0 = shape.dim[0]
+            if d0.dim_param:
+                batch_dim_name = d0.dim_param
+            elif d0.dim_value > 0:
+                batch_dim_val = d0.dim_value
+            break
+
+    fixed = 0
+
+    # Fix value_info: replace static batch dim with symbolic
+    for vi in model.graph.value_info:
+        shape = vi.type.tensor_type.shape
+        if not shape or len(shape.dim) < 2:
+            continue
+        d0 = shape.dim[0]
+        if d0.dim_value > 0 and (batch_dim_val is None or d0.dim_value == batch_dim_val):
+            d0.ClearField("dim_value")
+            d0.dim_param = batch_dim_name
+            fixed += 1
+
+    # Fix 2D constant Reshape targets: [N, M] -> [-1, M]
+    init_map: dict[str, int] = {}
+    for idx, init in enumerate(model.graph.initializer):
+        init_map[init.name] = idx
+
+    for node in model.graph.node:
+        if node.op_type != "Reshape":
+            continue
+        shape_name = node.input[1]
+        if shape_name not in init_map:
+            continue
+        init_idx = init_map[shape_name]
+        shape = numpy_helper.to_array(model.graph.initializer[init_idx])
+        if len(shape) == 2 and shape[0] > 0:
+            new_shape = shape.copy()
+            new_shape[0] = -1
+            new_init = numpy_helper.from_array(new_shape, name=shape_name)
+            model.graph.initializer[init_idx].CopyFrom(new_init)
+            fixed += 1
+
+    if fixed:
+        onnx.save(model, str(onnx_path))
+        logger.info(f"  Fixed {fixed} shape(s) for dynamic batch in {onnx_path.name}")
+
+    return fixed

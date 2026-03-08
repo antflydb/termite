@@ -618,6 +618,20 @@ func (p *EmbeddingPipeline) EmbedImages(ctx context.Context, images []image.Imag
 		return nil, fmt.Errorf("EmbedImages requires an ImageProcessor; use NewImageEmbeddingPipeline or NewMultimodalEmbeddingPipeline")
 	}
 
+	// Check if the model supports dynamic batching by inspecting input shapes.
+	// If the batch dimension (first axis) is fixed, process images one at a time.
+	if !modelSupportsBatching(p.Model) && len(images) > 1 {
+		allEmbeddings := make([][]float32, len(images))
+		for i, img := range images {
+			emb, err := p.EmbedImages(ctx, []image.Image{img})
+			if err != nil {
+				return nil, fmt.Errorf("embedding image %d: %w", i, err)
+			}
+			allEmbeddings[i] = emb[0]
+		}
+		return allEmbeddings, nil
+	}
+
 	// Preprocess all images
 	pixels, err := p.ImageProcessor.ProcessBatch(images)
 	if err != nil {
@@ -754,6 +768,23 @@ func (p *EmbeddingPipeline) Name() string {
 // Implements backends.Model.
 func (p *EmbeddingPipeline) Backend() backends.BackendType {
 	return p.Model.Backend()
+}
+
+// modelSupportsBatching checks whether a model's first input dimension is
+// dynamic (-1), indicating it can accept variable batch sizes. If the model
+// doesn't implement InputInfoProvider or has no inputs, batching is assumed
+// to be supported (optimistic default).
+func modelSupportsBatching(model backends.Model) bool {
+	provider, ok := model.(backends.InputInfoProvider)
+	if !ok {
+		return true
+	}
+	for _, info := range provider.InputInfo() {
+		if len(info.Dimensions) > 0 && info.Dimensions[0] != -1 {
+			return false
+		}
+	}
+	return true
 }
 
 // ============================================================================

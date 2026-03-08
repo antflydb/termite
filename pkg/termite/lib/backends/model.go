@@ -66,6 +66,18 @@ type ImageConfigProvider interface {
 	ImageConfig() *ImageConfig
 }
 
+// InputInfoProvider is implemented by models that can report their input tensor shapes.
+// Dimensions use -1 for dynamic axes and positive values for fixed axes.
+// Use type assertion to inspect input shapes at runtime:
+//
+//	if provider, ok := model.(InputInfoProvider); ok {
+//	    info := provider.InputInfo()
+//	    // check dimensions to determine batching support, etc.
+//	}
+type InputInfoProvider interface {
+	InputInfo() []InputOutputInfo
+}
+
 // FeatureExtractionModel is a model optimized for generating embeddings.
 type FeatureExtractionModel interface {
 	Model

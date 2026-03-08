@@ -489,6 +489,13 @@ func (m *gomlxModelWrapper) Backend() BackendType {
 	return m.backendType
 }
 
+func (m *gomlxModelWrapper) InputInfo() []InputOutputInfo {
+	if m.onnxModel != nil {
+		return m.onnxModel.inputInfo
+	}
+	return nil
+}
+
 // =============================================================================
 // ONNX Model (via onnx-gomlx)
 // =============================================================================
@@ -521,7 +528,8 @@ type onnxModel struct {
 	hasAttentionMask bool
 	hasTokenTypeIds  bool
 	modelType        onnxModelType
-	inputNames       []string // ONNX model input names
+	inputNames       []string           // ONNX model input names
+	inputInfo        []InputOutputInfo   // Input tensor shape info
 
 	mu sync.Mutex
 }
@@ -545,7 +553,7 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 	}
 
 	// Detect model type and input characteristics from ONNX input names.
-	inputNames, _ := om.Inputs()
+	inputNames, inputShapes := om.Inputs()
 	hasAttentionMask := false
 	hasTokenTypeIds := false
 	modelType := onnxModelText // default
@@ -569,6 +577,16 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 		}
 	}
 
+	// Build input info from ONNX metadata.
+	inputInfo := make([]InputOutputInfo, len(inputNames))
+	for i, name := range inputNames {
+		inputInfo[i] = InputOutputInfo{
+			Name:       name,
+			Dimensions: Shape(intsToInt64s(inputShapes[i].Dimensions)),
+			DataType:   string(gomlxDataType(inputShapes[i].DType)),
+		}
+	}
+
 	model := &onnxModel{
 		path:             onnxPath,
 		pooling:          pooling,
@@ -581,6 +599,7 @@ func newONNXModel(onnxPath string, engine backends.Backend, pooling string, norm
 		hasTokenTypeIds:  hasTokenTypeIds,
 		modelType:        modelType,
 		inputNames:       inputNames,
+		inputInfo:        inputInfo,
 	}
 
 	// Pre-compile the inference graph for efficiency.
