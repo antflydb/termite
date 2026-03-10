@@ -20,7 +20,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/antflydb/antfly-go/libaf/logging"
+	"github.com/antflydb/antfly/pkg/libaf/logging"
 	"github.com/go-logr/zapr"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/cespare/xxhash/v2"
 	"go.uber.org/zap"
 )

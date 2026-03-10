@@ -25,8 +25,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/antflydb/antfly-go/libaf/ai"
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/ai"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"go.uber.org/zap"

@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	termreranking "github.com/antflydb/termite/pkg/termite/lib/reranking"

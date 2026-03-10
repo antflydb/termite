@@ -13,7 +13,7 @@ output-options:
   prefer-skip-optional-pointer: true
   prefer-skip-optional-pointer-with-omitzero: true
 import-mapping:
-  ../../../antfly-go/libaf/chunking/openapi.yaml: github.com/antflydb/antfly-go/libaf/chunking
-  ../../../antfly-go/libaf/logging/openapi.yaml: github.com/antflydb/antfly-go/libaf/logging
-  ../../../antfly-go/libaf/s3/openapi.yaml: github.com/antflydb/antfly-go/libaf/s3
-  ../../../antfly-go/libaf/scraping/openapi.yaml: github.com/antflydb/antfly-go/libaf/scraping
+  ../../../pkg/libaf/chunking/openapi.yaml: github.com/antflydb/antfly/pkg/libaf/chunking
+  ../../../pkg/libaf/logging/openapi.yaml: github.com/antflydb/antfly/pkg/libaf/logging
+  ../../../pkg/libaf/s3/openapi.yaml: github.com/antflydb/antfly/pkg/libaf/s3
+  ../../../pkg/libaf/scraping/openapi.yaml: github.com/antflydb/antfly/pkg/libaf/scraping

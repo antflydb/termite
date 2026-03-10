@@ -21,7 +21,7 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"go.uber.org/zap"

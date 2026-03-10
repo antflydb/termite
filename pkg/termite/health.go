@@ -17,7 +17,7 @@ package termite
 import (
 	"net/http"
 
-	json "github.com/antflydb/antfly-go/libaf/json"
+	json "github.com/antflydb/antfly/pkg/libaf/json"
 )
 
 // Version information - set at build time via ldflags

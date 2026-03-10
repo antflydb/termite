@@ -23,7 +23,7 @@ import (
 	"image/gif"
 	"image/png"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
 )
 
 // GIFChunker extracts frames from animated GIFs and outputs each as a PNG chunk.

@@ -9,7 +9,7 @@ import (
 	"image/png"
 	"testing"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
 )
 
 // generateTestGIF creates an animated GIF with the specified number of frames and dimensions.

@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/audio"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 )

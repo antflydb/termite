@@ -17,8 +17,8 @@ package termite
 import (
 	"sync"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 )
 
 // BuiltinEmbedderFactory creates a built-in embedder on demand.

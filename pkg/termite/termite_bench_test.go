@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 )
 
 // BenchmarkMockEmbedder benchmarks direct embedding calls without caching

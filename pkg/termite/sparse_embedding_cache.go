@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/cespare/xxhash/v2"
 	"go.uber.org/zap"
 )

@@ -25,7 +25,7 @@ import (
 	"strings"
 	"testing"
 
-	json "github.com/antflydb/antfly-go/libaf/json"
+	json "github.com/antflydb/antfly/pkg/libaf/json"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

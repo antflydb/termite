@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/antflydb/antfly-go/libaf/healthserver"
-	"github.com/antflydb/antfly-go/libaf/logging"
+	"github.com/antflydb/antfly/pkg/libaf/healthserver"
+	"github.com/antflydb/antfly/pkg/libaf/logging"
 	"github.com/antflydb/termite/pkg/termite"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"

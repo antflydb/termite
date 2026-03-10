@@ -229,7 +229,7 @@ components:
 
     # Chunking Types - reference existing schemas
     Chunk:
-      $ref: "../../../antfly-go/libaf/chunking/openapi.yaml#/components/schemas/Chunk"
+      $ref: "../../../pkg/libaf/chunking/openapi.yaml#/components/schemas/Chunk"
 
     VADOptions:
       type: object
@@ -280,7 +280,7 @@ components:
           format: float
           description: "Confidence threshold for model-based chunking (0.0-1.0). Used by ONNX text models and VAD audio models."
         text:
-          $ref: "../../../antfly-go/libaf/chunking/openapi.yaml#/components/schemas/TextChunkOptions"
+          $ref: "../../../pkg/libaf/chunking/openapi.yaml#/components/schemas/TextChunkOptions"
         audio:
           $ref: "#/components/schemas/AudioChunkConfig"
 
@@ -1364,10 +1364,10 @@ components:
             Defaults to ~/.termite/models (set via viper). If not set, only built-in fixed chunking is available.
           example: "~/.termite/models"
         content_security:
-          $ref: "../../../antfly-go/libaf/scraping/openapi.yaml#/components/schemas/ContentSecurityConfig"
+          $ref: "../../../pkg/libaf/scraping/openapi.yaml#/components/schemas/ContentSecurityConfig"
           description: "Security settings for downloading content from URLs (e.g., images for CLIP models). Controls allowed hosts, private IP blocking, download limits, and timeouts."
         s3_credentials:
-          $ref: "../../../antfly-go/libaf/s3/openapi.yaml#/components/schemas/Credentials"
+          $ref: "../../../pkg/libaf/s3/openapi.yaml#/components/schemas/Credentials"
           description: "S3 credentials for downloading content from S3 URLs. If not set, S3 URLs will fail."
         keep_alive:
           type: string
@@ -1495,7 +1495,7 @@ components:
             deployments (e.g., Kubernetes operator) where models are managed externally.
           default: true
         log:
-          $ref: "../../../antfly-go/libaf/logging/openapi.yaml#/components/schemas/Config"
+          $ref: "../../../pkg/libaf/logging/openapi.yaml#/components/schemas/Config"
 
     VersionResponse:
       type: object

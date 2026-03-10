@@ -23,9 +23,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
-	"github.com/antflydb/antfly-go/libaf/s3"
-	"github.com/antflydb/antfly-go/libaf/scraping"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/s3"
+	"github.com/antflydb/antfly/pkg/libaf/scraping"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"

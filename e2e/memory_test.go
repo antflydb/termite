@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/ai"
+	"github.com/antflydb/antfly/pkg/libaf/ai"
 	"github.com/antflydb/termite/pkg/termite"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"go.uber.org/zap/zaptest"

@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/audio"
 )
 

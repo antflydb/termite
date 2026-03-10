@@ -6,7 +6,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
 )
 
 func newTestChunker(t *testing.T, config FixedChunkerConfig) *FixedChunker {

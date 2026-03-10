@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	embeddingsLib "github.com/antflydb/termite/pkg/termite/lib/embeddings"
 	_ "github.com/gomlx/gomlx/backends/simplego/highway"

@@ -3,8 +3,8 @@ package embedder
 import (
 	"context"
 
-	"github.com/antflydb/antfly-go/libaf/ai"
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/ai"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 )
 
 // Adapter wraps BuiltinEmbedder to implement the libaf embeddings.Embedder interface.

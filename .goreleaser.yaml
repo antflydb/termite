@@ -11,7 +11,7 @@ project_name: termite
 before:
   hooks:
     # Note: skip go generate since generated files are committed and openapi.yaml
-    # has $ref paths to antfly-go/libaf that won't resolve in goreleaser context
+    # has $ref paths to pkg/libaf that won't resolve in goreleaser context
     - go mod tidy
 
 builds:

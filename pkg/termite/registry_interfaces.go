@@ -17,9 +17,9 @@ package termite
 import (
 	"context"
 
-	"github.com/antflydb/antfly-go/libaf/chunking"
-	"github.com/antflydb/antfly-go/libaf/embeddings"
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/chunking"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"

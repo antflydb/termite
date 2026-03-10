@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/antflydb/antfly-go/libaf/embeddings"
+	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 )
 
 // SerializeFloatArrays converts a 2D float64 array to a byte slice.

@@ -1,7 +1,7 @@
 package reranker
 
 import (
-	"github.com/antflydb/antfly-go/libaf/reranking"
+	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite"
 )
 

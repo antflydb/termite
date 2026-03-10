@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"net/http"
 
-	json "github.com/antflydb/antfly-go/libaf/json"
+	json "github.com/antflydb/antfly/pkg/libaf/json"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"go.uber.org/zap"
 )

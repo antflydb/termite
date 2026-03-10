@@ -29,7 +29,7 @@ import (
 	"net/http"
 	"strings"
 
-	chunking "github.com/antflydb/antfly-go/libaf/chunking"
+	chunking "github.com/antflydb/antfly/pkg/libaf/chunking"
 	"github.com/antflydb/termite/pkg/client/oapi"
 )
 
