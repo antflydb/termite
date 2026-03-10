@@ -6,12 +6,12 @@ replace (
 	github.com/gomlx/go-huggingface => github.com/ajroetker/go-huggingface v0.0.0-antfly001
 	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
 	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
-	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.0.0-20260302202010-e7999fbf1a99
+	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly001
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.12-0.20260307202826-df1cdfa1b60d
-	github.com/antflydb/antfly-go/libaf v0.0.0-20260306044714-f557ec8bf5c1
+	github.com/ajroetker/go-highway v0.0.12
+	github.com/antflydb/antfly-go/libaf v0.0.0-20260309180232-11cac35c8259
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.25.0
 	github.com/eliben/go-sentencepiece v0.7.0
@@ -33,7 +33,7 @@ require (
 	github.com/yalue/onnxruntime_go v1.27.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/image v0.36.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.20.0
 )
 
 require (
@@ -93,7 +93,7 @@ require (
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
