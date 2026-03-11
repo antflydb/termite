@@ -223,8 +223,8 @@ func (r *NERRegistry) discoverModels() error {
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath))
 
-			// REBEL models have 'relations' and 'zeroshot' capabilities
-			caps := []string{string(modelregistry.CapabilityRelations), string(modelregistry.CapabilityZeroshot)}
+			// REBEL models have 'relations', 'zeroshot', and 'extraction' capabilities
+			caps := []string{string(modelregistry.CapabilityRelations), string(modelregistry.CapabilityZeroshot), string(modelregistry.CapabilityExtraction)}
 			// Check manifest for additional capabilities
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
@@ -282,6 +282,12 @@ func (r *NERRegistry) discoverModels() error {
 						}
 					}
 				}
+			}
+
+			// Models with relations capability also support structured extraction
+			if slices.Contains(caps, string(modelregistry.CapabilityRelations)) &&
+				!slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
+				caps = append(caps, string(modelregistry.CapabilityExtraction))
 			}
 
 			r.discovered[registryFullName] = &NERModelInfo{
