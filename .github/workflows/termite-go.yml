@@ -33,8 +33,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TOKENIZERS_VERSION: "1.24.0"
-  ONNXRUNTIME_VERSION: "1.23.2"
+  TOKENIZERS_VERSION: "1.26.0"
+  ONNXRUNTIME_VERSION: "1.24.1"
   GENAI_VERSION: "0.11.4"
   PJRT_CPU_VERSION: "0.83.1"
 

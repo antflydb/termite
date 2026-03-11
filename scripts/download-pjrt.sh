@@ -23,7 +23,7 @@ set -euo pipefail
 # Default versions - update these when upgrading dependencies
 PJRT_VERSION="${1:-0.83.4}"
 HUGOT_VERSION="${HUGOT_VERSION:-0.5.8}"
-TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.25.0}"
+TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.26.0}"
 
 # Base URLs
 PJRT_BASE_URL="https://github.com/gomlx/pjrt-cpu-binaries/releases/download/v${PJRT_VERSION}"
