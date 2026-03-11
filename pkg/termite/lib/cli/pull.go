@@ -355,15 +355,6 @@ func ListRemoteModels(opts ListOptions) error {
 func ListLocalModels(opts ListOptions) error {
 	fmt.Printf("Local models in %s:\n\n", opts.ModelsDir)
 
-	modelTypes := []modelregistry.ModelType{
-		modelregistry.ModelTypeEmbedder,
-		modelregistry.ModelTypeChunker,
-		modelregistry.ModelTypeReranker,
-		modelregistry.ModelTypeGenerator,
-		modelregistry.ModelTypeRecognizer,
-		modelregistry.ModelTypeRewriter,
-	}
-
 	var filteredType modelregistry.ModelType
 	if opts.TypeFilter != "" {
 		var err error
@@ -378,47 +369,71 @@ func ListLocalModels(opts ListOptions) error {
 
 	totalModels := 0
 
-	for _, modelType := range modelTypes {
+	for _, modelType := range modelregistry.AllModelTypes {
 		if filteredType != "" && modelType != filteredType {
 			continue
 		}
 
 		typeDir := filepath.Join(opts.ModelsDir, modelType.DirName())
-		entries, err := os.ReadDir(typeDir)
+		discovered, err := modelregistry.DiscoverModelsInDir(typeDir, modelType, nil)
 		if err != nil {
 			continue
 		}
 
-		// Process entries - could be owner directories or legacy model directories
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
+		for _, dm := range discovered {
+			displayName := dm.FullName()
 
-			entryPath := filepath.Join(typeDir, entry.Name())
-
-			// Check if this is a model directory (has model files)
-			if isModelDir(entryPath) {
-				// Legacy flat structure: models/embedders/model-name/
-				displayModel(w, entry.Name(), "", entryPath, modelType, &totalModels)
-			} else {
-				// New owner structure: models/embedders/owner/model-name/
-				ownerDir := entryPath
-				ownerName := entry.Name()
-				subEntries, err := os.ReadDir(ownerDir)
-				if err != nil {
+			// Compute total size of all files in the model directory
+			var totalSize int64
+			files, _ := os.ReadDir(dm.Path)
+			for _, f := range files {
+				if f.IsDir() {
 					continue
 				}
-				for _, subEntry := range subEntries {
-					if !subEntry.IsDir() {
-						continue
-					}
-					modelDir := filepath.Join(ownerDir, subEntry.Name())
-					if isModelDir(modelDir) {
-						displayModel(w, subEntry.Name(), ownerName, modelDir, modelType, &totalModels)
-					}
+				if info, err := f.Info(); err == nil {
+					totalSize += info.Size()
 				}
 			}
+
+			// Collect variant IDs (skip the default empty-string key)
+			var variantIDs []string
+			for v := range dm.Variants {
+				if v != "" {
+					variantIDs = append(variantIDs, v)
+				}
+			}
+
+			// Detect multimodal capabilities
+			mc := modelregistry.DetectMultimodalCapabilities(dm.Path)
+			var capabilities []string
+			if mc.HasImage || mc.HasImageQuantized {
+				capabilities = append(capabilities, "image")
+			}
+			if mc.HasAudio || mc.HasAudioQuantized {
+				capabilities = append(capabilities, "audio")
+			}
+			if _, err := os.Stat(filepath.Join(dm.Path, "genai_config.json")); err == nil {
+				capabilities = append(capabilities, "genai")
+			}
+
+			displayType := string(modelType)
+			if len(capabilities) > 0 {
+				displayType = displayType + " [" + strings.Join(capabilities, ",") + "]"
+			}
+
+			source := ""
+			if dm.Manifest != nil {
+				source = dm.Manifest.Source
+			}
+
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				displayName,
+				displayType,
+				FormatBytes(totalSize),
+				strings.Join(variantIDs, ","),
+				source,
+			)
+			totalModels++
 		}
 	}
 	if err := w.Flush(); err != nil {
@@ -436,145 +451,6 @@ func ListLocalModels(opts ListOptions) error {
 	}
 
 	return nil
-}
-
-// isModelDir checks if a directory contains model files
-func isModelDir(dir string) bool {
-	// Check for standard model
-	if _, err := os.Stat(filepath.Join(dir, "model.onnx")); err == nil {
-		return true
-	}
-	// Check for generator model
-	if _, err := os.Stat(filepath.Join(dir, "genai_config.json")); err == nil {
-		return true
-	}
-	// Check for multimodal model
-	if _, err := os.Stat(filepath.Join(dir, "visual_model.onnx")); err == nil {
-		if _, err := os.Stat(filepath.Join(dir, "text_model.onnx")); err == nil {
-			return true
-		}
-	}
-	// Check for variant files
-	for _, filename := range modelregistry.VariantFilenames {
-		if _, err := os.Stat(filepath.Join(dir, filename)); err == nil {
-			return true
-		}
-	}
-	// Check for manifest
-	if _, err := os.Stat(filepath.Join(dir, "model_manifest.json")); err == nil {
-		return true
-	}
-	return false
-}
-
-// displayModel outputs a model row to the table writer
-func displayModel(w *tabwriter.Writer, modelName, owner, modelDir string, modelType modelregistry.ModelType, totalModels *int) {
-	standardPath := filepath.Join(modelDir, "model.onnx")
-	genaiConfigPath := filepath.Join(modelDir, "genai_config.json")
-	manifestPath := filepath.Join(modelDir, "model_manifest.json")
-
-	hasStandard := false
-	hasMultimodal := false
-	hasGenerator := false
-	var totalSize int64
-	var variants []string
-	var capabilities []string
-	source := ""
-
-	// Try to load manifest for source info
-	if manifest, err := modelregistry.LoadManifestFromFile(manifestPath); err == nil {
-		source = manifest.Source
-	}
-
-	// Check for standard model
-	if info, err := os.Stat(standardPath); err == nil {
-		hasStandard = true
-		totalSize += info.Size()
-	}
-
-	// Check for generator model (genai_config.json)
-	if _, err := os.Stat(genaiConfigPath); err == nil {
-		hasGenerator = true
-		capabilities = append(capabilities, "genai")
-	}
-
-	// Check for CLIP (image) model files
-	visualPath := filepath.Join(modelDir, "visual_model.onnx")
-	textPath := filepath.Join(modelDir, "text_model.onnx")
-	if visualInfo, err := os.Stat(visualPath); err == nil {
-		if textInfo, err := os.Stat(textPath); err == nil {
-			hasMultimodal = true
-			capabilities = append(capabilities, "image")
-			totalSize += visualInfo.Size()
-			totalSize += textInfo.Size()
-		}
-	}
-
-	// Check for CLAP (audio) model files
-	audioPath := filepath.Join(modelDir, "audio_model.onnx")
-	if audioInfo, err := os.Stat(audioPath); err == nil {
-		if textInfo, err := os.Stat(textPath); err == nil {
-			hasMultimodal = true
-			capabilities = append(capabilities, "audio")
-			totalSize += audioInfo.Size()
-			totalSize += textInfo.Size()
-		}
-	}
-
-	// Check for variant files
-	for variantID, filename := range modelregistry.VariantFilenames {
-		variantPath := filepath.Join(modelDir, filename)
-		if info, err := os.Stat(variantPath); err == nil {
-			variants = append(variants, variantID)
-			totalSize += info.Size()
-		}
-	}
-
-	if !hasStandard && !hasMultimodal && !hasGenerator && len(variants) == 0 {
-		return
-	}
-
-	// Add size of other files (tokenizer, config, etc.)
-	files, _ := os.ReadDir(modelDir)
-	for _, f := range files {
-		if f.IsDir() {
-			continue
-		}
-		name := f.Name()
-		// Skip ONNX files (already counted)
-		if strings.HasSuffix(name, ".onnx") {
-			continue
-		}
-		if info, err := f.Info(); err == nil {
-			totalSize += info.Size()
-		}
-	}
-
-	variantsStr := ""
-	if len(variants) > 0 {
-		variantsStr = strings.Join(variants, ",")
-	}
-
-	// Add capability info to display name for multimodal models
-	displayType := string(modelType)
-	if len(capabilities) > 0 {
-		displayType = displayType + " [" + strings.Join(capabilities, ",") + "]"
-	}
-
-	// Format display name with owner if present
-	displayName := modelName
-	if owner != "" {
-		displayName = owner + "/" + modelName
-	}
-
-	_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-		displayName,
-		displayType,
-		FormatBytes(totalSize),
-		variantsStr,
-		source,
-	)
-	*totalModels++
 }
 
 // FormatBytes formats bytes as human-readable string

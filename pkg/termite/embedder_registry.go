@@ -283,8 +283,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, "embedder", r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeEmbedder, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering embedder models: %w", err)
 	}
@@ -302,7 +301,7 @@ func (r *EmbedderRegistry) discoverModels() error {
 		requiredBackends := getRequiredBackends(registryFullName, dm.Manifest)
 
 		// Detect multimodal capabilities from manifest or file presence
-		mc := detectMultimodalCapabilities(modelPath)
+		mc := modelregistry.DetectMultimodalCapabilities(modelPath)
 		var caps []string
 		if dm.Manifest != nil && len(dm.Manifest.Capabilities) > 0 {
 			for _, c := range dm.Manifest.Capabilities {
@@ -313,10 +312,10 @@ func (r *EmbedderRegistry) discoverModels() error {
 		}
 		// Fall back to file-presence detection if manifest lacks capabilities
 		if len(caps) == 0 {
-			if mc.hasImage || mc.hasImageQuantized {
+			if mc.HasImage || mc.HasImageQuantized {
 				caps = append(caps, string(modelregistry.CapabilityImage))
 			}
-			if mc.hasAudio || mc.hasAudioQuantized {
+			if mc.HasAudio || mc.HasAudioQuantized {
 				caps = append(caps, string(modelregistry.CapabilityAudio))
 			}
 		}
@@ -328,8 +327,8 @@ func (r *EmbedderRegistry) discoverModels() error {
 				continue
 			}
 
-			hasStandard := (mc.hasImage || mc.hasAudio)
-			hasQuantized := (mc.hasImageQuantized || mc.hasAudioQuantized)
+			hasStandard := (mc.HasImage || mc.HasAudio)
+			hasQuantized := (mc.HasImageQuantized || mc.HasAudioQuantized)
 
 			r.logger.Info("Discovered multimodal embedder model (not loaded)",
 				zap.String("name", registryFullName),

@@ -177,8 +177,7 @@ func (r *ClassifierRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeClassifier, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeClassifier, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering classifier models: %w", err)
 	}

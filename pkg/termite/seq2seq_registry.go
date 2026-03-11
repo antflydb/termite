@@ -162,8 +162,7 @@ func (r *Seq2SeqRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRewriter, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRewriter, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering Seq2Seq models: %w", err)
 	}

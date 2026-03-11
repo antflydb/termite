@@ -193,8 +193,7 @@ func (r *RerankerRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReranker, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReranker, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering reranker models: %w", err)
 	}

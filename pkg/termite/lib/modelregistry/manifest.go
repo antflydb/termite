@@ -43,6 +43,19 @@ const (
 	ModelTypeTranscriber ModelType = "transcriber"
 )
 
+// AllModelTypes is the complete list of known model types.
+var AllModelTypes = []ModelType{
+	ModelTypeEmbedder,
+	ModelTypeChunker,
+	ModelTypeReranker,
+	ModelTypeGenerator,
+	ModelTypeRecognizer,
+	ModelTypeRewriter,
+	ModelTypeClassifier,
+	ModelTypeReader,
+	ModelTypeTranscriber,
+}
+
 // Capability represents a model capability
 type Capability string
 

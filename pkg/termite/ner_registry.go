@@ -196,8 +196,7 @@ func (r *NERRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRecognizer, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRecognizer, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering NER models: %w", err)
 	}

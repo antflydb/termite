@@ -237,8 +237,7 @@ func (r *ChunkerRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeChunker, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeChunker, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering chunker models: %w", err)
 	}

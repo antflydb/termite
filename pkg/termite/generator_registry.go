@@ -172,8 +172,7 @@ func (r *GeneratorRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeGenerator, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeGenerator, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering generator models: %w", err)
 	}

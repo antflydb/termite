@@ -175,8 +175,7 @@ func (r *ReaderRegistry) discoverModels() error {
 		return nil
 	}
 
-	// Use discoverModelsInDir which handles owner/model structure
-	discovered, err := discoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReader, r.logger)
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReader, zapLogf(r.logger))
 	if err != nil {
 		return fmt.Errorf("discovering reader models: %w", err)
 	}
@@ -194,7 +193,7 @@ func (r *ReaderRegistry) discoverModels() error {
 		// variants (e.g. PaddleOCR, Florence-2) are still valid as long as
 		// they contain at least one .onnx file; the pipeline loader handles
 		// architecture-specific file layouts at load time.
-		if len(variants) == 0 && !hasAnyONNXFiles(modelPath) {
+		if len(variants) == 0 && !modelregistry.HasAnyONNXFiles(modelPath) {
 			continue
 		}
 
