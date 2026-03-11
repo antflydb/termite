@@ -232,8 +232,7 @@ homebrew_casks:
     description: "Termite - ML inference service with ONNX Runtime + XLA multi-backend inference"
     url:
       template: "https://releases.antfly.io/termite/{{ .Tag }}/{{ .ArtifactName }}"
-    binaries:
-      - termite
+    binary: termite
     caveats: |
       termite includes both ONNX Runtime and XLA backends for ML inference.
       Bundled libraries are auto-discovered from lib/ next to the binary.
