@@ -41,7 +41,10 @@ import (
 func init() {
 	// Configure the JSON wrapper to use goccy/go-json for performance
 	json.SetConfig(json.Config{
-		Marshal:   gojson.Marshal,
+		Marshal: gojson.Marshal,
+		MarshalIndent: func(v any, prefix, indent string) ([]byte, error) {
+			return gojson.MarshalIndent(v, prefix, indent)
+		},
 		Unmarshal: gojson.Unmarshal,
 		MarshalString: func(v any) (string, error) {
 			data, err := gojson.Marshal(v)
