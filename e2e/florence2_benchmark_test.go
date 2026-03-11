@@ -73,108 +73,10 @@ func createReaderWithBackend(t testing.TB, modelPath string, backendType backend
 	return reader, err
 }
 
-// TestCompareFlorence2Backends compares Florence-2 OCR inference timing across all
-// available backends (ONNX, XLA, CoreML, Go).
-func TestCompareFlorence2Backends(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping Florence-2 backend comparison in short mode")
-	}
-
-	modelPath := ensureHuggingFaceModel(t, florence2ModelName, florence2ModelRepo, ModelTypeReader)
-	t.Logf("Using model: %s", modelPath)
-
-	img := loadFlorence2TestImage(t)
-	t.Logf("Image size: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
-
-	prompt := reading.FlorencePrompt(reading.FlorenceOCR)
-	ctx := context.Background()
-
-	availableBackends := backends.ListAvailable()
-	t.Logf("Available backends: %d", len(availableBackends))
-	for _, b := range availableBackends {
-		t.Logf("  - %s (%s)", b.Name(), b.Type())
-	}
-
-	results := make(map[backends.BackendType]time.Duration)
-
-	for _, backend := range availableBackends {
-		backendType := backend.Type()
-		t.Run(string(backendType), func(t *testing.T) {
-			reader, err := createReaderWithBackend(t, modelPath, backendType)
-			if err != nil {
-				t.Skipf("Cannot create Florence-2 reader with %s backend: %v", backendType, err)
-			}
-			defer reader.Close()
-
-			// Warmup
-			_, err = reader.Read(ctx, []image.Image{img}, prompt, 128)
-			if err != nil {
-				t.Fatalf("Warmup failed: %v", err)
-			}
-
-			// Timed iterations
-			const iterations = 5
-			iterTimes := make([]time.Duration, iterations)
-			totalStart := time.Now()
-			for i := 0; i < iterations; i++ {
-				iterStart := time.Now()
-				res, err := reader.Read(ctx, []image.Image{img}, prompt, 512)
-				if err != nil {
-					t.Fatalf("Read failed on iteration %d: %v", i, err)
-				}
-				iterTimes[i] = time.Since(iterStart)
-				if i == 0 {
-					t.Logf("Sample output (%d chars): %q", len(res[0].Text), truncate(res[0].Text, 200))
-				}
-			}
-			elapsed := time.Since(totalStart)
-			avg := elapsed / iterations
-
-			results[backendType] = avg
-			t.Logf("Backend %s: %v avg per image (%d iterations)", backendType, avg, iterations)
-			for i, d := range iterTimes {
-				t.Logf("  iter %d: %v", i, d)
-			}
-		})
-	}
-
-	// Summary
-	t.Log("\n=== Florence-2 Backend Comparison Summary ===")
-	for backend, duration := range results {
-		t.Logf("  %s: %v per image", backend, duration)
-	}
-
-	// Calculate speedups relative to Go backend
-	if goTime, ok := results[backends.BackendGo]; ok {
-		for backend, duration := range results {
-			if backend != backends.BackendGo {
-				speedup := float64(goTime) / float64(duration)
-				t.Logf("  %s speedup vs Go: %.2fx", backend, speedup)
-			}
-		}
-	}
-}
-
 // BenchmarkFlorence2Backends runs a proper Go benchmark comparing Florence-2
 // OCR inference across all available backends.
 func BenchmarkFlorence2Backends(b *testing.B) {
-	modelPath := ""
-	// Look for model already downloaded
-	patterns := []string{
-		testModelsDir + "/readers/onnx-community/Florence-2-base-ft",
-	}
-	for _, p := range patterns {
-		if _, err := os.Stat(p); err == nil {
-			modelPath = p
-			break
-		}
-	}
-	if path := os.Getenv("FLORENCE2_MODEL_PATH"); path != "" {
-		modelPath = path
-	}
-	if modelPath == "" {
-		b.Skip("No Florence-2 model found — run TestCompareFlorence2Backends first to download one")
-	}
+	modelPath := ensureHuggingFaceModel(b, florence2ModelName, florence2ModelRepo, ModelTypeReader)
 
 	img := loadFlorence2TestImage(b)
 	prompt := reading.FlorencePrompt(reading.FlorenceOCR)
@@ -255,11 +157,4 @@ func TestFlorence2Profile(t *testing.T) {
 	pprof.StopCPUProfile()
 	t.Logf("CPU profile written to %s", profPath)
 	t.Log("Analyse with:  go tool pprof -http=:8080", profPath)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }

@@ -15,8 +15,8 @@ github.com/ajroetker/gomlx v0.0.0-antfly008 h1:gR4QU267YK+1N0tC23nip7NpVSqyGa+aZ
 github.com/ajroetker/gomlx v0.0.0-antfly008/go.mod h1:7E+k2jApq1jX1F9uqINqPpFadESxqclrMqEySUkYs2w=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly008 h1:JoTmh8JZUiCoUQGJcdpHOx0OVMkYdPgcLj9jy9NbSy0=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly008/go.mod h1:BCAoiXSp71DmoCH7bbwv7SXveXazQiOylPDYkuQI2DU=
-github.com/ajroetker/ortgenai v0.1.1-antfly001 h1:l3T+NOX/GPHUQ5TA1Ffgklv63DcUfFpf6HOIpjZ0O0U=
-github.com/ajroetker/ortgenai v0.1.1-antfly001/go.mod h1:NsxP23iC77IP6q+gRTC+v79v3hyv7fKH1iSa7D+DoVk=
+github.com/ajroetker/ortgenai v0.1.1-antfly002 h1:NBD37hPSVeDIZBkchJqzjQ6qYIxgtG7bispR3O52jXk=
+github.com/ajroetker/ortgenai v0.1.1-antfly002/go.mod h1:NsxP23iC77IP6q+gRTC+v79v3hyv7fKH1iSa7D+DoVk=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b/go.mod h1:1KcenG0jGWcpt8ov532z81sp/kMMUG485J2InIOyADM=
 github.com/antflydb/antfly/pkg/libaf v0.0.0-20260310232650-62959e5b5707 h1:E9JrUVBM79mMzVzuNnUl5YnOaLKR0WOIEjjzUn86KbA=

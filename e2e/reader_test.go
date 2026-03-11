@@ -164,40 +164,6 @@ func createReader(t *testing.T, modelPath string) (*reading.PooledReader, error)
 // TrOCR Tests
 // =============================================================================
 
-// TestTrOCRModelDownload tests downloading the TrOCR model from HuggingFace
-func TestTrOCRModelDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping TrOCR download test in short mode")
-	}
-
-	modelPath := ensureHuggingFaceModel(t, trocrModelName, trocrModelRepo, ModelTypeReader)
-
-	requiredFiles := []string{"tokenizer.json", "config.json"}
-	for _, file := range requiredFiles {
-		filePath := filepath.Join(modelPath, file)
-		_, err := os.Stat(filePath)
-		assert.NoError(t, err, "Missing required file: %s", file)
-	}
-
-	// Check for ONNX files
-	onnxDir := filepath.Join(modelPath, "onnx")
-	if _, err := os.Stat(onnxDir); err == nil {
-		encoderPath := filepath.Join(onnxDir, "encoder_model.onnx")
-		decoderPath := filepath.Join(onnxDir, "decoder_model_merged.onnx")
-
-		if fileExists(encoderPath) && fileExists(decoderPath) {
-			t.Logf("Found ONNX models in %s", onnxDir)
-		}
-	}
-
-	// Load and verify config using the pipelines package
-	config, err := pipelines.LoadVision2SeqModelConfig(modelPath)
-	require.NoError(t, err, "Failed to load Vision2Seq model config")
-
-	t.Logf("TrOCR config: num_heads=%d, head_dim=%d, vocab_size=%d",
-		config.NumHeads, config.HeadDim, config.DecoderConfig.VocabSize)
-}
-
 // TestTrOCRReader tests the TrOCR model using the Reader interface
 func TestTrOCRReader(t *testing.T) {
 	if testing.Short() {
@@ -568,29 +534,6 @@ const (
 	pix2structDocVQAName = "google/pix2struct-docvqa-base"
 )
 
-// TestPix2StructModelDownload tests downloading the Pix2Struct model
-func TestPix2StructModelDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping Pix2Struct download test in short mode")
-	}
-
-	modelPath := ensureHuggingFaceModel(t, pix2structDocVQAName, pix2structDocVQARepo, ModelTypeReader)
-
-	requiredFiles := []string{"config.json"}
-	for _, file := range requiredFiles {
-		filePath := filepath.Join(modelPath, file)
-		_, err := os.Stat(filePath)
-		assert.NoError(t, err, "Missing required file: %s", file)
-	}
-
-	// Check for ONNX encoder
-	hasEncoder := fileExists(filepath.Join(modelPath, "encoder_model.onnx")) ||
-		fileExists(filepath.Join(modelPath, "onnx", "encoder_model.onnx"))
-	if hasEncoder {
-		t.Logf("Found ONNX encoder model")
-	}
-}
-
 // TestPix2StructDocVQA tests Pix2Struct for document VQA
 func TestPix2StructDocVQA(t *testing.T) {
 	if testing.Short() {
@@ -832,47 +775,6 @@ func TestApplyCharMapping(t *testing.T) {
 // =============================================================================
 
 // TestMoondream2ModelDownload tests downloading and loading the Moondream2 model.
-func TestMoondream2ModelDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping Moondream2 download test in short mode")
-	}
-
-	modelPath := ensureHuggingFaceModel(t, moondream2ModelName, moondream2ModelRepo, ModelTypeReader)
-
-	// Verify structural detection files
-	requiredFiles := []string{"config.json", "tokenizer.json"}
-	for _, file := range requiredFiles {
-		filePath := filepath.Join(modelPath, file)
-		_, err := os.Stat(filePath)
-		assert.NoError(t, err, "Missing required file: %s", file)
-	}
-
-	// Check for decoder-only VLM ONNX files (structural detection)
-	onnxDir := filepath.Join(modelPath, "onnx")
-	if _, err := os.Stat(onnxDir); err == nil {
-		visionEncoder := filepath.Join(onnxDir, "vision_encoder.onnx")
-		embedTokens := filepath.Join(onnxDir, "embed_tokens.onnx")
-		decoder := filepath.Join(onnxDir, "decoder_model_merged.onnx")
-
-		if fileExists(visionEncoder) && fileExists(embedTokens) && fileExists(decoder) {
-			t.Logf("Found decoder-only VLM ONNX models in %s", onnxDir)
-		}
-	}
-
-	// Verify structural detection identifies this as a decoder-only VLM
-	assert.True(t, pipelines.IsDecoderOnlyVLMModel(modelPath),
-		"Moondream2 should be detected as a decoder-only VLM model")
-
-	// Load and verify config
-	config, err := pipelines.LoadVision2SeqModelConfig(modelPath)
-	require.NoError(t, err, "Failed to load Vision2Seq model config")
-
-	t.Logf("Moondream2 config: hidden_size=%d, num_heads=%d, head_dim=%d",
-		config.HiddenSize, config.NumHeads, config.HeadDim)
-
-	assert.NotEmpty(t, config.EmbedTokensPath, "EmbedTokensPath should be set")
-}
-
 // TestMoondream2Reader tests Moondream2 inference using the Reader interface.
 func TestMoondream2Reader(t *testing.T) {
 	if testing.Short() {
@@ -880,6 +782,10 @@ func TestMoondream2Reader(t *testing.T) {
 	}
 
 	modelPath := ensureHuggingFaceModel(t, moondream2ModelName, moondream2ModelRepo, ModelTypeReader)
+
+	// Verify structural detection identifies this as a decoder-only VLM
+	assert.True(t, pipelines.IsDecoderOnlyVLMModel(modelPath),
+		"Moondream2 should be detected as a decoder-only VLM model")
 
 	reader, err := createReader(t, modelPath)
 	if err != nil {

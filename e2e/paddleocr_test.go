@@ -38,35 +38,6 @@ const (
 // PaddleOCR Model Tests
 // =============================================================================
 
-// TestPaddleOCRModelDownload tests downloading PaddleOCR ONNX models.
-func TestPaddleOCRModelDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping PaddleOCR download test in short mode")
-	}
-
-	modelPath := findPaddleOCRModel(t)
-	if modelPath == "" {
-		// Try downloading from HuggingFace
-		modelPath = ensureHuggingFaceModel(t, paddleOCRModelRepo, paddleOCRModelRepo, ModelTypeReader)
-	}
-
-	// Verify expected files
-	detFile := findONNXFile(t, modelPath, "det")
-	recFile := findONNXFile(t, modelPath, "rec")
-
-	assert.NotEmpty(t, detFile, "Should have detection ONNX model")
-	assert.NotEmpty(t, recFile, "Should have recognition ONNX model")
-
-	t.Logf("Detection model: %s", detFile)
-	t.Logf("Recognition model: %s", recFile)
-
-	// Check for character dictionary
-	dictPath := filepath.Join(modelPath, "ppocr_keys_v1.txt")
-	if fileExists(dictPath) {
-		t.Logf("Found character dictionary: ppocr_keys_v1.txt")
-	}
-}
-
 // TestPaddleOCRMetadata verifies the termite_metadata.json for PaddleOCR.
 func TestPaddleOCRMetadata(t *testing.T) {
 	if testing.Short() {

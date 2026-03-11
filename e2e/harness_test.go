@@ -133,7 +133,7 @@ func ensureRegistryModel(t *testing.T, modelName string, modelType ModelType) st
 // modelName is the name used in the local directory (e.g., "gliner_small-v2.1")
 // repo is the HuggingFace repository (e.g., "onnx-community/gliner_small-v2.1")
 // Returns the model path.
-func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType ModelType) string {
+func ensureHuggingFaceModel(t testing.TB, modelName, repo string, modelType ModelType) string {
 	t.Helper()
 
 	modelDownloadMutex.Lock()
@@ -142,8 +142,20 @@ func ensureHuggingFaceModel(t *testing.T, modelName, repo string, modelType Mode
 	modelPath := filepath.Join(testModelsDir, string(modelType), modelName)
 
 	if _, err := os.Stat(modelPath); err == nil {
-		t.Logf("HuggingFace model %s already exists at %s", modelName, modelPath)
-		return modelPath
+		// Directory exists — verify the manifest is valid (has ONNX files).
+		// A partial download may leave config files but no model weights.
+		if manifest, mErr := modelregistry.LoadManifestFromDir(modelPath); mErr == nil {
+			if vErr := manifest.Validate(); vErr == nil {
+				t.Logf("HuggingFace model %s already exists at %s", modelName, modelPath)
+				return modelPath
+			} else {
+				t.Logf("Model directory exists but manifest invalid (%v), re-downloading", vErr)
+				os.RemoveAll(modelPath)
+			}
+		} else {
+			t.Logf("Model directory exists but no valid manifest (%v), re-downloading", mErr)
+			os.RemoveAll(modelPath)
+		}
 	}
 
 	t.Logf("Downloading model from HuggingFace: %s from %s", modelName, repo)

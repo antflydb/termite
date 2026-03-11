@@ -152,47 +152,6 @@ func createTranscriber(t *testing.T, modelPath string) (*transcribing.PooledTran
 // Whisper Tests
 // =============================================================================
 
-// TestWhisperModelDownload tests downloading the Whisper model from HuggingFace
-func TestWhisperModelDownload(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping Whisper download test in short mode")
-	}
-
-	modelPath := ensureHuggingFaceModel(t, whisperModelName, whisperModelRepo, ModelTypeTranscriber)
-
-	// Check required files exist
-	requiredFiles := []string{"tokenizer.json", "config.json"}
-	for _, file := range requiredFiles {
-		filePath := filepath.Join(modelPath, file)
-		_, err := os.Stat(filePath)
-		assert.NoError(t, err, "Missing required file: %s", file)
-	}
-
-	// Check for ONNX files
-	onnxDir := filepath.Join(modelPath, "onnx")
-	if _, err := os.Stat(onnxDir); err == nil {
-		encoderPath := filepath.Join(onnxDir, "encoder_model.onnx")
-		decoderPath := filepath.Join(onnxDir, "decoder_model_merged.onnx")
-
-		if fileExists(encoderPath) && fileExists(decoderPath) {
-			t.Logf("Found ONNX models in %s", onnxDir)
-		} else {
-			// Try alternative naming
-			decoderPath = filepath.Join(onnxDir, "decoder_model.onnx")
-			if fileExists(encoderPath) {
-				t.Logf("Found encoder ONNX model in %s", onnxDir)
-			}
-		}
-	}
-
-	// Load and verify config using the pipelines package
-	config, err := pipelines.LoadSpeech2SeqModelConfig(modelPath)
-	require.NoError(t, err, "Failed to load Speech2Seq model config")
-
-	t.Logf("Whisper config: num_heads=%d, head_dim=%d, vocab_size=%d, num_layers=%d",
-		config.NumHeads, config.HeadDim, config.DecoderConfig.VocabSize, config.NumLayers)
-}
-
 // TestWhisperPipeline tests the Speech2Seq pipeline directly
 func TestWhisperPipeline(t *testing.T) {
 	if testing.Short() {
