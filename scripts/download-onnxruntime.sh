@@ -8,7 +8,7 @@
 # Downloads:
 #   - ONNX Runtime C/C++ libraries from Microsoft (for embeddings, NER, reranking)
 #   - ONNX Runtime GenAI libraries from Microsoft (for LLM text generation)
-#   - libtokenizers.a from knights-analytics/hugot (linux-amd64) or daulet/tokenizers (other platforms)
+#   - libtokenizers.a from daulet/tokenizers (all platforms)
 #
 # Usage:
 #   ./scripts/download-onnxruntime.sh [ONNXRUNTIME_VERSION] [GENAI_VERSION]
@@ -24,13 +24,11 @@ set -euo pipefail
 # Default versions - update these when upgrading dependencies
 ONNXRUNTIME_VERSION="${1:-1.24.1}"
 GENAI_VERSION="${2:-0.12.1}"
-HUGOT_VERSION="${HUGOT_VERSION:-0.5.8}"
 TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.26.0}"
 
 # Base URLs
 ONNXRUNTIME_BASE_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}"
 GENAI_BASE_URL="https://github.com/microsoft/onnxruntime-genai/releases/download/v${GENAI_VERSION}"
-HUGOT_BASE_URL="https://github.com/knights-analytics/hugot/releases/download/v${HUGOT_VERSION}"
 TOKENIZERS_BASE_URL="https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}"
 
 # Output directory
@@ -251,22 +249,7 @@ download_tokenizers() {
     temp_dir=$(mktemp -d)
     trap "rm -rf ${temp_dir}" EXIT
 
-    # For linux-amd64, use hugot's release (it's the only platform they provide)
-    # For other platforms, use daulet/tokenizers
-    if [[ "$our_platform" == "linux-amd64" ]]; then
-        url="${HUGOT_BASE_URL}/libtokenizers.a"
-        info "  Using hugot release..."
-        if curl -fsSL --retry 3 --retry-delay 2 -o "${output_path}/lib/libtokenizers.a" "${url}"; then
-            info "Successfully downloaded libtokenizers.a for ${our_platform}"
-            trap - EXIT
-            rm -rf "${temp_dir}"
-            return 0
-        else
-            warn "Failed to download from hugot, trying daulet/tokenizers..."
-        fi
-    fi
-
-    # Use daulet/tokenizers for all platforms (fallback for linux-amd64, primary for others)
+    # Use daulet/tokenizers for all platforms (must match Go binding version)
     local tokenizers_platform=$(get_tokenizers_platform "$our_platform")
     archive_name="libtokenizers.${tokenizers_platform}.tar.gz"
     url="${TOKENIZERS_BASE_URL}/${archive_name}"
@@ -335,7 +318,6 @@ download_platform() {
 main() {
     info "ONNX Runtime & Tokenizers Download Script"
     info "ONNX Runtime version: ${ONNXRUNTIME_VERSION}"
-    info "Hugot version: ${HUGOT_VERSION}"
     info "Tokenizers version: ${TOKENIZERS_VERSION}"
     info "Output directory: ${OUTPUT_DIR}"
     echo ""
