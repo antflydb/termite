@@ -3,9 +3,24 @@
 [![Build status](https://github.com/antflydb/termite/actions/workflows/termite-go.yml/badge.svg)](https://github.com/antflydb/termite/actions)
 [![Docs](https://img.shields.io/badge/docs-antfly.io-blue)](https://antfly.io/termite)
 
-ML inference service for embeddings, chunking, and reranking with two-tier caching (memory + singleflight).
+ML inference service for embeddings, chunking, reranking, classification, NER, OCR, transcription, text generation, and more — with two-tier caching (memory + singleflight).
 
 **[Documentation](https://antfly.io/termite)** | **[Discord](https://discord.gg/zrdjguy84P)**
+
+## Features
+
+- **Embeddings** — Dense and sparse vector generation, multimodal (text, images, audio)
+- **Chunking** — Semantic text segmentation
+- **Reranking** — Cross-encoder relevance scoring
+- **Classification** — Zero-shot text classification (NLI-based, 100+ languages)
+- **Recognition (NER)** — Named entity recognition, zero-shot labels, relation extraction
+- **Reading (OCR)** — Document understanding, OCR, visual question answering
+- **Transcription** — Speech-to-text (Whisper, Wav2Vec2)
+- **Extraction** — Schema-based structured data extraction
+- **Rewriting** — Paraphrasing, question generation (Seq2Seq)
+- **Generation** — Text generation with tool calling (OpenAI-compatible)
+- **Multiple backends** — ONNX Runtime, XLA (TPU/CUDA), pure Go
+- **Kubernetes operator** — Autoscaling with TermitePool and TermiteRoute CRDs
 
 ## Running
 
@@ -102,10 +117,10 @@ Installed plugins are found automatically via standard go-xla search paths. To o
 
 | Platform | PJRT CPU | Notes |
 |----------|----------|-------|
-| linux-amd64 | ✓ | |
-| linux-arm64 | ✓ | |
-| darwin-arm64 | ✓ | Apple Silicon |
-| darwin-amd64 | ✗ | Intel Mac not supported upstream |
+| linux-amd64 | Yes | |
+| linux-arm64 | Yes | |
+| darwin-arm64 | Yes | Apple Silicon |
+| darwin-amd64 | No | Intel Mac not supported upstream |
 
 ## Models
 
@@ -131,13 +146,21 @@ Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `rerank
 | `bge-small-en-v1.5` | 128MB | 384 | f16, i8 | Fast English embeddings |
 | `all-MiniLM-L6-v2` | 87MB | 384 | f32, f16, i8 | Fastest, good quality |
 | `all-mpnet-base-v2` | 418MB | 768 | f32, f16, i8 | Best sentence-transformers accuracy |
-| `clip-vit-base-patch32` | 584MB | 512 | f16, i8 | Multimodal (text + images) |
 | `nomic-embed-text-v1.5` | 548MB | 768 | f16, i8 | 8K context, Matryoshka dims |
 | `bge-m3` | 2.2GB | 1024 | f16, i8 | 100+ languages, 8K context |
 | `gte-Qwen2-1.5B-instruct` | 6GB | 1536 | f16 | 32K context, instruction-following |
 | `snowflake-arctic-embed-l-v2.0` | 1.3GB | 1024 | f16, i8 | Retrieval-optimized, Matryoshka |
 | `stella_en_1.5B_v5` | 6GB | 1024 | f16 | Premium English, top MTEB scores |
 | `embeddinggemma-300m-ONNX` | 1.2GB | 768 | f16, q4, q4f16 | Multilingual, edge-optimized |
+| `splade-cocondenser-ensembledistil` | — | sparse | f32 | Sparse embeddings (SPLADE) |
+
+#### Multimodal Embedders
+
+| Model | Size | Dims | Variants | Notes |
+|-------|------|------|----------|-------|
+| `clip-vit-base-patch32` | 584MB | 512 | f16, i8 | Text + image embeddings (CLIP) |
+| `clipclap` | — | 512 | — | Text + image (CLIP variant) |
+| `clap-htsat-unfused` | — | 512 | — | Audio + text embeddings (CLAP) |
 
 #### Rerankers
 
@@ -151,6 +174,13 @@ Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `rerank
 |-------|------|----------|
 | `chonky-mmbert-small-multilingual-1` | 570MB | f16, i8 |
 
+#### Classifiers
+
+| Model | Size | Variants | Notes |
+|-------|------|----------|-------|
+| `mDeBERTa-v3-base-mnli-xnli` | — | f32, f16, i8 | Zero-shot, 100+ languages |
+| `bart-large-mnli` | — | f32, f16, i8 | Zero-shot, English |
+
 #### Recognizers (NER)
 
 | Model | Size | Variants | Capabilities |
@@ -158,8 +188,30 @@ Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `rerank
 | `bert-base-NER` | 413MB | f32, f16, i8 | labels |
 | `bert-large-NER` | 1.3GB | f32, f16, i8 | labels |
 | `gliner_small-v2.1` | 199MB | f32, f16, i8 | labels, zeroshot |
+| `gliner2-base-v1` | — | f32, f16, i8 | labels, zeroshot (improved) |
 | `gliner-multitask-large-v0.5` | 1.3GB | f32, f16, i8 | labels, zeroshot, relations, answers |
 | `rebel-large` | 3.0GB | - | relations |
+
+#### Readers (OCR / Document Understanding)
+
+| Model | Size | Variants | Notes |
+|-------|------|----------|-------|
+| `trocr-base-printed` | — | — | Printed text OCR |
+| `donut-base-finetuned-cord-v2` | — | — | Receipt/form parsing |
+| `donut-base-finetuned-docvqa` | — | — | Document question answering |
+| `moondream2` | — | — | General vision understanding |
+
+#### Transcribers (Speech-to-Text)
+
+| Model | Size | Variants | Notes |
+|-------|------|----------|-------|
+| `whisper-tiny.en` | — | — | OpenAI Whisper, English |
+
+#### Extractors
+
+| Model | Size | Variants | Notes |
+|-------|------|----------|-------|
+| `gliner2-base-v1` | — | f32, f16, i8 | Schema-based field extraction |
 
 #### Rewriters
 
@@ -210,6 +262,98 @@ embedder:
 ```
 
 Termite auto-selects the best available variant if not specified.
+
+## API
+
+All endpoints accept JSON. See `openapi.yaml` for full schema details.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/embed` | POST | Generate dense and sparse embeddings (text, image, audio) |
+| `/api/chunk` | POST | Chunk text into semantic segments |
+| `/api/rerank` | POST | Rerank documents by relevance |
+| `/api/classify` | POST | Zero-shot text classification |
+| `/api/recognize` | POST | Named entity recognition |
+| `/api/read` | POST | OCR and document understanding |
+| `/api/transcribe` | POST | Speech-to-text transcription |
+| `/api/extract` | POST | Schema-based structured data extraction |
+| `/api/rewrite` | POST | Text rewriting (paraphrase, question generation) |
+| `/api/generate` | POST | Text generation (OpenAI-compatible) |
+| `/api/models` | GET | List available models |
+| `/api/version` | GET | Version info |
+
+### Multimodal Input
+
+The `/api/embed` endpoint supports multimodal input using the OpenAI content format:
+
+```json
+{
+  "model": "clip-vit-base-patch32",
+  "input": [
+    {
+      "content": [
+        {"type": "text", "text": "a photo of a cat"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+      ]
+    }
+  ]
+}
+```
+
+## Configuration
+
+Config via file (`termite.yaml`), flags, or environment variables (`TERMITE_` prefix):
+
+```yaml
+api_url: "http://localhost:11433"
+models_dir: "./models"
+
+# Backend priority with optional device specifiers
+# Format: "backend" or "backend:device"
+# Devices: auto (default), cuda, coreml, tpu, cpu
+backend_priority:
+  - onnx:cuda      # Try ONNX with CUDA first
+  - xla:tpu        # Then XLA with TPU
+  - onnx:cpu       # Fall back to ONNX CPU
+  - go             # Pure Go fallback (always works)
+
+keep_alive: "5m"
+max_loaded_models: 3
+allow_downloads: false
+log:
+  level: info
+  style: terminal
+```
+
+### Backend Priority
+
+The `backend_priority` setting controls which inference backends Termite tries, in order. Each entry can be:
+
+- **Backend only**: `onnx`, `xla`, `go` - uses auto device detection
+- **Backend with device**: `onnx:cuda`, `xla:tpu`, `onnx:coreml` - explicit device
+
+**Available backends** (depend on build tags):
+| Backend | Build Tags | Devices Supported |
+|---------|------------|-------------------|
+| `onnx` | `onnx,ORT` | `cuda`, `coreml` (macOS), `cpu` |
+| `xla` | `xla,XLA` | `tpu`, `cuda`, `cpu` |
+| `go` | (none) | `cpu` only |
+
+**Example configurations:**
+
+```yaml
+# GPU-first with CPU fallback
+backend_priority: ["onnx:cuda", "xla:cuda", "onnx:cpu", "go"]
+
+# macOS with CoreML acceleration
+backend_priority: ["onnx:coreml", "go"]
+
+# Cloud TPU deployment
+backend_priority: ["xla:tpu", "xla:cpu"]
+
+# Simple auto-detection (default)
+backend_priority: ["onnx", "xla", "go"]
+```
 
 ## Kubernetes Operator
 
@@ -264,64 +408,6 @@ make generate
 ```
 
 See `pkg/operator/` for CRD definitions and controller implementation.
-
-## API
-
-See `openapi.yaml` for endpoints: `/api/embeddings`, `/api/chunk`, `/api/rerank`.
-
-## Configuration
-
-Config via file (`termite.yaml`), flags, or environment variables (`TERMITE_` prefix):
-
-```yaml
-api_url: "http://localhost:11433"
-models_dir: "./models"
-
-# Backend priority with optional device specifiers
-# Format: "backend" or "backend:device"
-# Devices: auto (default), cuda, coreml, tpu, cpu
-backend_priority:
-  - onnx:cuda      # Try ONNX with CUDA first
-  - xla:tpu        # Then XLA with TPU
-  - onnx:cpu       # Fall back to ONNX CPU
-  - go             # Pure Go fallback (always works)
-
-keep_alive: "5m"
-max_loaded_models: 3
-log:
-  level: info
-  style: terminal
-```
-
-### Backend Priority
-
-The `backend_priority` setting controls which inference backends Termite tries, in order. Each entry can be:
-
-- **Backend only**: `onnx`, `xla`, `go` - uses auto device detection
-- **Backend with device**: `onnx:cuda`, `xla:tpu`, `onnx:coreml` - explicit device
-
-**Available backends** (depend on build tags):
-| Backend | Build Tags | Devices Supported |
-|---------|------------|-------------------|
-| `onnx` | `onnx,ORT` | `cuda`, `coreml` (macOS), `cpu` |
-| `xla` | `xla,XLA` | `tpu`, `cuda`, `cpu` |
-| `go` | (none) | `cpu` only |
-
-**Example configurations:**
-
-```yaml
-# GPU-first with CPU fallback
-backend_priority: ["onnx:cuda", "xla:cuda", "onnx:cpu", "go"]
-
-# macOS with CoreML acceleration
-backend_priority: ["onnx:coreml", "go"]
-
-# Cloud TPU deployment
-backend_priority: ["xla:tpu", "xla:cpu"]
-
-# Simple auto-detection (default)
-backend_priority: ["onnx", "xla", "go"]
-```
 
 ## Community
 
