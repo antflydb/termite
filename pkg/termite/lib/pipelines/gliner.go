@@ -1095,7 +1095,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 	spanIdx := make([]int64, numSpans*2)
 
 	for w := 0; w < numWords; w++ {
-		for wi := 0; wi < maxWidth; wi++ {
+		for wi := range maxWidth {
 			si := w*maxWidth + wi
 			endWord := w + wi
 			if endWord < numWords {

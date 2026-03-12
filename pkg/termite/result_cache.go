@@ -42,7 +42,7 @@ func NewResultCache[V any](name string, ttl time.Duration, logger *zap.Logger) *
 	)
 	go cache.Start()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel is stored in rc.cancel and called in Close()
 	rc := &ResultCache[V]{
 		cache:  cache,
 		logger: logger,

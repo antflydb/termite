@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -231,7 +232,7 @@ func (r *ChunkerRegistry) discoverModels() error {
 	}
 
 	// Check if directory exists
-	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Clean(r.modelsDir)); os.IsNotExist(err) {
 		r.logger.Warn("Chunker models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil

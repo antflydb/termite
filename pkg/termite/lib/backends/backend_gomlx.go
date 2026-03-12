@@ -528,8 +528,8 @@ type onnxModel struct {
 	hasAttentionMask bool
 	hasTokenTypeIds  bool
 	modelType        onnxModelType
-	inputNames       []string           // ONNX model input names
-	inputInfo        []InputOutputInfo   // Input tensor shape info
+	inputNames       []string          // ONNX model input names
+	inputInfo        []InputOutputInfo // Input tensor shape info
 
 	mu sync.Mutex
 }
