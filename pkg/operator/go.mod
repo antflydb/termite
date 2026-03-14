@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/operator
 go 1.26.0
 
 require (
-	github.com/antflydb/antfly/pkg/libaf v0.0.0-20260312183614-84db07d523e1
+	github.com/antflydb/antfly/pkg/libaf v0.0.0-20260313151000-3c73f35767a3
 	github.com/go-logr/zapr v1.3.0
 	github.com/onsi/ginkgo/v2 v2.27.3
 	github.com/onsi/gomega v1.38.2

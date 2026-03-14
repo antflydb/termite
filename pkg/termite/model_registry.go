@@ -31,15 +31,14 @@ func zapLogf(logger *zap.Logger) func(string, ...any) {
 	}
 }
 
-// generateGenaiConfig creates a genai_config.json file from a HuggingFace config.json.
-// It also ensures chat_template.jinja exists for chat-based generation.
-// This enables ONNX Runtime GenAI to load standard HuggingFace ONNX models.
-// Returns nil if successful, error otherwise.
-func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
-	genaiConfigPath := filepath.Join(modelPath, "genai_config.json")
+// ensureGeneratorPrereqs ensures chat_template.jinja exists for chat-based generation.
+// It does NOT generate genai_config.json — standard HuggingFace ONNX models should
+// use Termite's pipeline-based inference, not ORT GenAI which requires models
+// specifically exported for it.
+func ensureGeneratorPrereqs(modelPath string, logger *zap.Logger) {
 	chatTemplateJinjaPath := filepath.Join(modelPath, "chat_template.jinja")
 
-	// Ensure chat_template.jinja exists (ortgenai loads it from this file)
+	// Ensure chat_template.jinja exists (needed for chat template rendering)
 	if _, err := os.Stat(chatTemplateJinjaPath); os.IsNotExist(err) {
 		// Try to create it from tokenizer_config.json
 		chatTemplate := getChatTemplateFromTokenizer(modelPath, logger)
@@ -54,11 +53,21 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 			}
 		}
 	}
+}
+
+// generateGenaiConfig creates a genai_config.json file from a HuggingFace config.json.
+// It also ensures chat_template.jinja exists for chat-based generation.
+// This enables ONNX Runtime GenAI to load standard HuggingFace ONNX models.
+// Returns nil if successful, error otherwise.
+func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
+	genaiConfigPath := filepath.Join(modelPath, "genai_config.json")
 
 	// Skip genai_config.json generation if it already exists
 	if _, err := os.Stat(genaiConfigPath); err == nil {
 		return nil
 	}
+
+	ensureGeneratorPrereqs(modelPath, logger)
 
 	// Read HuggingFace config.json
 	configPath := filepath.Join(modelPath, "config.json")
@@ -77,8 +86,10 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 	if mt, ok := hfConfig["model_type"].(string); ok {
 		// Map HuggingFace model types to GenAI types
 		switch mt {
-		case "gemma", "gemma2", "gemma3_text":
+		case "gemma", "gemma2":
 			modelType = "gemma"
+		case "gemma3_text":
+			modelType = "gemma3_text"
 		case "llama":
 			modelType = "llama"
 		case "mistral":
@@ -135,48 +146,75 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 		numKeyValueHeads = int(nkvh)
 	}
 
-	intermediateSize := hiddenSize * 4
-	if is, ok := hfConfig["intermediate_size"].(float64); ok {
-		intermediateSize = int(is)
-	}
-
 	headDim := hiddenSize / numAttentionHeads
 	if hd, ok := hfConfig["head_dim"].(float64); ok {
 		headDim = int(hd)
 	}
 
 	// Build genai_config.json (chat_template is loaded from chat_template.jinja file, not from JSON)
+	bosTokenID := 2
+	if bos, ok := hfConfig["bos_token_id"].(float64); ok {
+		bosTokenID = int(bos)
+	}
+	padTokenID := 0
+	if pad, ok := hfConfig["pad_token_id"].(float64); ok {
+		padTokenID = int(pad)
+	}
+	contextLength := 8192
+	if cl, ok := hfConfig["max_position_embeddings"].(float64); ok {
+		contextLength = int(cl)
+	}
+
+	// Resolve eos_token_id: prefer generation_config.json (supports arrays),
+	// fall back to config.json. ORT GenAI accepts both int and []int.
+	var eosTokenID any = 1
+	genConfigPath := filepath.Join(modelPath, "generation_config.json")
+	if genConfigData, err := os.ReadFile(genConfigPath); err == nil {
+		var genConfig map[string]any
+		if err := json.Unmarshal(genConfigData, &genConfig); err == nil {
+			if eos, ok := genConfig["eos_token_id"]; ok {
+				eosTokenID = toIntOrIntSlice(eos)
+			}
+		}
+	}
+	// Fall back to config.json if generation_config.json didn't provide eos
+	if eosTokenID == nil {
+		if eos, ok := hfConfig["eos_token_id"]; ok {
+			eosTokenID = toIntOrIntSlice(eos)
+		}
+	}
+	if eosTokenID == nil {
+		eosTokenID = 1
+	}
+
 	genaiConfig := map[string]any{
 		"model": map[string]any{
-			"bos_token_id": 2,
-			"context_length": func() int {
-				if cl, ok := hfConfig["max_position_embeddings"].(float64); ok {
-					return int(cl)
-				}
-				return 8192
-			}(),
+			"bos_token_id":   bosTokenID,
+			"context_length": contextLength,
 			"decoder": map[string]any{
 				"session_options": map[string]any{},
 				"filename":        "model.onnx",
-				"head_dim":        headDim,
+				"head_size":       headDim,
 				"hidden_size":     hiddenSize,
 				"inputs": map[string]string{
-					"input_ids":      "input_ids",
-					"attention_mask": "attention_mask",
-					"position_ids":   "position_ids",
+					"input_ids":       "input_ids",
+					"attention_mask":  "attention_mask",
+					"past_key_names":  "past_key_values.%d.key",
+					"past_value_names": "past_key_values.%d.value",
 				},
 				"num_attention_heads": numAttentionHeads,
 				"num_hidden_layers":   numHiddenLayers,
 				"num_key_value_heads": numKeyValueHeads,
 				"outputs": map[string]string{
-					"logits": "logits",
+					"logits":              "logits",
+					"present_key_names":   "present.%d.key",
+					"present_value_names": "present.%d.value",
 				},
 			},
-			"eos_token_id":      1,
-			"pad_token_id":      0,
-			"type":              modelType,
-			"vocab_size":        vocabSize,
-			"intermediate_size": intermediateSize,
+			"eos_token_id": eosTokenID,
+			"pad_token_id": padTokenID,
+			"type":         modelType,
+			"vocab_size":   vocabSize,
 		},
 		"search": map[string]any{
 			"diversity_penalty":         0.0,
@@ -240,6 +278,27 @@ func getChatTemplateFromTokenizer(modelPath string, logger *zap.Logger) string {
 	logger.Debug("No chat_template in tokenizer_config.json",
 		zap.String("modelPath", modelPath))
 	return ""
+}
+
+// toIntOrIntSlice converts a JSON-decoded value to int or []int for token IDs.
+// HuggingFace configs represent eos_token_id as either a single number or an array.
+func toIntOrIntSlice(v any) any {
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case []any:
+		ints := make([]int, 0, len(val))
+		for _, item := range val {
+			if f, ok := item.(float64); ok {
+				ints = append(ints, int(f))
+			}
+		}
+		if len(ints) == 1 {
+			return ints[0]
+		}
+		return ints
+	}
+	return nil
 }
 
 // isValidGeneratorModel checks if a model directory contains a valid generator model.

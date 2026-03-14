@@ -3,7 +3,7 @@ module github.com/antflydb/termite/pkg/proxy
 go 1.26.0
 
 require (
-	github.com/antflydb/antfly/pkg/libaf v0.0.0-20260312183614-84db07d523e1
+	github.com/antflydb/antfly/pkg/libaf v0.0.0-20260313151000-3c73f35767a3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0

@@ -353,7 +353,7 @@ ONNXRUNTIME_ROOT ?= $(CURDIR)/onnxruntime
 PJRT_ROOT ?= $(CURDIR)/pjrt
 
 # Version stamps to track when dependencies need updating
-ONNXRUNTIME_VERSION ?= 1.24.1
+ONNXRUNTIME_VERSION ?= 1.24.3
 GENAI_VERSION ?= 0.12.1
 PJRT_VERSION ?= 0.83.4
 

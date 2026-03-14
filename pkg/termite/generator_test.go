@@ -244,7 +244,7 @@ func TestGenerateGenaiConfig(t *testing.T) {
 		require.NoError(t, err)
 
 		model := config["model"].(map[string]any)
-		assert.Equal(t, "gemma", model["type"])
+		assert.Equal(t, "gemma3_text", model["type"])
 		assert.Equal(t, float64(2), model["bos_token_id"])
 		assert.Equal(t, float64(262144), model["vocab_size"])
 	})

@@ -181,7 +181,7 @@ func LoadGenerativeModelConfig(modelPath string) (*GenerativeModelConfig, error)
 	numHeads := FirstNonZero(rawConfig.NumAttentionHeads, rawConfig.NumHeads, rawConfig.NHead, 12)
 	numKVHeads := FirstNonZero(rawConfig.NumKeyValueHeads, numHeads) // Default to numHeads if not using GQA
 	hiddenSize := FirstNonZero(rawConfig.HiddenSize, rawConfig.NEmbd, 768)
-	headDim := hiddenSize / numHeads
+	headDim := FirstNonZero(rawConfig.HeadDim, hiddenSize/numHeads)
 	intermediateSize := FirstNonZero(rawConfig.IntermediateSize, rawConfig.NInner, hiddenSize*4)
 
 	return &GenerativeModelConfig{
@@ -222,20 +222,22 @@ func IsGenerativeModel(path string) bool {
 
 	// Check for decoder-only model types
 	decoderOnlyTypes := map[string]bool{
-		"gpt2":      true,
-		"gpt_neo":   true,
-		"gpt_neox":  true,
-		"gptj":      true,
-		"llama":     true,
-		"mistral":   true,
-		"phi":       true,
-		"qwen2":     true,
-		"gemma":     true,
-		"falcon":    true,
-		"opt":       true,
-		"bloom":     true,
-		"codegen":   true,
-		"starcoder": true,
+		"gpt2":        true,
+		"gpt_neo":     true,
+		"gpt_neox":    true,
+		"gptj":        true,
+		"llama":       true,
+		"mistral":     true,
+		"phi":         true,
+		"qwen2":       true,
+		"gemma":       true,
+		"gemma2":      true,
+		"gemma3_text": true,
+		"falcon":      true,
+		"opt":         true,
+		"bloom":       true,
+		"codegen":     true,
+		"starcoder":   true,
 	}
 
 	return decoderOnlyTypes[rawConfig.ModelType]
@@ -268,6 +270,7 @@ type rawGenerativeConfig struct {
 	NEmbd             int `json:"n_embd"`
 	IntermediateSize  int `json:"intermediate_size"`
 	NInner            int `json:"n_inner"`
+	HeadDim           int `json:"head_dim"` // Explicit head dimension (e.g., Gemma 3 uses 256 != hidden_size/num_heads)
 
 	// Sequence length
 	MaxPositionEmbeddings int `json:"max_position_embeddings"`
@@ -376,7 +379,7 @@ func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig
 		DecoderStartTokenID: cfg.BOSTokenID, // For decoder-only, start with BOS
 		NumLayers:           FirstNonZero(cfg.NumHiddenLayers, cfg.NumLayers, cfg.NLayer, 12),
 		NumHeads:            numHeads,
-		HeadDim:             hiddenSize / numHeads,
+		HeadDim:             FirstNonZero(cfg.HeadDim, hiddenSize/numHeads),
 	}
 }
 
@@ -587,26 +590,22 @@ func (m *generativeModel) buildDecoderInputs(inputIDs []int64, batchSize, seqLen
 }
 
 // createPastKVTensor creates a tensor for past key/value cache.
+// Maps input names like "past_key_values.0.key" to stored output names like "present.0.key".
 func (m *generativeModel) createPastKVTensor(name string, pastKV *backends.KVCache, batchSize int) backends.NamedTensor {
-	// If no past KV, create empty tensor
-	if pastKV == nil || pastKV.SeqLen == 0 {
-		// Create zero-sized tensor for first step
-		// Shape: [batch, num_heads, 0, head_dim] (common ONNX format)
-		// Some models use [batch, 0, num_heads, head_dim]
-		numHeads := m.config.NumKVHeads
-		if numHeads == 0 {
-			numHeads = m.config.NumHeads
-		}
-		return backends.NamedTensor{
-			Name:  name,
-			Shape: []int64{int64(batchSize), int64(numHeads), 0, int64(m.config.HeadDim)},
-			Data:  []float32{},
+	// Check if we have past KV cache with stored tensors
+	if pastKV != nil && pastKV.SeqLen > 0 && pastKV.Tensors != nil {
+		outputName := mapPastToPresent(name)
+		if tensor, ok := pastKV.Tensors[outputName]; ok {
+			return backends.NamedTensor{
+				Name:  name,
+				Shape: tensor.Shape,
+				Data:  tensor.Data,
+			}
 		}
 	}
 
-	// TODO: Extract the appropriate slice from pastKV based on layer index in name
-	// For now, return empty - full implementation would parse layer index from name
-	// and extract the corresponding KV tensors
+	// First step or tensor not found - create zero-sized tensor
+	// Shape: [batch, num_heads, 0, head_dim] (common ONNX format)
 	numHeads := m.config.NumKVHeads
 	if numHeads == 0 {
 		numHeads = m.config.NumHeads
@@ -619,23 +618,42 @@ func (m *generativeModel) createPastKVTensor(name string, pastKV *backends.KVCac
 }
 
 // extractKVCache extracts the KV-cache from decoder outputs.
+// Stores all present.* tensors which will be passed as past_key_values.* inputs
+// to subsequent decoder steps.
 func (m *generativeModel) extractKVCache(outputs []backends.NamedTensor, batchSize int, pastKV *backends.KVCache) *backends.KVCache {
-	// Look for present_key_values or present outputs
+	tensors := make(map[string]backends.NamedTensor)
+	hasKVOutputs := false
+
 	for _, output := range outputs {
 		if IsPresentKeyValueOutput(output.Name) {
-			// Found KV-cache output - build the cache structure
-			// This is a simplified implementation
-			seqLen := 1
-			if pastKV != nil {
-				seqLen = pastKV.SeqLen + 1
+			hasKVOutputs = true
+			data, ok := output.Data.([]float32)
+			if ok {
+				dataCopy := make([]float32, len(data))
+				copy(dataCopy, data)
+				shapeCopy := make([]int64, len(output.Shape))
+				copy(shapeCopy, output.Shape)
+				tensors[output.Name] = backends.NamedTensor{
+					Name:  output.Name,
+					Shape: shapeCopy,
+					Data:  dataCopy,
+				}
 			}
-			return &backends.KVCache{
-				SeqLen:    seqLen,
-				NumLayers: m.config.NumLayers,
-				NumHeads:  m.config.NumKVHeads,
-				HeadDim:   m.config.HeadDim,
-				BatchSize: batchSize,
-			}
+		}
+	}
+
+	if hasKVOutputs {
+		seqLen := 1
+		if pastKV != nil {
+			seqLen = pastKV.SeqLen + 1
+		}
+		return &backends.KVCache{
+			SeqLen:    seqLen,
+			NumLayers: m.config.NumLayers,
+			NumHeads:  m.config.NumKVHeads,
+			HeadDim:   m.config.HeadDim,
+			BatchSize: batchSize,
+			Tensors:   tensors,
 		}
 	}
 
@@ -647,6 +665,7 @@ func (m *generativeModel) extractKVCache(outputs []backends.NamedTensor, batchSi
 			NumHeads:  m.config.NumKVHeads,
 			HeadDim:   m.config.HeadDim,
 			BatchSize: batchSize,
+			Tensors:   pastKV.Tensors,
 		}
 	}
 

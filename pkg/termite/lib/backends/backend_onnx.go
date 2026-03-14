@@ -1212,9 +1212,34 @@ func (s *onnxSession) Close() error {
 	return nil
 }
 
+// sentinelByte is a non-nil backing buffer for zero-element tensors.
+// ORT kernels like GroupQueryAttention dereference the tensor data pointer
+// without null-checking when past_sequence_length is 0, causing a segfault
+// when onnxruntime_go passes NULL for empty slices. Using CustomDataTensor
+// with a valid pointer avoids this.
+var sentinelByte = []byte{0, 0, 0, 0}
+
 // createOrtTensor creates an ORT tensor from a NamedTensor.
 func createOrtTensor(input NamedTensor) (ort.Value, error) {
 	shape := ort.NewShape(input.Shape...)
+
+	// For zero-element tensors (e.g., empty KV cache with shape [1,1,0,256]),
+	// use CustomDataTensor with a valid (non-NULL) backing pointer.
+	// ort.NewTensor passes NULL to CreateTensorWithDataAsOrtValue for empty
+	// slices, and some ORT kernels (GroupQueryAttention) dereference it
+	// without a null check, causing a segfault.
+	if shape.FlattenedSize() == 0 {
+		var dataType ort.TensorElementDataType = ort.TensorElementDataTypeFloat
+		switch input.Data.(type) {
+		case []int64:
+			dataType = ort.TensorElementDataTypeInt64
+		case []int32:
+			dataType = ort.TensorElementDataTypeInt32
+		case []bool:
+			dataType = ort.TensorElementDataTypeBool
+		}
+		return ort.NewCustomDataTensor(shape, sentinelByte, dataType)
+	}
 
 	switch data := input.Data.(type) {
 	case []float32:

@@ -205,6 +205,11 @@ const (
 	VariantI4 = "i4"
 )
 
+// VariantSuffixes lists the non-default variant suffixes (excludes f32 which
+// uses the base "model.onnx" filename). These are appended to model stems
+// when checking for variant files (e.g., visual_model_i8.onnx).
+var VariantSuffixes = []string{VariantF16, VariantBF16, VariantI8, VariantI8Static, VariantI4}
+
 // VariantFilenames maps variant identifiers to their ONNX filenames
 var VariantFilenames = map[string]string{
 	VariantF32:      "model.onnx",

@@ -365,12 +365,11 @@ func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (gener
 		zap.String("cacheKey", cacheKey),
 		zap.String("path", modelPath))
 
-	// Try to generate genai_config.json if needed
-	if err := generateGenaiConfig(modelPath, r.logger); err != nil {
-		r.logger.Warn("Failed to generate genai_config.json",
-			zap.String("cacheKey", cacheKey),
-			zap.Error(err))
-	}
+	// Ensure chat_template.jinja exists for chat template rendering.
+	// We do NOT generate genai_config.json for HuggingFace models —
+	// ORT GenAI's model loader cannot parse standard HuggingFace ONNX exports.
+	// These models use Termite's pipeline-based inference instead.
+	ensureGeneratorPrereqs(modelPath, r.logger)
 
 	// Load the generator model
 	// This will try the pipeline-based approach first, then fall back to ortgenai

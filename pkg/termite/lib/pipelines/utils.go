@@ -17,6 +17,9 @@ package pipelines
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 )
 
 // FirstNonZero returns the first non-zero value from the arguments.
@@ -32,16 +35,31 @@ func FirstNonZero(values ...int) int {
 
 // FindONNXFile looks for an ONNX file in the given directory.
 // It searches for the first matching file from the candidates list.
+// If no exact candidate is found, it also checks for variant filenames
+// (e.g., model.onnx → model_i8.onnx, text_model.onnx → text_model_f16.onnx).
 // Also checks the "onnx/" subdirectory where some HuggingFace models store encoder files.
 func FindONNXFile(dir string, candidates []string) string {
-	// Search directories: root directory and onnx/ subdirectory
 	searchDirs := []string{dir, filepath.Join(dir, "onnx")}
 
 	for _, searchDir := range searchDirs {
+		// First pass: try exact candidate names
 		for _, name := range candidates {
 			path := filepath.Join(searchDir, name)
 			if _, err := os.Stat(path); err == nil {
 				return path
+			}
+		}
+		// Second pass: try variant filenames derived from each candidate
+		for _, name := range candidates {
+			stem := strings.TrimSuffix(name, ".onnx")
+			if stem == name {
+				continue // not an .onnx candidate
+			}
+			for _, suffix := range modelregistry.VariantSuffixes {
+				path := filepath.Join(searchDir, stem+"_"+suffix+".onnx")
+				if _, err := os.Stat(path); err == nil {
+					return path
+				}
 			}
 		}
 	}

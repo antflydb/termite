@@ -14,7 +14,7 @@
 #   ./scripts/download-onnxruntime.sh [ONNXRUNTIME_VERSION] [GENAI_VERSION]
 #
 # Example:
-#   ./scripts/download-onnxruntime.sh 1.24.1 0.12.1
+#   ./scripts/download-onnxruntime.sh 1.24.3 0.12.1
 #
 # The libraries will be downloaded to ./onnxruntime/<platform>/
 # Set ONNXRUNTIME_ROOT environment variable to this directory when building.
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 # Default versions - update these when upgrading dependencies
-ONNXRUNTIME_VERSION="${1:-1.24.1}"
+ONNXRUNTIME_VERSION="${1:-1.24.3}"
 GENAI_VERSION="${2:-0.12.1}"
 TOKENIZERS_VERSION="${TOKENIZERS_VERSION:-1.26.0}"
 

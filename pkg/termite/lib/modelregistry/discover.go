@@ -53,27 +53,38 @@ type MultimodalCaps struct {
 
 // DetectMultimodalCapabilities checks a model directory for visual and audio encoder files.
 // Returns which modalities are available for both standard and quantized variants.
-// Also checks the onnx/ subdirectory for HuggingFace transformers.js models.
+// Also checks variant filenames (e.g., visual_model_i8.onnx) and the onnx/ subdirectory
+// for HuggingFace transformers.js models.
 func DetectMultimodalCapabilities(modelPath string) MultimodalCaps {
 	var caps MultimodalCaps
+	onnxDir := filepath.Join(modelPath, "onnx")
 
-	// Check for visual encoder
-	caps.HasImage = fileExists(filepath.Join(modelPath, "visual_model.onnx"))
+	// Check for visual encoder (standard + variants, root + onnx/)
+	caps.HasImage = fileExistsStemAny(modelPath, "visual_model") ||
+		fileExistsStemAny(onnxDir, "visual_model")
 	caps.HasImageQuantized = fileExists(filepath.Join(modelPath, "visual_model_quantized.onnx"))
 
-	// Check for audio encoder (root directory)
-	caps.HasAudio = fileExists(filepath.Join(modelPath, "audio_model.onnx"))
-	caps.HasAudioQuantized = fileExists(filepath.Join(modelPath, "audio_model_quantized.onnx"))
-
-	// Also check onnx/ subdirectory for audio (HuggingFace transformers.js format)
-	if !caps.HasAudio {
-		caps.HasAudio = fileExists(filepath.Join(modelPath, "onnx", "audio_model.onnx"))
-	}
-	if !caps.HasAudioQuantized {
-		caps.HasAudioQuantized = fileExists(filepath.Join(modelPath, "onnx", "audio_model_quantized.onnx"))
-	}
+	// Check for audio encoder (standard + variants, root + onnx/)
+	caps.HasAudio = fileExistsStemAny(modelPath, "audio_model") ||
+		fileExistsStemAny(onnxDir, "audio_model")
+	caps.HasAudioQuantized = fileExists(filepath.Join(modelPath, "audio_model_quantized.onnx")) ||
+		fileExists(filepath.Join(onnxDir, "audio_model_quantized.onnx"))
 
 	return caps
+}
+
+// fileExistsStemAny checks if the base model or any variant of a model stem exists.
+// e.g., for stem "visual_model", checks visual_model.onnx, visual_model_f16.onnx, etc.
+func fileExistsStemAny(dir, stem string) bool {
+	if fileExists(filepath.Join(dir, stem+".onnx")) {
+		return true
+	}
+	for _, suffix := range VariantSuffixes {
+		if fileExists(filepath.Join(dir, stem+"_"+suffix+".onnx")) {
+			return true
+		}
+	}
+	return false
 }
 
 // DiscoverModelsInDir scans a directory for models using the owner/model structure.
