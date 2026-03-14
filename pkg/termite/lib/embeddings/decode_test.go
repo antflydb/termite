@@ -72,6 +72,61 @@ func TestDecodeImage_InvalidData(t *testing.T) {
 	}
 }
 
+// TestDecodeImage_JPEG_NonStandardSubsampling verifies that JPEGs with
+// non-standard chroma subsampling (h=3 or v=3) are decoded via the
+// flexjpeg fallback. The stdlib rejects these; our patched fork handles
+// them through its flex decode path.
+func TestDecodeImage_JPEG_NonStandardSubsampling(t *testing.T) {
+	data := encodeTestJPEG(t, 24, 24)
+
+	// Patch the SOF0 marker to set luma sampling factor to h=3,v=1.
+	// SOF0 = 0xFF 0xC0, followed by length(2), precision(1), height(2),
+	// width(2), nComponents(1), then per component: id(1), hv(1), tq(1).
+	// The luma component is first; its hv byte is at offset 7 within the
+	// SOF0 payload (after the 2-byte marker).
+	patched := patchJPEGSubsampling(t, data, 0x31) // h=3, v=1
+
+	// stdlib should reject this
+	_, _, err := image.Decode(bytes.NewReader(patched))
+	if err == nil {
+		t.Skip("stdlib accepted h=3 subsampling (Go 1.27+?), fallback test not needed")
+	}
+
+	// Our decodeImage should succeed via the flexjpeg fallback
+	img, err := decodeImage(patched)
+	if err != nil {
+		t.Fatalf("decodeImage failed for h=3 subsampling: %v", err)
+	}
+	bounds := img.Bounds()
+	if bounds.Dx() != 24 || bounds.Dy() != 24 {
+		t.Errorf("got %dx%d, want 24x24", bounds.Dx(), bounds.Dy())
+	}
+}
+
+// patchJPEGSubsampling finds the SOF0 marker in a JPEG and replaces the
+// luma component's sampling factor byte with the given value.
+func patchJPEGSubsampling(t *testing.T, data []byte, lumaHV byte) []byte {
+	t.Helper()
+	patched := make([]byte, len(data))
+	copy(patched, data)
+
+	// Scan for SOF0 marker (0xFF 0xC0)
+	for i := 0; i < len(patched)-1; i++ {
+		if patched[i] == 0xFF && patched[i+1] == 0xC0 {
+			// SOF0 payload starts at i+2 (length field)
+			// Component data starts at i+2+2+1+2+2+1 = i+10
+			// First component's hv byte is at i+10+1 = i+11
+			if i+11 >= len(patched) {
+				t.Fatal("SOF0 marker too close to end of data")
+			}
+			patched[i+11] = lumaHV
+			return patched
+		}
+	}
+	t.Fatal("SOF0 marker not found in JPEG data")
+	return nil
+}
+
 func TestExtractContent_GIF(t *testing.T) {
 	data := encodeTestGIF(t, 4, 4)
 
