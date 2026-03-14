@@ -17,10 +17,12 @@ package embeddings
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"image"
-	_ "image/jpeg" // Register JPEG decoder
-	_ "image/png"  // Register PNG decoder
+	_ "image/gif"  // Register GIF decoder
+	stdjpeg "image/jpeg"
+	_ "image/png" // Register PNG decoder
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -29,6 +31,7 @@ import (
 	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	flexjpeg "github.com/kovidgoyal/imaging/jpeg"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 )
@@ -454,7 +457,7 @@ func extractContent(parts []ai.ContentPart) (string, image.Image, []byte, error)
 			}
 		case ai.BinaryContent:
 			if isImageMIME(c.MIMEType) {
-				img, _, err := image.Decode(bytes.NewReader(c.Data))
+				img, err := decodeImage(c.Data)
 				if err != nil {
 					return "", nil, nil, fmt.Errorf("decoding image: %w", err)
 				}
@@ -472,6 +475,31 @@ func extractContent(parts []ai.ContentPart) (string, image.Image, []byte, error)
 		}
 	}
 	return "", nil, nil, nil
+}
+
+// decodeImage decodes image bytes using Go's standard image decoders,
+// falling back to a more tolerant JPEG decoder for images with
+// non-standard chroma subsampling ratios that the stdlib rejects.
+//
+// TODO(go1.27): Remove flexjpeg fallback once Go 1.27 lands the stdlib
+// fix for non-standard JPEG subsampling (https://go.dev/issue/2362).
+func decodeImage(data []byte) (image.Image, error) {
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err == nil {
+		return img, nil
+	}
+
+	// Only fall back for JPEG subsampling errors
+	var unsupported stdjpeg.UnsupportedError
+	if !errors.As(err, &unsupported) {
+		return nil, err
+	}
+
+	img, fallbackErr := flexjpeg.Decode(bytes.NewReader(data))
+	if fallbackErr != nil {
+		return nil, fmt.Errorf("stdlib: %w; flex decoder: %w", err, fallbackErr)
+	}
+	return img, nil
 }
 
 // isImageMIME checks if the MIME type is an image type.

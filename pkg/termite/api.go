@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/antflydb/antfly/pkg/libaf/ai"
@@ -511,10 +512,15 @@ func parseEmbedInput(
 // validateContentTypes checks that all content types in the input are supported
 // by the embedder's capabilities.
 func validateContentTypes(contents [][]ai.ContentPart, caps embeddings.EmbedderCapabilities) error {
-	// Build set of supported MIME types
+	// Build set of supported MIME types (exact and wildcard prefixes)
 	supported := make(map[string]bool)
+	var wildcards []string
 	for _, m := range caps.SupportedMIMETypes {
 		supported[m.MIMEType] = true
+		// Collect wildcard types like "image/*" or "audio/*"
+		if strings.HasSuffix(m.MIMEType, "/*") {
+			wildcards = append(wildcards, strings.TrimSuffix(m.MIMEType, "*"))
+		}
 	}
 
 	// Check each content part
@@ -527,7 +533,7 @@ func validateContentTypes(contents [][]ai.ContentPart, caps embeddings.EmbedderC
 					return fmt.Errorf("model does not support text input")
 				}
 			case ai.BinaryContent:
-				if !supported[p.MIMEType] {
+				if !isMIMESupported(p.MIMEType, supported, wildcards) {
 					return fmt.Errorf("unsupported MIME type at index %d: %s (model supports: %v)",
 						i, p.MIMEType, getMIMETypeList(caps))
 				}
@@ -536,6 +542,19 @@ func validateContentTypes(contents [][]ai.ContentPart, caps embeddings.EmbedderC
 	}
 
 	return nil
+}
+
+// isMIMESupported checks if a MIME type is supported by exact match or wildcard.
+func isMIMESupported(mimeType string, supported map[string]bool, wildcards []string) bool {
+	if supported[mimeType] {
+		return true
+	}
+	for _, prefix := range wildcards {
+		if strings.HasPrefix(mimeType, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // getMIMETypeList returns a list of supported MIME types for error messages.
