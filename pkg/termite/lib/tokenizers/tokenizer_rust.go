@@ -70,6 +70,9 @@ var _ Tokenizer = (*rustTokenizer)(nil)
 
 // loadRustTokenizer attempts to load a tokenizer using the Rust library.
 // Returns nil if the tokenizer can't be loaded (falls back to Go implementation).
+//
+// The Rust tokenizer recognizes special/added tokens (like <bos>, <start_of_turn>)
+// in input text by default — no special options are needed.
 func loadRustTokenizer(modelPath string, config *api.Config) (Tokenizer, error) {
 	tokenizerJSONPath := filepath.Join(modelPath, "tokenizer.json")
 
@@ -89,11 +92,17 @@ func loadRustTokenizer(modelPath string, config *api.Config) (Tokenizer, error) 
 	}, nil
 }
 
-// Encode returns the text encoded into a sequence of token IDs.
+// Encode returns the text encoded into a sequence of token IDs with post-processing.
+// Equivalent to EncodeWithOptions(text, true).
 func (t *rustTokenizer) Encode(text string) []int {
-	output := t.tk.EncodeWithOptions(text, true,
-		tokenizers.WithReturnTokens(),
-	)
+	return t.EncodeWithOptions(text, true)
+}
+
+// EncodeWithOptions returns the text encoded into a sequence of token IDs.
+// When addSpecialTokens is true, post-processing is applied (e.g., [CLS]/[SEP]).
+// When false, only tokenization is performed without wrapping.
+func (t *rustTokenizer) EncodeWithOptions(text string, addSpecialTokens bool) []int {
+	output := t.tk.EncodeWithOptions(text, addSpecialTokens)
 
 	result := make([]int, len(output.IDs))
 	for i, id := range output.IDs {

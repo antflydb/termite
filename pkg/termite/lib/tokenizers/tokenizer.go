@@ -113,6 +113,9 @@ func (t *hfTokenCounter) CountTokens(text string) int {
 // LoadTokenizer loads a tokenizer from a local model directory.
 // It auto-detects the tokenizer type (HuggingFace tokenizer.json or SentencePiece tokenizer.model).
 // When built with ONNX/ORT tags, it uses the fast Rust tokenizer; otherwise falls back to pure Go.
+//
+// Both the Rust and Go tokenizers recognize special/added tokens (like <bos>,
+// <start_of_turn>) in input text by default — no special options are needed.
 func LoadTokenizer(modelPath string) (Tokenizer, error) {
 	// First, try to load tokenizer_config.json for class information
 	var config *api.Config
@@ -186,6 +189,13 @@ var _ Tokenizer = (*sentencepieceTokenizer)(nil)
 
 // Encode returns the text encoded into a sequence of token IDs.
 func (t *sentencepieceTokenizer) Encode(text string) []int {
+	return t.EncodeWithOptions(text, true)
+}
+
+// EncodeWithOptions returns the text encoded into a sequence of token IDs.
+// The addSpecialTokens parameter is accepted for interface compatibility but
+// has no effect — SentencePiece models do not have a post-processor.
+func (t *sentencepieceTokenizer) EncodeWithOptions(text string, _ bool) []int {
 	tokens := t.Processor.Encode(text)
 	result := make([]int, len(tokens))
 	for i, tok := range tokens {

@@ -488,7 +488,7 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 	// via trained span-label dot products: [batch, num_spans, num_labels].
 	textTokens := p.tokenizeWords(words)
 	prompt := p.buildPrompt(labels)
-	promptTokens := p.Tokenizer.Encode(prompt)
+	promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
 	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
 	if err != nil {
@@ -881,7 +881,7 @@ func (p *GLiNERPipeline) classifySingleText(
 	for _, label := range labels {
 		singleLabel := []string{label}
 		prompt := p.buildPromptForTask(singleLabel, GLiNER2TaskClassification)
-		promptTokens := p.Tokenizer.Encode(prompt)
+		promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
 		inputs, err := p.buildInputs(promptTokens, textTokens, words, singleLabel)
 		if err != nil {
@@ -973,7 +973,7 @@ func sigmoid(x float32) float32 {
 func (p *GLiNERPipeline) tokenizeWords(words []string) [][]int {
 	result := make([][]int, len(words))
 	for i, word := range words {
-		result[i] = p.Tokenizer.Encode(word)
+		result[i] = p.Tokenizer.EncodeWithOptions(word, false)
 	}
 	return result
 }
@@ -1004,15 +1004,11 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 	}
 	schemaParts = append(schemaParts, ")", ")", "[SEP_TEXT]")
 
-	// Tokenize each schema part individually, stripping CLS/SEP added by tokenizer
+	// Tokenize each schema part individually without post-processing.
 	var schemaTokenIDs []int
 	for _, part := range schemaParts {
-		tokens := p.Tokenizer.Encode(part)
-		for _, tok := range tokens {
-			if tok != 0 && tok != 1 && tok != 2 { // Skip PAD, CLS, SEP
-				schemaTokenIDs = append(schemaTokenIDs, tok)
-			}
-		}
+		tokens := p.Tokenizer.EncodeWithOptions(part, false)
+		schemaTokenIDs = append(schemaTokenIDs, tokens...)
 	}
 
 	// Tokenize text words (lowercased, each word individually)
@@ -1022,14 +1018,8 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 	}
 	wordInfos := make([]wordTokenInfo, len(words))
 	for i, word := range words {
-		tokens := p.Tokenizer.Encode(strings.ToLower(word))
-		clean := make([]int, 0, len(tokens))
-		for _, tok := range tokens {
-			if tok != 0 && tok != 1 && tok != 2 {
-				clean = append(clean, tok)
-			}
-		}
-		wordInfos[i] = wordTokenInfo{tokens: clean}
+		tokens := p.Tokenizer.EncodeWithOptions(strings.ToLower(word), false)
+		wordInfos[i] = wordTokenInfo{tokens: tokens}
 	}
 
 	// Count total text sub-tokens
@@ -1142,19 +1132,10 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 		}
 	}
 
-	// The tokenizer (DeBERTa) uses: [CLS]=1, [SEP]=2, [PAD]=0
-	// The promptTokens already includes [CLS] at start and [SEP] at end
-	// Strip the special tokens from promptTokens for cleaner handling
-	cleanPromptTokens := make([]int, 0, len(promptTokens))
-	for _, tok := range promptTokens {
-		if tok != 1 && tok != 2 { // Skip CLS and SEP
-			cleanPromptTokens = append(cleanPromptTokens, tok)
-		}
-	}
-
 	// Build combined token sequence: [CLS] + prompt + text tokens + [SEP]
 	// Note: GLiNER expects prompt and text in same segment (no separator between them)
-	seqLen := len(cleanPromptTokens) + totalTextTokens + 2 // CLS at start, SEP at end
+	// promptTokens are encoded with addSpecialTokens=false, so no stripping needed.
+	seqLen := len(promptTokens) + totalTextTokens + 2 // CLS at start, SEP at end
 
 	// Limit sequence length
 	maxLen := p.Config.MaxLength
@@ -1178,7 +1159,7 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	idx++
 
 	// Add prompt tokens (label markers)
-	for _, tok := range cleanPromptTokens {
+	for _, tok := range promptTokens {
 		if idx >= seqLen-1 {
 			break
 		}
@@ -1586,7 +1567,7 @@ func (p *GLiNERPipeline) computeLabelEmbeddings(labels []string) ([][]float32, e
 		// Tokenize the label with special formatting for GLiNER
 		// GLiNER expects labels in format: <<label>>
 		formattedLabel := "<<" + label + ">>"
-		tokens := p.Tokenizer.Encode(formattedLabel)
+		tokens := p.Tokenizer.EncodeWithOptions(formattedLabel, false)
 
 		// Build input tensors for label encoding
 		seqLen := len(tokens) + 2 // +2 for CLS and SEP

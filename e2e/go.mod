@@ -5,7 +5,7 @@ go 1.26.0
 replace (
 	github.com/antflydb/termite => ../
 	github.com/antflydb/termite/pkg/client => ../pkg/client
-	github.com/gomlx/go-huggingface => github.com/ajroetker/go-huggingface v0.0.0-antfly001
+	github.com/gomlx/go-huggingface => github.com/ajroetker/go-huggingface v0.0.0-antfly002
 	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
 	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
 	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly002

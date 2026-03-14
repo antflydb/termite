@@ -124,6 +124,10 @@ type GenerativeModelConfig struct {
 	// Decoder configuration
 	DecoderConfig *backends.DecoderConfig
 
+	// GenerationConfig holds sampling parameters from generation_config.json.
+	// May be nil if the model has no generation_config.json.
+	GenerationConfig *backends.GenerationConfig
+
 	// Architecture details for KV-cache
 	NumLayers        int
 	NumHeads         int
@@ -184,10 +188,17 @@ func LoadGenerativeModelConfig(modelPath string) (*GenerativeModelConfig, error)
 	headDim := FirstNonZero(rawConfig.HeadDim, hiddenSize/numHeads)
 	intermediateSize := FirstNonZero(rawConfig.IntermediateSize, rawConfig.NInner, hiddenSize*4)
 
+	// Build generation config from generation_config.json sampling parameters
+	var generationConfig *backends.GenerationConfig
+	if genConfig != nil {
+		generationConfig = buildGenerationConfig(genConfig)
+	}
+
 	return &GenerativeModelConfig{
 		ModelPath:        modelPath,
 		DecoderPath:      decoderPath,
 		DecoderConfig:    decoderConfig,
+		GenerationConfig: generationConfig,
 		NumLayers:        numLayers,
 		NumHeads:         numHeads,
 		NumKVHeads:       numKVHeads,
@@ -324,13 +335,38 @@ func loadGenerationConfig(path string) *rawGenerationConfig {
 	return &config
 }
 
+// buildGenerationConfig creates a GenerationConfig from generation_config.json.
+// It starts with defaults and overrides with values from the model's config.
+func buildGenerationConfig(genCfg *rawGenerationConfig) *backends.GenerationConfig {
+	cfg := backends.DefaultGenerationConfig()
+	if genCfg.MaxNewTokens > 0 {
+		cfg.MaxNewTokens = genCfg.MaxNewTokens
+	}
+	cfg.DoSample = genCfg.DoSample
+	if genCfg.Temperature > 0 {
+		cfg.Temperature = genCfg.Temperature
+	}
+	if genCfg.TopK > 0 {
+		cfg.TopK = genCfg.TopK
+	}
+	if genCfg.TopP > 0 {
+		cfg.TopP = genCfg.TopP
+	}
+	if genCfg.RepetitionPenalty > 0 {
+		cfg.RepetitionPenalty = genCfg.RepetitionPenalty
+	}
+	return cfg
+}
+
 // buildGenerativeConfig creates a DecoderConfig from the raw configs.
 func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig) *backends.DecoderConfig {
 	// Handle eos_token_id which can be int or []int
 	eosTokenID := ParseTokenID(cfg.EOSTokenID)
+	eosTokenIDs := ParseTokenIDs(cfg.EOSTokenID)
 	// Override from generation config if present
 	if genCfg != nil && genCfg.EOSTokenID != nil {
 		eosTokenID = ParseTokenID(genCfg.EOSTokenID)
+		eosTokenIDs = ParseTokenIDs(genCfg.EOSTokenID)
 	}
 
 	// Handle pad_token_id which can be int or null
@@ -355,6 +391,7 @@ func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig
 		VocabSize:           cfg.VocabSize,
 		MaxLength:           maxLength,
 		EOSTokenID:          eosTokenID,
+		EOSTokenIDs:         eosTokenIDs,
 		BOSTokenID:          cfg.BOSTokenID,
 		PadTokenID:          padTokenID,
 		DecoderStartTokenID: cfg.BOSTokenID, // For decoder-only, start with BOS
@@ -624,9 +661,15 @@ func (m *generativeModel) extractKVCache(outputs []backends.NamedTensor, batchSi
 	}
 
 	if hasKVOutputs {
-		seqLen := 1
-		if pastKV != nil {
-			seqLen = pastKV.SeqLen + 1
+		// Determine sequence length from the KV cache tensors.
+		// The present.*.key tensors have shape [batch, num_heads, seq_len, head_dim].
+		// On the first step this equals the prompt length, not 1.
+		seqLen := 0
+		for _, tensor := range tensors {
+			if len(tensor.Shape) >= 3 {
+				seqLen = int(tensor.Shape[2]) // seq_len dimension
+				break
+			}
 		}
 		return &backends.KVCache{
 			SeqLen:    seqLen,
@@ -783,13 +826,23 @@ func (p *TextGenerationPipeline) Generate(ctx context.Context, prompt string) (*
 		return nil, fmt.Errorf("generating text: %w", err)
 	}
 
-	// Decode tokens to text
-	text := p.Tokenizer.Decode(Int32ToInt(result.TokenIDs))
+	// Strip prompt tokens from the result.
+	// The decoder includes startTokens[1:] in GeneratedTokens (designed for
+	// encoder-decoder models like Whisper). For decoder-only text generation,
+	// we only want the newly generated tokens, not the prompt echo.
+	generatedTokens := result.TokenIDs
+	promptSuffix := len(startTokens) - 1 // decoder skips first token
+	if promptSuffix > 0 && len(generatedTokens) >= promptSuffix {
+		generatedTokens = generatedTokens[promptSuffix:]
+	}
+
+	// Decode only the generated tokens to text
+	text := p.Tokenizer.Decode(Int32ToInt(generatedTokens))
 
 	return &TextGenerationResult{
 		Text:         text,
-		TokenIDs:     result.TokenIDs,
-		TokenCount:   len(result.TokenIDs),
+		TokenIDs:     generatedTokens,
+		TokenCount:   len(generatedTokens),
 		StoppedAtEOS: result.StoppedAtEOS,
 	}, nil
 }
@@ -975,8 +1028,8 @@ func (p *TextGenerationPipeline) GenerateBatch(ctx context.Context, prompts []st
 			// Select next token using the generator's selection logic
 			nextToken := p.Generator.selectNextToken(output.Logits[i], generatedTokens[i])
 
-			// Check for EOS
-			if nextToken == p.decoderConfig.EOSTokenID {
+			// Check for EOS (supports multiple EOS token IDs)
+			if p.Generator.isEOS(nextToken) {
 				if len(generatedTokens[i]) >= p.GenerationConfig.MinLength {
 					finished[i] = true
 					finishedAtEOS[i] = true
@@ -985,9 +1038,7 @@ func (p *TextGenerationPipeline) GenerateBatch(ctx context.Context, prompts []st
 				// Force continue - select again without EOS
 				logitsCopy := make([]float32, len(output.Logits[i]))
 				copy(logitsCopy, output.Logits[i])
-				if eosIdx := int(p.decoderConfig.EOSTokenID); eosIdx >= 0 && eosIdx < len(logitsCopy) {
-					logitsCopy[eosIdx] = float32(-1e9)
-				}
+				p.Generator.suppressAllEOS(logitsCopy)
 				nextToken = p.Generator.selectNextToken(logitsCopy, generatedTokens[i])
 			}
 
@@ -1098,7 +1149,9 @@ func LoadTextGenerationPipeline(
 		return nil, "", fmt.Errorf("loading model: %w", err)
 	}
 
-	// Load the tokenizer
+	// Load the tokenizer.
+	// Both the Rust and Go tokenizers recognize special token strings
+	// (like <bos>, <start_of_turn>) in input text by default.
 	tokenizer, err := tokenizers.LoadTokenizer(modelPath)
 	if err != nil {
 		_ = model.Close()
@@ -1111,6 +1164,14 @@ func LoadTextGenerationPipeline(
 	}
 	for _, opt := range opts {
 		opt(config)
+	}
+
+	// If no explicit GenerationConfig was provided, use the model's generation_config.json.
+	// This respects do_sample, temperature, top_k, top_p from the model author.
+	if config.GenerationConfig == nil {
+		if genCfg := loadGenerationConfig(modelPath); genCfg != nil {
+			config.GenerationConfig = buildGenerationConfig(genCfg)
+		}
 	}
 
 	// Create the pipeline

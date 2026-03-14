@@ -402,9 +402,9 @@ func (p *Pipeline) EncodePair(text1, text2 string) (*EncodedBatch, error) {
 		return nil, fmt.Errorf("getting CLS token: %w", err)
 	}
 
-	// Tokenize both texts
-	tokens1 := p.Tokenizer.Encode(text1)
-	tokens2 := p.Tokenizer.Encode(text2)
+	// Tokenize both texts without post-processing — we add [CLS]/[SEP] manually below.
+	tokens1 := p.Tokenizer.EncodeWithOptions(text1, false)
+	tokens2 := p.Tokenizer.EncodeWithOptions(text2, false)
 
 	// Combine: [CLS] tokens1 [SEP] tokens2 [SEP]
 	combined := make([]int, 0, len(tokens1)+len(tokens2)+3)

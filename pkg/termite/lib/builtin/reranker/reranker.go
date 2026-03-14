@@ -119,7 +119,8 @@ func (r *BuiltinReranker) RerankTexts(_ context.Context, query string, prompts [
 
 	batchSize := len(prompts)
 
-	queryIDs := r.tok.Encode(query)
+	// Encode without post-processing — we add [CLS]/[SEP] manually below.
+	queryIDs := r.tok.EncodeWithOptions(query, false)
 
 	type pairTokens struct {
 		ids     []int
@@ -133,7 +134,7 @@ func (r *BuiltinReranker) RerankTexts(_ context.Context, query string, prompts [
 	docBudget := max(MaxSequenceLength-3-len(queryIDs), 1)
 
 	for i, doc := range prompts {
-		docIDs := r.tok.Encode(doc)
+		docIDs := r.tok.EncodeWithOptions(doc, false)
 		if len(docIDs) > docBudget {
 			docIDs = docIDs[:docBudget]
 		}
