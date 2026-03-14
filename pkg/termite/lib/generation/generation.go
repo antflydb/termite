@@ -102,13 +102,10 @@ type GenerateOptions struct {
 }
 
 // DefaultGenerateOptions returns sensible defaults for generation.
-// These mirror backends.DefaultGenerativeOptions().
+// Zero values for Temperature/TopP/TopK mean "use pipeline default".
 func DefaultGenerateOptions() GenerateOptions {
 	return GenerateOptions{
-		MaxTokens:   2048,
-		Temperature: 1.0,
-		TopP:        1.0,
-		TopK:        0,
+		MaxTokens: 2048,
 	}
 }
 

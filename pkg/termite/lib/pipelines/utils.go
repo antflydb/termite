@@ -69,16 +69,28 @@ func FindONNXFile(dir string, candidates []string) string {
 // ParseTokenID converts a JSON-decoded token ID (float64 or []any) to int32.
 // HuggingFace configs represent eos_token_id as either a number or an array;
 // when an array, only the first element is used.
-func ParseTokenID(v any) int32 {
+// ParseTokenIDs extracts all token IDs from a value that may be a single int or an array.
+// Returns nil if no IDs found. Used for eos_token_id which can be [1, 106] for multi-stop models.
+func ParseTokenIDs(v any) []int32 {
 	switch val := v.(type) {
 	case float64:
-		return int32(val)
+		return []int32{int32(val)}
 	case []any:
-		if len(val) > 0 {
-			if f, ok := val[0].(float64); ok {
-				return int32(f)
+		ids := make([]int32, 0, len(val))
+		for _, item := range val {
+			if f, ok := item.(float64); ok {
+				ids = append(ids, int32(f))
 			}
 		}
+		return ids
+	}
+	return nil
+}
+
+// ParseTokenID extracts the first token ID from a value that may be a single int or an array.
+func ParseTokenID(v any) int32 {
+	if ids := ParseTokenIDs(v); len(ids) > 0 {
+		return ids[0]
 	}
 	return 0
 }

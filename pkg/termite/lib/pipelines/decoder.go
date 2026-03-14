@@ -48,8 +48,11 @@ type DecoderStepFunc func(ctx context.Context, state *DecoderState) (logits []fl
 type Generator struct {
 	Config *backends.GenerationConfig
 
-	// EOSTokenID is the end-of-sequence token ID.
+	// EOSTokenID is the primary end-of-sequence token ID.
 	EOSTokenID int32
+	// EOSTokenIDs contains all end-of-sequence token IDs.
+	// If non-empty, generation stops when any of these tokens is produced.
+	EOSTokenIDs []int32
 	// BOSTokenID is the beginning-of-sequence token ID.
 	BOSTokenID int32
 	// PadTokenID is the padding token ID.
@@ -86,10 +89,36 @@ func NewGeneratorFromDecoderConfig(genConfig *backends.GenerationConfig, decConf
 	return &Generator{
 		Config:           genConfig,
 		EOSTokenID:       decConfig.EOSTokenID,
+		EOSTokenIDs:      decConfig.EOSTokenIDs,
 		BOSTokenID:       decConfig.BOSTokenID,
 		PadTokenID:       decConfig.PadTokenID,
 		ForcedDecoderIds: decConfig.ForcedDecoderIds,
 		SuppressTokens:   decConfig.SuppressTokens,
+	}
+}
+
+// isEOS returns true if the token matches any of the EOS token IDs.
+func (g *Generator) isEOS(token int32) bool {
+	if token == g.EOSTokenID {
+		return true
+	}
+	for _, eos := range g.EOSTokenIDs {
+		if token == eos {
+			return true
+		}
+	}
+	return false
+}
+
+// suppressAllEOS sets logits to -inf for all EOS tokens.
+func (g *Generator) suppressAllEOS(logits []float32) {
+	if int(g.EOSTokenID) >= 0 && int(g.EOSTokenID) < len(logits) {
+		logits[g.EOSTokenID] = float32(math.Inf(-1))
+	}
+	for _, eos := range g.EOSTokenIDs {
+		if int(eos) >= 0 && int(eos) < len(logits) {
+			logits[eos] = float32(math.Inf(-1))
+		}
 	}
 }
 
@@ -213,8 +242,8 @@ func (g *Generator) Generate(
 				i, nextToken, logProb, cumulativeLogProb, len(state.GeneratedTokens), g.Config.MinLength)
 		}
 
-		// Check for EOS
-		if nextToken == g.EOSTokenID {
+		// Check for EOS (supports multiple EOS token IDs)
+		if g.isEOS(nextToken) {
 			// Check minimum length
 			if len(state.GeneratedTokens) >= g.Config.MinLength {
 				result.TokenIDs = state.GeneratedTokens
@@ -223,8 +252,8 @@ func (g *Generator) Generate(
 				result.LogProb = cumulativeLogProb
 				return result, nil
 			}
-			// Force continue - set EOS logits to -inf and resample
-			logits[g.EOSTokenID] = float32(math.Inf(-1))
+			// Force continue - set all EOS logits to -inf and resample
+			g.suppressAllEOS(logits)
 			oldLogProb := logProb
 			nextToken, logProb = g.selectNextTokenWithProb(logits, state.GeneratedTokens)
 			// Replace the EOS log prob with the new token's log prob
@@ -290,17 +319,15 @@ func (g *Generator) GenerateStreaming(
 		// Select next token
 		nextToken := g.selectNextToken(logits, state.GeneratedTokens)
 
-		// Check for EOS
-		if nextToken == g.EOSTokenID {
+		// Check for EOS (supports multiple EOS token IDs)
+		if g.isEOS(nextToken) {
 			if len(state.GeneratedTokens) >= g.Config.MinLength {
 				result.TokenIDs = state.GeneratedTokens
 				result.FinalKVCache = newKVCache
 				result.StoppedAtEOS = true
 				return result, nil
 			}
-			if eosIdx := int(g.EOSTokenID); eosIdx >= 0 && eosIdx < len(logits) {
-				logits[eosIdx] = float32(math.Inf(-1))
-			}
+			g.suppressAllEOS(logits)
 			nextToken = g.selectNextToken(logits, state.GeneratedTokens)
 		}
 

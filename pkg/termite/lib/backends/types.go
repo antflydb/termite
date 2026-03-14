@@ -255,8 +255,11 @@ type DecoderConfig struct {
 	VocabSize int
 	// MaxLength is the maximum generation length.
 	MaxLength int
-	// EOSTokenID is the end-of-sequence token ID.
+	// EOSTokenID is the primary end-of-sequence token ID.
 	EOSTokenID int32
+	// EOSTokenIDs contains all end-of-sequence token IDs (for models with multiple stop tokens).
+	// If non-empty, generation stops when any of these tokens is produced.
+	EOSTokenIDs []int32
 	// BOSTokenID is the beginning-of-sequence token ID.
 	BOSTokenID int32
 	// PadTokenID is the padding token ID.

@@ -41,6 +41,7 @@ type PooledPipelineGenerator struct {
 	logger       *zap.Logger
 	poolSize     int
 	modelPath    string
+	chatTemplate *ChatTemplate
 	toolSupport
 }
 
@@ -156,16 +157,31 @@ func NewPooledPipelineGenerator(
 		}
 	}
 
+	// Load chat template (optional — falls back to simple prompt format)
+	chatTemplate, err := LoadChatTemplate(cfg.ModelPath)
+	if err != nil {
+		logger.Warn("Failed to load chat template, using simple prompt format",
+			zap.String("modelPath", cfg.ModelPath),
+			zap.Error(err))
+	} else if chatTemplate != nil {
+		logger.Info("Loaded chat template from model",
+			zap.String("modelPath", cfg.ModelPath))
+	} else {
+		logger.Info("No chat template found, using simple prompt format",
+			zap.String("modelPath", cfg.ModelPath))
+	}
+
 	logger.Info("Created pooled pipeline generator",
 		zap.Int("poolSize", poolSize),
 		zap.String("backend", string(backendType)))
 
 	return &PooledPipelineGenerator{
-		pipelines: pipelineSlice,
-		sem:       semaphore.NewWeighted(int64(poolSize)),
-		logger:    logger,
-		poolSize:  poolSize,
-		modelPath: cfg.ModelPath,
+		pipelines:    pipelineSlice,
+		sem:          semaphore.NewWeighted(int64(poolSize)),
+		logger:       logger,
+		poolSize:     poolSize,
+		modelPath:    cfg.ModelPath,
+		chatTemplate: chatTemplate,
 		toolSupport: toolSupport{
 			toolParser:     toolParser,
 			toolCallFormat: toolCallFormat,
@@ -258,24 +274,41 @@ func (p *PooledPipelineGenerator) Generate(ctx context.Context, messages []Messa
 		zap.Int("numMessages", len(messages)))
 
 	// Convert messages to prompt string
-	prompt := messagesToPrompt(messages)
+	prompt, err := p.formatPrompt(messages)
+	if err != nil {
+		return nil, fmt.Errorf("formatting prompt: %w", err)
+	}
 
-	// Apply options
+	// Copy config to avoid mutating the shared pipeline config across requests.
+	// Default to greedy decoding (like Ollama). The model's generation_config.json
+	// may set do_sample=true, but for API serving we want deterministic output
+	// unless the caller explicitly requests sampling via temperature/top_p/top_k.
+	cfg := *pipeline.GenerationConfig
+	cfg.DoSample = false
 	if opts.MaxTokens > 0 {
-		pipeline.GenerationConfig.MaxNewTokens = opts.MaxTokens
+		cfg.MaxNewTokens = opts.MaxTokens
 	}
 	if opts.Temperature > 0 {
-		pipeline.GenerationConfig.Temperature = opts.Temperature
-		pipeline.GenerationConfig.DoSample = true
+		cfg.Temperature = opts.Temperature
+		cfg.DoSample = true
 	}
-	if opts.TopP > 0 {
-		pipeline.GenerationConfig.TopP = opts.TopP
-		pipeline.GenerationConfig.DoSample = true
+	if opts.TopP > 0 && opts.TopP < 1.0 {
+		cfg.TopP = opts.TopP
+		cfg.DoSample = true
 	}
 	if opts.TopK > 0 {
-		pipeline.GenerationConfig.TopK = opts.TopK
-		pipeline.GenerationConfig.DoSample = true
+		cfg.TopK = opts.TopK
+		cfg.DoSample = true
 	}
+	pipeline.GenerationConfig = &cfg
+
+	p.logger.Debug("Generation config",
+		zap.Int("maxNewTokens", cfg.MaxNewTokens),
+		zap.Bool("doSample", cfg.DoSample),
+		zap.Float32("temperature", cfg.Temperature),
+		zap.Int("topK", cfg.TopK),
+		zap.Float32("topP", cfg.TopP),
+		zap.Int("promptLen", len(prompt)))
 
 	// Run pipeline
 	result, err := pipeline.Generate(ctx, prompt)
@@ -327,24 +360,41 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 		zap.Int("numMessages", len(messages)))
 
 	// Convert messages to prompt string
-	prompt := messagesToPrompt(messages)
+	prompt, err := p.formatPrompt(messages)
+	if err != nil {
+		p.sem.Release(1)
+		return nil, nil, fmt.Errorf("formatting prompt: %w", err)
+	}
 
-	// Apply options
+	// Copy config to avoid mutating the shared pipeline config across requests.
+	// Default to greedy decoding (like Ollama). Only enable sampling when
+	// the caller explicitly requests it via temperature/top_p/top_k.
+	cfg := *pipeline.GenerationConfig
+	cfg.DoSample = false
 	if opts.MaxTokens > 0 {
-		pipeline.GenerationConfig.MaxNewTokens = opts.MaxTokens
+		cfg.MaxNewTokens = opts.MaxTokens
 	}
 	if opts.Temperature > 0 {
-		pipeline.GenerationConfig.Temperature = opts.Temperature
-		pipeline.GenerationConfig.DoSample = true
+		cfg.Temperature = opts.Temperature
+		cfg.DoSample = true
 	}
-	if opts.TopP > 0 {
-		pipeline.GenerationConfig.TopP = opts.TopP
-		pipeline.GenerationConfig.DoSample = true
+	if opts.TopP > 0 && opts.TopP < 1.0 {
+		cfg.TopP = opts.TopP
+		cfg.DoSample = true
 	}
 	if opts.TopK > 0 {
-		pipeline.GenerationConfig.TopK = opts.TopK
-		pipeline.GenerationConfig.DoSample = true
+		cfg.TopK = opts.TopK
+		cfg.DoSample = true
 	}
+	pipeline.GenerationConfig = &cfg
+
+	p.logger.Debug("Streaming generation config",
+		zap.Int("maxNewTokens", cfg.MaxNewTokens),
+		zap.Bool("doSample", cfg.DoSample),
+		zap.Float32("temperature", cfg.Temperature),
+		zap.Int("topK", cfg.TopK),
+		zap.Float32("topP", cfg.TopP),
+		zap.Int("promptLen", len(prompt)))
 
 	// Create output channels
 	tokenChan := make(chan TokenDelta)
@@ -402,8 +452,25 @@ func (p *PooledPipelineGenerator) Close() error {
 	return nil
 }
 
+// formatPrompt converts messages to a prompt string using the chat template
+// if available, otherwise falling back to a simple format.
+func (p *PooledPipelineGenerator) formatPrompt(messages []Message) (string, error) {
+	if p.chatTemplate != nil {
+		prompt, err := p.chatTemplate.Apply(messages, true)
+		if err != nil {
+			p.logger.Warn("Chat template failed, falling back to simple format",
+				zap.Error(err))
+			return messagesToPrompt(messages), nil
+		}
+		p.logger.Debug("Formatted prompt with chat template",
+			zap.Int("promptLength", len(prompt)))
+		return prompt, nil
+	}
+	p.logger.Debug("No chat template, using simple prompt format")
+	return messagesToPrompt(messages), nil
+}
+
 // messagesToPrompt converts messages to a simple prompt string.
-// For more sophisticated chat templating, consider using a proper chat template.
 func messagesToPrompt(messages []Message) string {
 	var prompt strings.Builder
 	for _, msg := range messages {
