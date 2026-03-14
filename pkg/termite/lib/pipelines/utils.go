@@ -66,6 +66,23 @@ func FindONNXFile(dir string, candidates []string) string {
 	return ""
 }
 
+// ParseTokenID converts a JSON-decoded token ID (float64 or []any) to int32.
+// HuggingFace configs represent eos_token_id as either a number or an array;
+// when an array, only the first element is used.
+func ParseTokenID(v any) int32 {
+	switch val := v.(type) {
+	case float64:
+		return int32(val)
+	case []any:
+		if len(val) > 0 {
+			if f, ok := val[0].(float64); ok {
+				return int32(f)
+			}
+		}
+	}
+	return 0
+}
+
 // IntToInt32 converts a slice of int to a slice of int32.
 func IntToInt32(ids []int) []int32 {
 	result := make([]int32, len(ids))

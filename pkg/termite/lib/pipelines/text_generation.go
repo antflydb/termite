@@ -327,29 +327,10 @@ func loadGenerationConfig(path string) *rawGenerationConfig {
 // buildGenerativeConfig creates a DecoderConfig from the raw configs.
 func buildGenerativeConfig(cfg *rawGenerativeConfig, genCfg *rawGenerationConfig) *backends.DecoderConfig {
 	// Handle eos_token_id which can be int or []int
-	var eosTokenID int32
-	switch v := cfg.EOSTokenID.(type) {
-	case float64:
-		eosTokenID = int32(v)
-	case []any:
-		if len(v) > 0 {
-			if f, ok := v[0].(float64); ok {
-				eosTokenID = int32(f)
-			}
-		}
-	}
+	eosTokenID := ParseTokenID(cfg.EOSTokenID)
 	// Override from generation config if present
-	if genCfg != nil {
-		switch v := genCfg.EOSTokenID.(type) {
-		case float64:
-			eosTokenID = int32(v)
-		case []any:
-			if len(v) > 0 {
-				if f, ok := v[0].(float64); ok {
-					eosTokenID = int32(f)
-				}
-			}
-		}
+	if genCfg != nil && genCfg.EOSTokenID != nil {
+		eosTokenID = ParseTokenID(genCfg.EOSTokenID)
 	}
 
 	// Handle pad_token_id which can be int or null
@@ -1004,7 +985,9 @@ func (p *TextGenerationPipeline) GenerateBatch(ctx context.Context, prompts []st
 				// Force continue - select again without EOS
 				logitsCopy := make([]float32, len(output.Logits[i]))
 				copy(logitsCopy, output.Logits[i])
-				logitsCopy[p.decoderConfig.EOSTokenID] = float32(-1e9)
+				if eosIdx := int(p.decoderConfig.EOSTokenID); eosIdx >= 0 && eosIdx < len(logitsCopy) {
+					logitsCopy[eosIdx] = float32(-1e9)
+				}
 				nextToken = p.Generator.selectNextToken(logitsCopy, generatedTokens[i])
 			}
 

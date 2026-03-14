@@ -298,7 +298,9 @@ func (g *Generator) GenerateStreaming(
 				result.StoppedAtEOS = true
 				return result, nil
 			}
-			logits[g.EOSTokenID] = float32(math.Inf(-1))
+			if eosIdx := int(g.EOSTokenID); eosIdx >= 0 && eosIdx < len(logits) {
+				logits[eosIdx] = float32(math.Inf(-1))
+			}
 			nextToken = g.selectNextToken(logits, state.GeneratedTokens)
 		}
 

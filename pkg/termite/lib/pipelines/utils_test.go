@@ -98,6 +98,15 @@ func TestFindONNXFile_CandidateOrderPreserved(t *testing.T) {
 	assert.Equal(t, filepath.Join(dir, "text_model_i8.onnx"), result)
 }
 
+func TestParseTokenID(t *testing.T) {
+	assert.Equal(t, int32(1), ParseTokenID(float64(1)))
+	assert.Equal(t, int32(50256), ParseTokenID(float64(50256)))
+	assert.Equal(t, int32(2), ParseTokenID([]any{float64(2), float64(3)}))
+	assert.Equal(t, int32(0), ParseTokenID(nil))
+	assert.Equal(t, int32(0), ParseTokenID("invalid"))
+	assert.Equal(t, int32(0), ParseTokenID([]any{}))
+}
+
 func TestFindONNXFile_NonOnnxCandidateSkipped(t *testing.T) {
 	dir := t.TempDir()
 	// Non-.onnx candidates should be skipped in variant expansion

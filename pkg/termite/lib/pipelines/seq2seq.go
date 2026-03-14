@@ -234,29 +234,10 @@ func loadSeq2SeqGenerationConfig(path string) *rawSeq2SeqGenerationConfig {
 // buildSeq2SeqDecoderConfig creates a DecoderConfig from the raw configs.
 func buildSeq2SeqDecoderConfig(cfg *rawSeq2SeqConfig, genCfg *rawSeq2SeqGenerationConfig) *backends.DecoderConfig {
 	// Handle eos_token_id which can be int or []int
-	var eosTokenID int32
-	switch v := cfg.EOSTokenID.(type) {
-	case float64:
-		eosTokenID = int32(v)
-	case []any:
-		if len(v) > 0 {
-			if f, ok := v[0].(float64); ok {
-				eosTokenID = int32(f)
-			}
-		}
-	}
+	eosTokenID := ParseTokenID(cfg.EOSTokenID)
 	// Override from generation config if present
-	if genCfg != nil {
-		switch v := genCfg.EOSTokenID.(type) {
-		case float64:
-			eosTokenID = int32(v)
-		case []any:
-			if len(v) > 0 {
-				if f, ok := v[0].(float64); ok {
-					eosTokenID = int32(f)
-				}
-			}
-		}
+	if genCfg != nil && genCfg.EOSTokenID != nil {
+		eosTokenID = ParseTokenID(genCfg.EOSTokenID)
 	}
 
 	// Handle pad_token_id which can be int or null

@@ -401,18 +401,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 	if cfg.DecoderConfig != nil {
 		dec := cfg.DecoderConfig
 
-		// Handle eos_token_id which can be int or []int
-		var eosTokenID int32
-		switch v := dec.EOSTokenID.(type) {
-		case float64:
-			eosTokenID = int32(v)
-		case []any:
-			if len(v) > 0 {
-				if f, ok := v[0].(float64); ok {
-					eosTokenID = int32(f)
-				}
-			}
-		}
+		eosTokenID := ParseTokenID(dec.EOSTokenID)
 
 		maxLength := dec.MaxLength
 		if maxLength == 0 {
@@ -439,18 +428,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 	if cfg.TextConfig != nil {
 		text := cfg.TextConfig
 
-		// Handle eos_token_id which can be int or []int
-		var eosTokenID int32
-		switch v := text.EOSTokenID.(type) {
-		case float64:
-			eosTokenID = int32(v)
-		case []any:
-			if len(v) > 0 {
-				if f, ok := v[0].(float64); ok {
-					eosTokenID = int32(f)
-				}
-			}
-		}
+		eosTokenID := ParseTokenID(text.EOSTokenID)
 
 		maxLength := text.MaxLength
 		if maxLength == 0 {
@@ -474,18 +452,7 @@ func buildDecoderConfig(cfg *rawVision2SeqConfig) *backends.DecoderConfig {
 	}
 
 	// Fall back to top-level fields
-	// Handle eos_token_id which can be int or []int
-	var eosTokenID int32
-	switch v := cfg.EOSTokenID.(type) {
-	case float64:
-		eosTokenID = int32(v)
-	case []any:
-		if len(v) > 0 {
-			if f, ok := v[0].(float64); ok {
-				eosTokenID = int32(f)
-			}
-		}
-	}
+	eosTokenID := ParseTokenID(cfg.EOSTokenID)
 
 	maxLength := cfg.MaxLength
 	if maxLength == 0 {

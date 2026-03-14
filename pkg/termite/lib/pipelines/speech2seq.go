@@ -280,18 +280,7 @@ func loadAudioPreprocessorConfig(path string) *backends.AudioConfig {
 
 // buildSpeech2SeqDecoderConfig creates a DecoderConfig from the raw config.
 func buildSpeech2SeqDecoderConfig(cfg *rawSpeech2SeqConfig) *backends.DecoderConfig {
-	// Handle eos_token_id which can be int or []int
-	var eosTokenID int32
-	switch v := cfg.EOSTokenID.(type) {
-	case float64:
-		eosTokenID = int32(v)
-	case []any:
-		if len(v) > 0 {
-			if f, ok := v[0].(float64); ok {
-				eosTokenID = int32(f)
-			}
-		}
-	}
+	eosTokenID := ParseTokenID(cfg.EOSTokenID)
 
 	// Handle pad_token_id which can be int or null
 	var padTokenID int32
