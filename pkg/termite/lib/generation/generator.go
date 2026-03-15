@@ -279,35 +279,34 @@ func (p *PooledPipelineGenerator) Generate(ctx context.Context, messages []Messa
 		return nil, fmt.Errorf("formatting prompt: %w", err)
 	}
 
-	// Copy config to avoid mutating the shared pipeline config across requests.
 	// Default to greedy decoding (like Ollama). The model's generation_config.json
 	// may set do_sample=true, but for API serving we want deterministic output
 	// unless the caller explicitly requests sampling via temperature/top_p/top_k.
-	cfg := *pipeline.GenerationConfig
-	cfg.DoSample = false
+	// We must update Generator.Config (not just pipeline.GenerationConfig) since
+	// the decoder loop reads from Generator.Config.
+	pipeline.Generator.Config.DoSample = false
 	if opts.MaxTokens > 0 {
-		cfg.MaxNewTokens = opts.MaxTokens
+		pipeline.Generator.Config.MaxNewTokens = opts.MaxTokens
 	}
 	if opts.Temperature > 0 {
-		cfg.Temperature = opts.Temperature
-		cfg.DoSample = true
+		pipeline.Generator.Config.Temperature = opts.Temperature
+		pipeline.Generator.Config.DoSample = true
 	}
 	if opts.TopP > 0 && opts.TopP < 1.0 {
-		cfg.TopP = opts.TopP
-		cfg.DoSample = true
+		pipeline.Generator.Config.TopP = opts.TopP
+		pipeline.Generator.Config.DoSample = true
 	}
 	if opts.TopK > 0 {
-		cfg.TopK = opts.TopK
-		cfg.DoSample = true
+		pipeline.Generator.Config.TopK = opts.TopK
+		pipeline.Generator.Config.DoSample = true
 	}
-	pipeline.GenerationConfig = &cfg
 
 	p.logger.Debug("Generation config",
-		zap.Int("maxNewTokens", cfg.MaxNewTokens),
-		zap.Bool("doSample", cfg.DoSample),
-		zap.Float32("temperature", cfg.Temperature),
-		zap.Int("topK", cfg.TopK),
-		zap.Float32("topP", cfg.TopP),
+		zap.Int("maxNewTokens", pipeline.Generator.Config.MaxNewTokens),
+		zap.Bool("doSample", pipeline.Generator.Config.DoSample),
+		zap.Float32("temperature", pipeline.Generator.Config.Temperature),
+		zap.Int("topK", pipeline.Generator.Config.TopK),
+		zap.Float32("topP", pipeline.Generator.Config.TopP),
 		zap.Int("promptLen", len(prompt)))
 
 	// Run pipeline
@@ -366,34 +365,31 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 		return nil, nil, fmt.Errorf("formatting prompt: %w", err)
 	}
 
-	// Copy config to avoid mutating the shared pipeline config across requests.
 	// Default to greedy decoding (like Ollama). Only enable sampling when
 	// the caller explicitly requests it via temperature/top_p/top_k.
-	cfg := *pipeline.GenerationConfig
-	cfg.DoSample = false
+	pipeline.Generator.Config.DoSample = false
 	if opts.MaxTokens > 0 {
-		cfg.MaxNewTokens = opts.MaxTokens
+		pipeline.Generator.Config.MaxNewTokens = opts.MaxTokens
 	}
 	if opts.Temperature > 0 {
-		cfg.Temperature = opts.Temperature
-		cfg.DoSample = true
+		pipeline.Generator.Config.Temperature = opts.Temperature
+		pipeline.Generator.Config.DoSample = true
 	}
 	if opts.TopP > 0 && opts.TopP < 1.0 {
-		cfg.TopP = opts.TopP
-		cfg.DoSample = true
+		pipeline.Generator.Config.TopP = opts.TopP
+		pipeline.Generator.Config.DoSample = true
 	}
 	if opts.TopK > 0 {
-		cfg.TopK = opts.TopK
-		cfg.DoSample = true
+		pipeline.Generator.Config.TopK = opts.TopK
+		pipeline.Generator.Config.DoSample = true
 	}
-	pipeline.GenerationConfig = &cfg
 
 	p.logger.Debug("Streaming generation config",
-		zap.Int("maxNewTokens", cfg.MaxNewTokens),
-		zap.Bool("doSample", cfg.DoSample),
-		zap.Float32("temperature", cfg.Temperature),
-		zap.Int("topK", cfg.TopK),
-		zap.Float32("topP", cfg.TopP),
+		zap.Int("maxNewTokens", pipeline.Generator.Config.MaxNewTokens),
+		zap.Bool("doSample", pipeline.Generator.Config.DoSample),
+		zap.Float32("temperature", pipeline.Generator.Config.Temperature),
+		zap.Int("topK", pipeline.Generator.Config.TopK),
+		zap.Float32("topP", pipeline.Generator.Config.TopP),
 		zap.Int("promptLen", len(prompt)))
 
 	// Create output channels
