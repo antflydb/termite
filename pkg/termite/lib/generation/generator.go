@@ -279,11 +279,14 @@ func (p *PooledPipelineGenerator) Generate(ctx context.Context, messages []Messa
 		return nil, fmt.Errorf("formatting prompt: %w", err)
 	}
 
+	// Save original config and restore after request to avoid mutating shared state.
+	// Without this, the second request sees stale values from the first request.
+	originalConfig := *pipeline.Generator.Config
+	defer func() { *pipeline.Generator.Config = originalConfig }()
+
 	// Default to greedy decoding (like Ollama). The model's generation_config.json
 	// may set do_sample=true, but for API serving we want deterministic output
 	// unless the caller explicitly requests sampling via temperature/top_p/top_k.
-	// We must update Generator.Config (not just pipeline.GenerationConfig) since
-	// the decoder loop reads from Generator.Config.
 	pipeline.Generator.Config.DoSample = false
 	if opts.MaxTokens > 0 {
 		pipeline.Generator.Config.MaxNewTokens = opts.MaxTokens
@@ -365,6 +368,9 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 		return nil, nil, fmt.Errorf("formatting prompt: %w", err)
 	}
 
+	// Save original config and restore after request to avoid mutating shared state.
+	originalConfig := *pipeline.Generator.Config
+
 	// Default to greedy decoding (like Ollama). Only enable sampling when
 	// the caller explicitly requests it via temperature/top_p/top_k.
 	pipeline.Generator.Config.DoSample = false
@@ -397,6 +403,7 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 	errChan := make(chan error, 1)
 
 	go func() {
+		defer func() { *pipeline.Generator.Config = originalConfig }() // Restore config
 		defer p.sem.Release(1) // Release semaphore when done streaming
 		defer close(tokenChan)
 		defer close(errChan)
