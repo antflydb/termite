@@ -261,7 +261,7 @@ nfpms:
 blobs:
   # Upload to R2 for CDN distribution
   - provider: s3
-    endpoint: https://e7e005e208ec9363efaca673271d2dbd.r2.cloudflarestorage.com
+    endpoint: "{{ .Env.AWS_ENDPOINT_URL }}"
     region: auto  # Required for Cloudflare R2
     bucket: antfly-releases
     extra_files:
@@ -269,7 +269,7 @@ blobs:
     include_meta: true
   # Upload to /latest/ path for easy installation (stable releases only)
   - provider: s3
-    endpoint: https://e7e005e208ec9363efaca673271d2dbd.r2.cloudflarestorage.com
+    endpoint: "{{ .Env.AWS_ENDPOINT_URL }}"
     region: auto
     bucket: antfly-releases
     directory: "termite/latest"
