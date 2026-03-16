@@ -392,10 +392,16 @@ func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
 			r.logger.Debug("NER re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("NER model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -407,18 +413,41 @@ func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // Type-assert to ner.Recognizer if HasCapability returns true for CapabilityZeroshot.
 func (r *NERRegistry) Acquire(modelName string) (ner.Model, error) {
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between getLoaded() returning and the refcount being visible.
-	r.refs.incRef(modelName)
+	// Resolve variant inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	refKey := modelName
+	r.mu.RUnlock()
 
-	loaded, err := r.getLoaded(modelName)
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("NER re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("NER model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	r.refs.incRef(refKey)
+
+	loaded, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired NER model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	// Return recognizer if available (it embeds ner.Model), otherwise return model
 	if loaded.recognizer != nil {
@@ -430,13 +459,17 @@ func (r *NERRegistry) Acquire(modelName string) (ner.Model, error) {
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the NER model.
 func (r *NERRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released NER model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "NER", modelName, orphans)
+	closeOrphans(r.logger, "NER", refKey, orphans)
 }
 
 // loadModel loads a NER model from disk

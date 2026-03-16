@@ -225,10 +225,16 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 			r.logger.Debug("Seq2Seq re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -240,18 +246,41 @@ func (r *Seq2SeqRegistry) Get(modelName string) (seq2seq.Model, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *Seq2SeqRegistry) Acquire(modelName string) (seq2seq.Model, error) {
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between Get() returning and the refcount being visible.
-	r.refs.incRef(modelName)
+	// Resolve variant inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	refKey := modelName
+	r.mu.RUnlock()
 
-	model, err := r.Get(modelName)
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Seq2Seq re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("Seq2Seq model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	r.refs.incRef(refKey)
+
+	model, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired Seq2Seq model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return model, nil
 }
@@ -259,13 +288,17 @@ func (r *Seq2SeqRegistry) Acquire(modelName string) (seq2seq.Model, error) {
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the model.
 func (r *Seq2SeqRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released Seq2Seq model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "seq2seq", modelName, orphans)
+	closeOrphans(r.logger, "seq2seq", refKey, orphans)
 }
 
 // GetQuestionGenerator returns a Seq2Seq model as a QuestionGenerator by name

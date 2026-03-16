@@ -467,10 +467,16 @@ func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, known = r.discovered[modelName]
+		var resolved string
+		info, resolved, known = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !known {
 			return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -482,16 +488,49 @@ func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
-	r.refs.incRef(modelName)
+	// Pinned models are never evicted — no ref-counting needed.
+	r.pinnedMu.RLock()
+	if embedder, ok := r.pinned[modelName]; ok {
+		r.pinnedMu.RUnlock()
+		return embedder, nil
+	}
+	r.pinnedMu.RUnlock()
 
-	embedder, err := r.Get(modelName)
+	// Resolve variant inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	refKey := modelName
+	r.mu.RUnlock()
+
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	r.refs.incRef(refKey)
+
+	embedder, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired embedder model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return embedder, nil
 }
@@ -499,31 +538,27 @@ func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the embedder.
 func (r *EmbedderRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released embedder model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "embedder", modelName, orphans)
+	closeOrphans(r.logger, "embedder", refKey, orphans)
 }
 
 // AcquireSparse returns a sparse embedder by model name and increments its reference count.
 // Only valid for models with the "sparse" capability.
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
-	r.refs.incRef(modelName)
-
-	// Check if already loaded in sparse cache
-	if item := r.sparseCache.Get(modelName); item != nil {
-		r.logger.Debug("Acquired sparse embedder model (cache hit)",
-			zap.String("model", modelName))
-		return item.Value(), nil
-	}
-
-	// Check if model is known and has sparse capability
+	// Resolve variant inline so the ref key matches the cache key.
 	r.mu.RLock()
 	info, known := r.discovered[modelName]
+	refKey := modelName
 	r.mu.RUnlock()
 
 	if !known {
@@ -531,27 +566,34 @@ func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmb
 			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, known = r.discovered[modelName]
+		var resolved string
+		info, resolved, known = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !known {
-			r.refs.rollbackRef(modelName)
 			return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
 	if !slices.Contains(info.Capabilities, string(modelregistry.CapabilitySparse)) {
-		r.refs.rollbackRef(modelName)
 		return nil, fmt.Errorf("model %s does not have sparse capability", modelName)
 	}
 
+	r.refs.incRef(refKey)
+
 	embedder, err := r.loadSparseModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired sparse embedder model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return embedder, nil
 }

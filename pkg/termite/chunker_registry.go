@@ -399,10 +399,16 @@ func (r *ChunkerRegistry) Get(modelName string) (chunking.Chunker, error) {
 			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("chunker model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -414,9 +420,10 @@ func (r *ChunkerRegistry) Get(modelName string) (chunking.Chunker, error) {
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *ChunkerRegistry) Acquire(modelName string) (chunking.Chunker, error) {
-	// Check if model is discovered
+	// Resolve variant so the ref key matches the cache key.
 	r.mu.RLock()
 	info, ok := r.discovered[modelName]
+	refKey := modelName
 	r.mu.RUnlock()
 
 	if !ok {
@@ -424,23 +431,30 @@ func (r *ChunkerRegistry) Acquire(modelName string) (chunking.Chunker, error) {
 			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("chunker model not found: %s", modelName)
 		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
 	}
 
-	r.refs.incRef(modelName)
+	r.refs.incRef(refKey)
 
 	chunker, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired chunker model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return chunker, nil
 }
@@ -448,22 +462,27 @@ func (r *ChunkerRegistry) Acquire(modelName string) (chunking.Chunker, error) {
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the chunker.
 func (r *ChunkerRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released chunker model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "chunker", modelName, orphans)
+	closeOrphans(r.logger, "chunker", refKey, orphans)
 }
 
 // AcquireMedia returns a media chunker by name and increments its reference count.
 // Only valid for models with media capabilities (e.g., "audio").
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *ChunkerRegistry) AcquireMedia(modelName string) (termchunking.MediaChunker, error) {
-	// Check if model is discovered and has media capabilities
+	// Resolve variant so the ref key matches the cache key.
 	r.mu.RLock()
 	info, ok := r.discovered[modelName]
+	refKey := modelName
 	r.mu.RUnlock()
 
 	if !ok {
@@ -471,10 +490,17 @@ func (r *ChunkerRegistry) AcquireMedia(modelName string) (termchunking.MediaChun
 			r.logger.Debug("Chunker re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("chunker model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -482,16 +508,16 @@ func (r *ChunkerRegistry) AcquireMedia(modelName string) (termchunking.MediaChun
 		return nil, fmt.Errorf("model %s does not have media capabilities", modelName)
 	}
 
-	r.refs.incRef(modelName)
+	r.refs.incRef(refKey)
 
 	chunker, err := r.loadMediaModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired media chunker model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return chunker, nil
 }

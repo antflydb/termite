@@ -182,7 +182,7 @@ func (b *gomlxBackend) Available() bool {
 				available = false
 			}
 		}()
-		_, err := backends.NewWithConfig(b.engineType)
+		_, err := backends.NewWithConfig(resolveXLABackendConfig(b.engineType))
 		return err == nil
 	}()
 
@@ -222,6 +222,11 @@ func (b *gomlxBackend) SessionFactory() SessionFactory {
 	return &gomlxSessionFactory{backend: b}
 }
 
+// pjrtPluginPath holds the absolute path to a bundled PJRT CPU plugin file.
+// Set by backend_xla.go init() when a bundled plugin is discovered.
+// Used by getEngine() to pass the absolute path to GoMLX, bypassing auto-download.
+var pjrtPluginPath string
+
 // engineManager manages GoMLX backend engines.
 type engineManager struct {
 	mu            sync.RWMutex
@@ -240,7 +245,7 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 
 	// If specific backend requested, create it
 	if backendType != "" {
-		return safeNewBackend(backendType)
+		return safeNewBackend(resolveXLABackendConfig(backendType))
 	}
 
 	// Use cached default engine
@@ -249,7 +254,7 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 	}
 
 	// Auto-detect: try xla first, fall back to go (simplego)
-	engine, err := safeNewBackend("xla")
+	engine, err := safeNewBackend(resolveXLABackendConfig("xla"))
 	if err != nil {
 		// XLA not available, use go (simplego)
 		engine, err = safeNewBackend("go")
@@ -260,6 +265,17 @@ func (m *engineManager) getEngine(backendType string) (backends.Backend, error) 
 
 	m.defaultEngine = engine
 	return engine, nil
+}
+
+// resolveXLABackendConfig returns the backend config string for GoMLX.
+// If backendType is "xla" and a bundled PJRT plugin was discovered,
+// returns "xla:/absolute/path/to/plugin.dylib" to bypass auto-download.
+// For other backends, returns the type unchanged.
+func resolveXLABackendConfig(backendType string) string {
+	if backendType == "xla" && pjrtPluginPath != "" {
+		return "xla:" + pjrtPluginPath
+	}
+	return backendType
 }
 
 // safeNewBackend creates a new backend, catching panics from libraries

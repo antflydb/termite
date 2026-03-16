@@ -259,10 +259,16 @@ func (r *TranscriberRegistry) Get(modelName string) (transcribing.Transcriber, e
 			r.logger.Debug("Transcriber re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("transcriber model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -274,16 +280,41 @@ func (r *TranscriberRegistry) Get(modelName string) (transcribing.Transcriber, e
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *TranscriberRegistry) Acquire(modelName string) (transcribing.Transcriber, error) {
-	r.refs.incRef(modelName)
+	// Resolve variant inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	refKey := modelName
+	r.mu.RUnlock()
 
-	transcriber, err := r.Get(modelName)
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Transcriber re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("transcriber model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	r.refs.incRef(refKey)
+
+	transcriber, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired transcriber model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return transcriber, nil
 }
@@ -291,13 +322,17 @@ func (r *TranscriberRegistry) Acquire(modelName string) (transcribing.Transcribe
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the transcriber.
 func (r *TranscriberRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released transcriber model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "transcriber", modelName, orphans)
+	closeOrphans(r.logger, "transcriber", refKey, orphans)
 }
 
 // loadModel loads a transcriber model from disk
