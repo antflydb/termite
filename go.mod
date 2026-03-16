@@ -12,7 +12,7 @@ replace (
 
 require (
 	github.com/ajroetker/go-highway v0.0.12
-	github.com/antflydb/antfly/pkg/libaf v0.0.0-20260313151000-3c73f35767a3
+	github.com/antflydb/antfly/pkg/libaf v0.0.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.26.0
 	github.com/eliben/go-sentencepiece v0.7.0
