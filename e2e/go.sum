@@ -11,8 +11,6 @@ github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6
 github.com/RaveNoX/go-jsoncommentstrip v1.0.0/go.mod h1:78ihd09MekBnJnxpICcwzCMzGrKSKYe4AqU6PDYYpjk=
 github.com/ajroetker/go-highway v0.0.12 h1:OcGp/l/W7WQtH5ELLuNnKXCuR7ePpWGh2RWZI/INtck=
 github.com/ajroetker/go-highway v0.0.12/go.mod h1:un7fcrwix7UOHJrr18Lgh5eeF+1yaZiGWdTw3FbfDv4=
-github.com/ajroetker/go-huggingface v0.0.0-antfly002 h1:Y/kG+D27NSxpPdajDWqwxgOlnIAgWA1EAD/U8+Pik5s=
-github.com/ajroetker/go-huggingface v0.0.0-antfly002/go.mod h1:SlU1LotT8Qh70wHqxUch1osKv3d7UQkSGqwOizdmXa0=
 github.com/ajroetker/gomlx v0.0.0-antfly008 h1:gR4QU267YK+1N0tC23nip7NpVSqyGa+aZuCBVCqBnp0=
 github.com/ajroetker/gomlx v0.0.0-antfly008/go.mod h1:7E+k2jApq1jX1F9uqINqPpFadESxqclrMqEySUkYs2w=
 github.com/ajroetker/onnx-gomlx v0.0.0-antfly008 h1:JoTmh8JZUiCoUQGJcdpHOx0OVMkYdPgcLj9jy9NbSy0=
@@ -82,6 +80,8 @@ github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e h1:dTMN+0LOhEKnNcx
 github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e/go.mod h1:iZG+LBo+jgnd44RMPJCVDfYmDaIH5P7mg5p2rVNoaIM=
 github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e h1:+EMDGV26SOEbpzypqAICKVdX8h74bN+mNC8oQMAuWnk=
 github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e/go.mod h1:R++KkcIEfEioRbwtJKJtdVZmjKvx35tmHWLgp868U9Q=
+github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4 h1:kB/beMIoOg6RsNeKe3MZpUWrILuNKyZB/I1Vj1K3FXU=
+github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4/go.mod h1:SlU1LotT8Qh70wHqxUch1osKv3d7UQkSGqwOizdmXa0=
 github.com/gomlx/go-xla v0.2.0 h1:vPRgGjKUaN4Pq58ZswWtiKNGUkqcbUj95YmvELZNvTA=
 github.com/gomlx/go-xla v0.2.0/go.mod h1:T2CsL/E90te3k4qpuzlXv2uQU2FmLMLfUsRlAGqKSuI=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

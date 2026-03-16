@@ -3,7 +3,6 @@ module github.com/antflydb/termite
 go 1.26.0
 
 replace (
-	github.com/gomlx/go-huggingface => github.com/ajroetker/go-huggingface v0.0.0-antfly002
 	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
 	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
 	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly002
@@ -19,7 +18,7 @@ require (
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/goccy/go-json v0.10.6
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e
-	github.com/gomlx/go-huggingface v0.3.2-0.20260125064416-b0f56ca7fbef
+	github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4
 	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/hajimehoshi/go-mp3 v0.3.4
