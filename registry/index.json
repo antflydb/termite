@@ -98,6 +98,15 @@
       ]
     },
     {
+      "name": "chonky-modernbert-base-1",
+      "type": "chunker",
+      "description": "",
+      "source": "mirth/chonky_modernbert_base_1",
+      "size": 602606105,
+      "variants": [],
+      "owner": "mirth"
+    },
+    {
       "name": "mxbai-rerank-base-v1",
       "owner": "mixedbread-ai",
       "type": "reranker",
