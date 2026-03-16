@@ -23,17 +23,15 @@ import (
 	_ "image/gif"  // Register GIF decoder
 	stdjpeg "image/jpeg"
 	_ "image/png" // Register PNG decoder
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/antfly/pkg/libaf/ai"
 	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	flexjpeg "github.com/kovidgoyal/imaging/jpeg"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledEmbedder implements the Embedder interface
@@ -84,14 +82,11 @@ func (ps *pipelineSet) close() error {
 // through a single type. Content is automatically routed to the appropriate pipeline
 // based on input modality.
 type PooledEmbedder struct {
-	pipelines    []pipelineSet
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	logger       *zap.Logger
-	poolSize     int
-	caps         embeddings.EmbedderCapabilities
-	batchSize    int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[pipelineSet]
+	logger      *zap.Logger
+	caps        embeddings.EmbedderCapabilities
+	batchSize   int
+	backendType backends.BackendType
 }
 
 // PooledEmbedderConfig holds configuration for creating a PooledEmbedder.
@@ -138,10 +133,10 @@ func NewPooledEmbedder(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
+		poolSize = 1
 	}
 
 	// Default batch size
@@ -171,11 +166,10 @@ func NewPooledEmbedder(
 		zap.Int("batchSize", batchSize),
 		zap.Bool("quantized", cfg.Quantized))
 
-	// Create N pipeline sets
-	pipelinesList := make([]pipelineSet, poolSize)
+	// Track the backend type from the first pipeline set
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
+	factory := func() (pipelineSet, error) {
 		textPipeline, visualPipeline, audioPipeline, bt, err := pipelines.LoadEmbeddingPipelines(
 			cfg.ModelPath,
 			sessionManager,
@@ -183,50 +177,41 @@ func NewPooledEmbedder(
 			opts...,
 		)
 		if err != nil {
-			// Clean up already-created pipeline sets
-			for j := 0; j < i; j++ {
-				_ = pipelinesList[j].close()
-			}
-			logger.Error("Failed to create pipeline set",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating pipeline set %d: %w", i, err)
+			return pipelineSet{}, fmt.Errorf("creating pipeline set: %w", err)
 		}
 		if textPipeline == nil && visualPipeline == nil && audioPipeline == nil {
-			// Clean up already-created pipeline sets
-			for j := 0; j < i; j++ {
-				_ = pipelinesList[j].close()
-			}
-			return nil, "", fmt.Errorf("model at %s does not have any encoder", cfg.ModelPath)
+			return pipelineSet{}, fmt.Errorf("model at %s does not have any encoder", cfg.ModelPath)
 		}
-		pipelinesList[i] = pipelineSet{
+		backendUsed = bt
+		return pipelineSet{
 			text:   textPipeline,
 			visual: visualPipeline,
 			audio:  audioPipeline,
-		}
-		backendUsed = bt
-		logger.Debug("Created pipeline set",
-			zap.Int("index", i),
-			zap.String("backend", string(bt)),
-			zap.Bool("hasText", textPipeline != nil),
-			zap.Bool("hasVisual", visualPipeline != nil),
-			zap.Bool("hasAudio", audioPipeline != nil))
+		}, nil
 	}
 
-	// Build capabilities from the first pipeline set (all sets are identical)
-	caps := buildCapabilities(pipelinesList[0].text, pipelinesList[0].visual, pipelinesList[0].audio)
+	p, first, err := pool.New(pool.Config[pipelineSet]{
+		Size:    poolSize,
+		Factory: factory,
+		Close:   func(ps pipelineSet) error { return ps.close() },
+		Logger:  logger,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("creating embedder pool: %w", err)
+	}
+
+	// Build capabilities from the first pipeline set
+	caps := buildCapabilities(first.text, first.visual, first.audio)
 
 	logger.Info("Successfully created pooled embedder",
 		zap.Int("poolSize", poolSize),
 		zap.String("backend", string(backendUsed)),
-		zap.Bool("hasVisual", pipelinesList[0].visual != nil),
-		zap.Bool("hasAudio", pipelinesList[0].audio != nil))
+		zap.Bool("hasVisual", first.visual != nil),
+		zap.Bool("hasAudio", first.audio != nil))
 
 	return &PooledEmbedder{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        p,
 		logger:      logger,
-		poolSize:    poolSize,
 		caps:        caps,
 		batchSize:   batchSize,
 		backendType: backendUsed,
@@ -274,14 +259,12 @@ func (p *PooledEmbedder) BackendType() backends.BackendType {
 
 // isMultimodal returns true if this embedder has visual or audio pipelines.
 func (p *PooledEmbedder) isMultimodal() bool {
-	if len(p.pipelines) == 0 {
-		return false
-	}
-	return p.pipelines[0].visual != nil || p.pipelines[0].audio != nil
+	first := p.pool.First()
+	return first.visual != nil || first.audio != nil
 }
 
 // Embed generates embeddings for the given content.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 // For text-only models, extracts text and processes in batches.
 // For multimodal models, routes each input to the appropriate pipeline
 // (text, visual, or audio) based on content type.
@@ -290,15 +273,12 @@ func (p *PooledEmbedder) Embed(ctx context.Context, contents [][]ai.ContentPart)
 		return [][]float32{}, nil
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pool slot (blocks if all pipelines busy)
+	ps, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	ps := p.pipelines[idx]
+	defer p.pool.Release()
 
 	// Use multimodal path if visual or audio pipelines are available
 	if p.isMultimodal() {
@@ -514,15 +494,5 @@ func isAudioMIME(mimeType string) bool {
 
 // Close releases resources.
 func (p *PooledEmbedder) Close() error {
-	var lastErr error
-	for i := range p.pipelines {
-		if err := p.pipelines[i].close(); err != nil {
-			p.logger.Warn("Failed to close pipeline set",
-				zap.Int("index", i),
-				zap.Error(err))
-			lastErr = err
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }

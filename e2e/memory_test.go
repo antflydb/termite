@@ -61,6 +61,7 @@ func TestMemoryGrowthWithVaryingShapes(t *testing.T) {
 			MaxLoadedModels: 1,
 		},
 		sm,
+		nil,
 		logger.Sugar().Desugar(),
 	)
 	if err != nil {
@@ -150,6 +151,7 @@ func TestMemoryWithRepeatedShapes(t *testing.T) {
 			MaxLoadedModels: 1,
 		},
 		sm,
+		nil,
 		logger.Sugar().Desugar(),
 	)
 	if err != nil {

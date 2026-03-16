@@ -18,14 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledPipelineGenerator implements the Generator and StreamingGenerator interfaces
@@ -33,13 +31,10 @@ var _ Generator = (*PooledPipelineGenerator)(nil)
 var _ StreamingGenerator = (*PooledPipelineGenerator)(nil)
 
 // PooledPipelineGenerator manages multiple TextGenerationPipelines for concurrent text generation.
-// Each request acquires a pipeline slot via semaphore, enabling true parallelism.
+// Each request acquires a pipeline slot via the pool, enabling true parallelism.
 type PooledPipelineGenerator struct {
-	pipelines    []*pipelines.TextGenerationPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
+	pool         *pool.LazyPool[*pipelines.TextGenerationPipeline]
 	logger       *zap.Logger
-	poolSize     int
 	modelPath    string
 	chatTemplate *ChatTemplate
 	toolSupport
@@ -50,7 +45,7 @@ type PooledPipelineGeneratorConfig struct {
 	// ModelPath is the path to the model directory.
 	ModelPath string
 
-	// PoolSize is the number of concurrent pipelines (0 = auto-detect from CPU count).
+	// PoolSize is the number of concurrent pipelines (0 = default of 1).
 	PoolSize int
 
 	// GenerationConfig holds text generation parameters. If nil, uses defaults.
@@ -80,7 +75,7 @@ func NewPooledPipelineGenerator(
 
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	logger.Info("Initializing pooled pipeline generator",
@@ -106,37 +101,43 @@ func NewPooledPipelineGenerator(
 		return &toolParserAdapter{parser}, nil
 	}))
 
-	// Create pooled pipelines using LoadTextGenerationPipeline
-	pipelineSlice := make([]*pipelines.TextGenerationPipeline, poolSize)
+	// Track the backend type from the first pipeline creation
 	var backendType backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadTextGenerationPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			modelBackends,
-			opts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelineSlice[j] != nil {
-					_ = pipelineSlice[j].Close()
-				}
+	// Create lazy pool of pipelines
+	p, first, err := pool.New(pool.Config[*pipelines.TextGenerationPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.TextGenerationPipeline, error) {
+			pipeline, bt, err := pipelines.LoadTextGenerationPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				modelBackends,
+				opts...,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("loading text generation pipeline: %w", err)
 			}
-			return nil, "", fmt.Errorf("loading text generation pipeline %d: %w", i, err)
-		}
-		pipelineSlice[i] = pipeline
-		backendType = bt
-		logger.Debug("Created pipeline", zap.Int("index", i))
+			backendType = bt
+			return pipeline, nil
+		},
+		Close: func(pipeline *pipelines.TextGenerationPipeline) error {
+			if pipeline != nil {
+				return pipeline.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", err
 	}
 
 	// Get tool parser info from first pipeline
 	var toolParser ToolParser
 	var toolCallFormat string
-	if len(pipelineSlice) > 0 && pipelineSlice[0].SupportsTools() {
-		toolCallFormat = pipelineSlice[0].ToolCallFormat()
-		if pipelineParser := pipelineSlice[0].GetToolParser(); pipelineParser != nil {
+	if first.SupportsTools() {
+		toolCallFormat = first.ToolCallFormat()
+		if pipelineParser := first.GetToolParser(); pipelineParser != nil {
 			// Unwrap the adapter to get our ToolParser
 			if adapter, ok := pipelineParser.(*toolParserAdapter); ok {
 				toolParser = adapter.inner
@@ -176,10 +177,8 @@ func NewPooledPipelineGenerator(
 		zap.String("backend", string(backendType)))
 
 	return &PooledPipelineGenerator{
-		pipelines:    pipelineSlice,
-		sem:          semaphore.NewWeighted(int64(poolSize)),
+		pool:         p,
 		logger:       logger,
-		poolSize:     poolSize,
 		modelPath:    cfg.ModelPath,
 		chatTemplate: chatTemplate,
 		toolSupport: toolSupport{
@@ -253,21 +252,18 @@ func (a *toolParserAdapter) Reset() {
 }
 
 // Generate produces text from the given messages.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 func (p *PooledPipelineGenerator) Generate(ctx context.Context, messages []Message, opts GenerateOptions) (*GenerateResult, error) {
 	if len(messages) == 0 {
 		return nil, errors.New("messages are required")
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Using pipeline for generation",
 		zap.Int("pipelineIndex", idx),
@@ -342,20 +338,17 @@ func (p *PooledPipelineGenerator) Generate(ctx context.Context, messages []Messa
 }
 
 // GenerateStream produces tokens one at a time via channels.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages []Message, opts GenerateOptions) (<-chan TokenDelta, <-chan error, error) {
 	if len(messages) == 0 {
 		return nil, nil, errors.New("messages are required")
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
 
 	p.logger.Debug("Using pipeline for streaming generation",
 		zap.Int("pipelineIndex", idx),
@@ -364,7 +357,7 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 	// Convert messages to prompt string
 	prompt, err := p.formatPrompt(messages)
 	if err != nil {
-		p.sem.Release(1)
+		p.pool.Release()
 		return nil, nil, fmt.Errorf("formatting prompt: %w", err)
 	}
 
@@ -403,8 +396,9 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 	errChan := make(chan error, 1)
 
 	go func() {
-		defer func() { *pipeline.Generator.Config = originalConfig }() // Restore config
-		defer p.sem.Release(1) // Release semaphore when done streaming
+		// Defers run LIFO: close channels first, then restore config, then release pool slot.
+		defer p.pool.Release()
+		defer func() { *pipeline.Generator.Config = originalConfig }()
 		defer close(tokenChan)
 		defer close(errChan)
 
@@ -435,24 +429,8 @@ func (p *PooledPipelineGenerator) GenerateStream(ctx context.Context, messages [
 
 // Close releases resources.
 func (p *PooledPipelineGenerator) Close() error {
-	p.logger.Info("Closing pooled pipeline generator", zap.Int("poolSize", p.poolSize))
-
-	var errs []error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Error closing pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				errs = append(errs, err)
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors closing generator: %v", errs)
-	}
-	return nil
+	p.logger.Info("Closing pooled pipeline generator")
+	return p.pool.Close()
 }
 
 // formatPrompt converts messages to a prompt string using the chat template

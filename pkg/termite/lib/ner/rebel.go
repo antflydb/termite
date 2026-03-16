@@ -20,14 +20,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledREBEL implements the Recognizer interface
@@ -314,7 +312,7 @@ type PooledREBELConfig struct {
 	// ModelPath is the path to the model directory
 	ModelPath string
 
-	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count)
+	// PoolSize determines how many concurrent requests can be processed (0 = 1)
 	PoolSize int
 
 	// ModelBackends specifies which backends this model supports (nil = all backends)
@@ -327,13 +325,10 @@ type PooledREBELConfig struct {
 // PooledREBEL manages multiple Seq2SeqPipeline instances for concurrent relation extraction.
 // Uses the new pipelines package (go-huggingface + gomlx/onnxruntime).
 type PooledREBEL struct {
-	pipelines    []*pipelines.Seq2SeqPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	logger       *zap.Logger
-	poolSize     int
-	backendType  backends.BackendType
-	config       REBELConfig
+	pool        *pool.LazyPool[*pipelines.Seq2SeqPipeline]
+	logger      *zap.Logger
+	backendType backends.BackendType
+	config      REBELConfig
 }
 
 // NewPooledREBEL creates a new Seq2SeqPipeline-based pooled REBEL model.
@@ -351,10 +346,10 @@ func NewPooledREBEL(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size is 1
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	// Load REBEL config
@@ -366,42 +361,45 @@ func NewPooledREBEL(
 		zap.String("model_id", rebelConfig.ModelID),
 		zap.Int("max_length", rebelConfig.MaxLength))
 
-	// Create N Seq2Seq pipelines
-	pipelinesList := make([]*pipelines.Seq2SeqPipeline, poolSize)
+	// Create the lazy pool; slot 0 is initialized eagerly to validate the factory
+	// and to capture the backend type.
 	var backendUsed backends.BackendType
-
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadSeq2SeqPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	lazyPool, firstPipeline, err := pool.New(pool.Config[*pipelines.Seq2SeqPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.Seq2SeqPipeline, error) {
+			pipeline, bt, err := pipelines.LoadSeq2SeqPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("creating Seq2Seq pipeline: %w", err)
 			}
-			logger.Error("Failed to create Seq2Seq pipeline for REBEL",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating Seq2Seq pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendUsed = bt
-		logger.Debug("Created REBEL Seq2Seq pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(p *pipelines.Seq2SeqPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", err
 	}
 
-	logger.Info("Successfully created pooled REBEL pipelines",
-		zap.Int("count", poolSize),
+	// backendUsed was set by the factory when slot 0 was created
+	_ = firstPipeline
+
+	logger.Info("Successfully created pooled REBEL",
+		zap.Int("poolSize", poolSize),
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledREBEL{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        lazyPool,
 		logger:      logger,
-		poolSize:    poolSize,
 		backendType: backendUsed,
 		config:      rebelConfig,
 	}, backendUsed, nil
@@ -429,19 +427,7 @@ func (p *PooledREBEL) Recognize(ctx context.Context, texts []string) ([][]Entity
 
 // Close releases resources.
 func (p *PooledREBEL) Close() error {
-	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close REBEL pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }
 
 // --- Recognizer interface ---
@@ -474,15 +460,12 @@ func (p *PooledREBEL) ExtractRelations(ctx context.Context, texts []string, enti
 	default:
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pipeline from the pool (blocks if all slots busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Starting REBEL relation extraction",
 		zap.Int("pipelineIndex", idx),

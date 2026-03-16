@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -49,21 +48,15 @@ type EmbedderModelInfo struct {
 }
 
 // modelsRequiringONNX lists model name patterns that require the ONNX backend.
-// These models use ONNX ops that aren't supported by the XLA/GoMLX backend.
-// This is a fallback for models without manifest backend specifications.
 var modelsRequiringONNX = []string{
 	"nomic-ai/nomic-embed-text-v1.5", // Uses dynamic Range op in rotary embeddings
 }
 
 // getRequiredBackends returns the required backends for a model.
-// Priority: manifest.Backends > hardcoded patterns > nil (all backends)
 func getRequiredBackends(modelName string, manifest *modelregistry.ModelManifest) []string {
-	// First check manifest if present
 	if manifest != nil && len(manifest.Backends) > 0 {
 		return manifest.Backends
 	}
-
-	// Fall back to hardcoded patterns
 	for _, pattern := range modelsRequiringONNX {
 		if strings.Contains(modelName, pattern) {
 			return []string{"onnx"}
@@ -74,32 +67,17 @@ func getRequiredBackends(modelName string, manifest *modelregistry.ModelManifest
 
 // EmbedderRegistry manages embedding models with lazy loading and TTL-based unloading
 type EmbedderRegistry struct {
+	base           *BaseRegistry[EmbedderModelInfo, embeddings.Embedder]
 	modelsDir      string
 	sessionManager *backends.SessionManager
-	logger         *zap.Logger
-
-	// Model discovery (paths only, not loaded)
-	discovered map[string]*EmbedderModelInfo
-	mu         sync.RWMutex
-
-	// Loaded models with TTL cache (for lazy models)
-	cache *ttlcache.Cache[string, embeddings.Embedder]
+	poolSize       int
 
 	// Sparse embedder cache (separate from dense because of different Go types)
 	sparseCache *ttlcache.Cache[string, embeddings.SparseEmbedder]
 
-	// Reference counting to prevent eviction during active use
-	// Shared across dense and sparse caches (model names are unique)
-	refs refTracker
-
 	// Pinned models (never evicted, stored separately from cache)
 	pinned   map[string]embeddings.Embedder
 	pinnedMu sync.RWMutex
-
-	// Configuration
-	keepAlive       time.Duration
-	maxLoadedModels uint64
-	poolSize        int
 }
 
 // EmbedderConfig configures the embedder registry
@@ -110,47 +88,54 @@ type EmbedderConfig struct {
 	PoolSize        int           // Number of concurrent pipelines per model (0 = default)
 }
 
+// closeFnEmbedder closes an embeddings.Embedder if it implements Close().
+func closeFnEmbedder(m embeddings.Embedder) error {
+	if closer, ok := m.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // NewEmbedderRegistry creates a new lazy-loading embedder registry
 func NewEmbedderRegistry(
 	config EmbedderConfig,
 	sessionManager *backends.SessionManager,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*EmbedderRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
+	poolSize := config.PoolSize
+	if poolSize <= 0 {
+		poolSize = 1
+	}
+
+	r := &EmbedderRegistry{
+		modelsDir:      config.ModelsDir,
+		sessionManager: sessionManager,
+		poolSize:       poolSize,
+		pinned:         make(map[string]embeddings.Embedder),
+	}
+
+	r.base = newBaseRegistry(BaseRegistryConfig[EmbedderModelInfo, embeddings.Embedder]{
+		ModelType:       "embedder",
+		KeepAlive:       config.KeepAlive,
+		MaxLoadedModels: config.MaxLoadedModels,
+		NameFunc:        func(info *EmbedderModelInfo) string { return info.Name },
+		LoadFn:          r.loadModel,
+		CloseFn:         closeFnEmbedder,
+		DiscoverFn:      func() error { return r.discoverModels() },
+		Budget:          budget,
+		Logger:          logger,
+	})
+
+	// Configure sparse embedder cache
 	keepAlive := config.KeepAlive
 	if keepAlive == 0 {
-		keepAlive = ttlcache.NoTTL // Never expire
+		keepAlive = ttlcache.NoTTL
 	}
-
-	registry := &EmbedderRegistry{
-		modelsDir:       config.ModelsDir,
-		sessionManager:  sessionManager,
-		logger:          logger,
-		discovered:      make(map[string]*EmbedderModelInfo),
-		refs:            newRefTracker(),
-		pinned:          make(map[string]embeddings.Embedder),
-		keepAlive:       keepAlive,
-		maxLoadedModels: config.MaxLoadedModels,
-		poolSize:        config.PoolSize,
-	}
-
-	// Configure TTL cache with LRU eviction
-	cacheOpts := []ttlcache.Option[string, embeddings.Embedder]{
-		ttlcache.WithTTL[string, embeddings.Embedder](keepAlive),
-	}
-
-	// Add capacity limit for LRU eviction
-	if config.MaxLoadedModels > 0 {
-		cacheOpts = append(cacheOpts,
-			ttlcache.WithCapacity[string, embeddings.Embedder](config.MaxLoadedModels))
-	}
-
-	registry.cache = ttlcache.New(cacheOpts...)
-
-	// Configure sparse embedder cache with the same TTL/capacity settings
 	sparseCacheOpts := []ttlcache.Option[string, embeddings.SparseEmbedder]{
 		ttlcache.WithTTL[string, embeddings.SparseEmbedder](keepAlive),
 	}
@@ -158,10 +143,10 @@ func NewEmbedderRegistry(
 		sparseCacheOpts = append(sparseCacheOpts,
 			ttlcache.WithCapacity[string, embeddings.SparseEmbedder](config.MaxLoadedModels))
 	}
-	registry.sparseCache = ttlcache.New(sparseCacheOpts...)
+	r.sparseCache = ttlcache.New(sparseCacheOpts...)
 
-	// Set up eviction callback to close sparse models
-	registry.sparseCache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, embeddings.SparseEmbedder]) {
+	// Sparse cache eviction callback (shares refs with base)
+	r.sparseCache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, embeddings.SparseEmbedder]) {
 		modelName := item.Key()
 		embedder := item.Value()
 
@@ -173,7 +158,7 @@ func NewEmbedderRegistry(
 
 		reasonStr := evictionReasonString(reason)
 
-		if registry.refs.deferCloseIfInUse(modelName, func() error {
+		if r.base.refs.deferCloseIfInUse(modelName, func() error {
 			if closer, ok := embedder.(interface{ Close() error }); ok {
 				return closer.Close()
 			}
@@ -198,57 +183,11 @@ func NewEmbedderRegistry(
 		}
 	})
 
-	// Set up eviction callback to close models
-	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
-	// (manual deletion during Close() handles cleanup synchronously)
-	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, embeddings.Embedder]) {
-		modelName := item.Key()
-		embedder := item.Value()
+	go r.sparseCache.Start()
 
-		// Skip closing on manual deletion - Close() handles cleanup synchronously.
-		// Don't log here since ttlcache runs eviction callbacks in goroutines,
-		// which can cause panics if the logger (e.g., test logger) is closed.
-		if reason == ttlcache.EvictionReasonDeleted {
-			return
-		}
-
-		reasonStr := evictionReasonString(reason)
-
-		// Check if model is still in use (has active references)
-		if registry.refs.deferCloseIfInUse(modelName, func() error {
-			if closer, ok := embedder.(interface{ Close() error }); ok {
-				return closer.Close()
-			}
-			return nil
-		}) {
-			logger.Warn("Embedder model evicted while in use, deferring close",
-				zap.String("model", modelName),
-				zap.String("reason", reasonStr))
-			return
-		}
-
-		logger.Info("Unloading embedder model",
-			zap.String("model", modelName),
-			zap.String("reason", reasonStr))
-
-		// Close the embedder to free resources
-		if closer, ok := embedder.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("Error closing embedder",
-					zap.String("model", modelName),
-					zap.Error(err))
-			}
-		}
-	})
-
-	// Start the cache cleanup goroutines
-	go registry.cache.Start()
-	go registry.sparseCache.Start()
-
-	// Discover available models (but don't load them)
-	if err := registry.discoverModels(); err != nil {
-		registry.cache.Stop()
-		registry.sparseCache.Stop()
+	if err := r.discoverModels(); err != nil {
+		r.base.cache.Stop()
+		r.sparseCache.Stop()
 		return nil, err
 	}
 
@@ -259,41 +198,37 @@ func NewEmbedderRegistry(
 			logger.Warn("Failed to initialize built-in embedder", zap.Error(err))
 			continue
 		}
-		registry.pinnedMu.Lock()
-		registry.pinned[name] = embedder
-		registry.pinnedMu.Unlock()
+		r.pinnedMu.Lock()
+		r.pinned[name] = embedder
+		r.pinnedMu.Unlock()
 		logger.Info("Registered built-in embedder as pinned model",
 			zap.String("model", name))
 	}
 
-	return registry, nil
+	return r, nil
 }
 
 // discoverModels scans the models directory and records available models
-// Supports owner/model-name directory structure (e.g., embedders/BAAI/bge-small-en-v1.5/)
 func (r *EmbedderRegistry) discoverModels() error {
 	if r.modelsDir == "" {
-		r.logger.Info("No embedder models directory configured")
+		r.base.logger.Info("No embedder models directory configured")
 		return nil
 	}
 
 	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
-		r.logger.Warn("Embedder models directory does not exist",
+		r.base.logger.Warn("Embedder models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil
 	}
 
-	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeEmbedder, zapLogf(r.logger))
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeEmbedder, zapLogf(r.base.logger))
 	if err != nil {
 		return fmt.Errorf("discovering embedder models: %w", err)
 	}
 
 	poolSize := r.poolSize
-	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
-	}
 
-	r.mu.Lock()
+	r.base.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
@@ -310,7 +245,6 @@ func (r *EmbedderRegistry) discoverModels() error {
 				}
 			}
 		}
-		// Fall back to file-presence detection if manifest lacks capabilities
 		if len(caps) == 0 {
 			if mc.HasImage || mc.HasImageQuantized {
 				caps = append(caps, string(modelregistry.CapabilityImage))
@@ -322,15 +256,14 @@ func (r *EmbedderRegistry) discoverModels() error {
 
 		// Multimodal models: register standard + quantized variants
 		if len(caps) > 0 {
-			// Skip if already discovered
-			if _, exists := r.discovered[registryFullName]; exists {
+			if _, exists := r.base.discovered[registryFullName]; exists {
 				continue
 			}
 
 			hasStandard := (mc.HasImage || mc.HasAudio)
 			hasQuantized := (mc.HasImageQuantized || mc.HasAudioQuantized)
 
-			r.logger.Info("Discovered multimodal embedder model (not loaded)",
+			r.base.logger.Info("Discovered multimodal embedder model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath),
 				zap.Strings("capabilities", caps),
@@ -338,10 +271,10 @@ func (r *EmbedderRegistry) discoverModels() error {
 				zap.Bool("has_quantized", hasQuantized))
 
 			if hasStandard {
-				r.discovered[registryFullName] = &EmbedderModelInfo{
+				r.base.discovered[registryFullName] = &EmbedderModelInfo{
 					Name:             registryFullName,
 					Path:             modelPath,
-					PoolSize:         1, // Multimodal models use single instance
+					PoolSize:         1,
 					ModelType:        "multimodal",
 					Capabilities:     caps,
 					Variants:         []string{"default"},
@@ -351,11 +284,11 @@ func (r *EmbedderRegistry) discoverModels() error {
 
 			if hasQuantized {
 				quantizedName := registryFullName + "-i8-qt"
-				if _, exists := r.discovered[quantizedName]; !exists {
-					r.discovered[quantizedName] = &EmbedderModelInfo{
+				if _, exists := r.base.discovered[quantizedName]; !exists {
+					r.base.discovered[quantizedName] = &EmbedderModelInfo{
 						Name:             quantizedName,
 						Path:             modelPath,
-						PoolSize:         1, // Multimodal models use single instance
+						PoolSize:         1,
 						ModelType:        "multimodal",
 						Quantized:        true,
 						Capabilities:     caps,
@@ -372,7 +305,6 @@ func (r *EmbedderRegistry) discoverModels() error {
 			continue
 		}
 
-		// Register each variant (skip already-discovered entries)
 		anyNew := false
 		variantIDs := make([]string, 0, len(variants))
 		for v := range variants {
@@ -383,7 +315,6 @@ func (r *EmbedderRegistry) discoverModels() error {
 			}
 		}
 
-		// Collect non-multimodal capabilities from manifest (e.g., "sparse")
 		var textCaps []string
 		if dm.Manifest != nil {
 			for _, c := range dm.Manifest.Capabilities {
@@ -399,11 +330,11 @@ func (r *EmbedderRegistry) discoverModels() error {
 				registryName = registryFullName + "-" + variantID
 			}
 
-			if _, exists := r.discovered[registryName]; exists {
+			if _, exists := r.base.discovered[registryName]; exists {
 				continue
 			}
 
-			r.discovered[registryName] = &EmbedderModelInfo{
+			r.base.discovered[registryName] = &EmbedderModelInfo{
 				Name:             registryName,
 				Path:             modelPath,
 				OnnxFilename:     onnxFilename,
@@ -417,237 +348,25 @@ func (r *EmbedderRegistry) discoverModels() error {
 		}
 
 		if anyNew {
-			r.logger.Info("Discovered embedder model (not loaded)",
+			r.base.logger.Info("Discovered embedder model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath),
 				zap.Strings("variants", variantIDs))
 		}
 	}
-	discoveredCount := len(r.discovered)
-	r.mu.Unlock()
+	discoveredCount := len(r.base.discovered)
+	r.base.mu.Unlock()
 
-	r.logger.Info("Embedder model discovery complete",
+	r.base.logger.Info("Embedder model discovery complete",
 		zap.Int("models_discovered", discoveredCount),
-		zap.Duration("keep_alive", r.keepAlive),
-		zap.Uint64("max_loaded_models", r.maxLoadedModels))
+		zap.Duration("keep_alive", r.base.keepAlive))
 
 	return nil
 }
 
-// Get returns an embedder by model name, loading it if necessary.
-// DEPRECATED: Use Acquire() instead for long-running operations to prevent
-// the model from being evicted during use. Get() does not track usage and
-// the returned embedder may be closed if the cache evicts it.
-func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
-	// Check if model is pinned (never evicted)
-	r.pinnedMu.RLock()
-	if embedder, ok := r.pinned[modelName]; ok {
-		r.pinnedMu.RUnlock()
-		r.logger.Debug("Embedder pinned hit",
-			zap.String("model", modelName))
-		return embedder, nil
-	}
-	r.pinnedMu.RUnlock()
-
-	// Check if already loaded in cache
-	if item := r.cache.Get(modelName); item != nil {
-		r.logger.Debug("Embedder cache hit",
-			zap.String("model", modelName))
-		return item.Value(), nil
-	}
-
-	// Check if model is known
-	r.mu.RLock()
-	info, known := r.discovered[modelName]
-	r.mu.RUnlock()
-
-	if !known {
-		// Model not yet discovered — rescan disk for newly pulled models
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, known = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !known {
-			return nil, fmt.Errorf("embedder model not found: %s", modelName)
-		}
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	// Load the model (with synchronization to prevent double-loading)
-	return r.loadModel(info)
-}
-
-// Acquire returns an embedder by model name and increments its reference count.
-// The caller MUST call Release() when done to allow the model to be evicted.
-// This prevents the model from being closed while in use.
-func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
-	// Pinned models are never evicted — no ref-counting needed.
-	r.pinnedMu.RLock()
-	if embedder, ok := r.pinned[modelName]; ok {
-		r.pinnedMu.RUnlock()
-		return embedder, nil
-	}
-	r.pinnedMu.RUnlock()
-
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !ok {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("embedder model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	r.refs.incRef(refKey)
-
-	embedder, err := r.loadModel(info)
-	if err != nil {
-		r.refs.rollbackRef(refKey)
-		return nil, err
-	}
-
-	r.logger.Debug("Acquired embedder model",
-		zap.String("model", refKey))
-
-	return embedder, nil
-}
-
-// Release decrements the reference count for a model.
-// Must be called after Acquire() when the caller is done using the embedder.
-func (r *EmbedderRegistry) Release(modelName string) {
-	r.mu.RLock()
-	refKey := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
-
-	count, orphans := r.refs.releaseRef(refKey)
-
-	r.logger.Debug("Released embedder model",
-		zap.String("model", refKey),
-		zap.Int("refCount", count))
-
-	closeOrphans(r.logger, "embedder", refKey, orphans)
-}
-
-// AcquireSparse returns a sparse embedder by model name and increments its reference count.
-// Only valid for models with the "sparse" capability.
-// The caller MUST call Release() when done to allow the model to be evicted.
-func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, known := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !known {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, known = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !known {
-			return nil, fmt.Errorf("embedder model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	if !slices.Contains(info.Capabilities, string(modelregistry.CapabilitySparse)) {
-		return nil, fmt.Errorf("model %s does not have sparse capability", modelName)
-	}
-
-	r.refs.incRef(refKey)
-
-	embedder, err := r.loadSparseModel(info)
-	if err != nil {
-		r.refs.rollbackRef(refKey)
-		return nil, err
-	}
-
-	r.logger.Debug("Acquired sparse embedder model",
-		zap.String("model", refKey))
-
-	return embedder, nil
-}
-
-// loadSparseModel loads a sparse model on demand
-func (r *EmbedderRegistry) loadSparseModel(info *EmbedderModelInfo) (embeddings.SparseEmbedder, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check sparse cache after acquiring lock
-	if item := r.sparseCache.Get(info.Name); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading sparse embedder model on demand",
-		zap.String("model", info.Name),
-		zap.String("path", info.Path),
-		zap.Int("pool_size", info.PoolSize))
-
-	cfg := termembeddings.PooledSparseEmbedderConfig{
-		ModelPath:     info.Path,
-		PoolSize:      info.PoolSize,
-		ModelBackends: info.RequiredBackends,
-		Logger:        r.logger.Named(info.Name),
-	}
-	embedder, backendUsed, err := termembeddings.NewPooledSparseEmbedder(cfg, r.sessionManager)
-	if err != nil {
-		r.logger.Error("Failed to load sparse embedder model",
-			zap.String("model", info.Name),
-			zap.Error(err))
-		return nil, fmt.Errorf("loading sparse embedder model %s: %w", info.Name, err)
-	}
-
-	r.sparseCache.Set(info.Name, embedder, ttlcache.DefaultTTL)
-
-	r.logger.Info("Successfully loaded sparse embedder model",
-		zap.String("model", info.Name),
-		zap.String("backend", string(backendUsed)),
-		zap.Duration("keep_alive", r.keepAlive))
-
-	return embedder, nil
-}
-
-// loadModel loads a model on demand
+// loadModel loads a dense embedder model on demand. Called by BaseRegistry.loadModel.
 func (r *EmbedderRegistry) loadModel(info *EmbedderModelInfo) (embeddings.Embedder, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check cache after acquiring lock
-	if item := r.cache.Get(info.Name); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading embedder model on demand",
+	r.base.logger.Info("Loading embedder model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path),
 		zap.String("model_type", info.ModelType),
@@ -660,52 +379,151 @@ func (r *EmbedderRegistry) loadModel(info *EmbedderModelInfo) (embeddings.Embedd
 		Normalize:     true,
 		Quantized:     info.Quantized,
 		ModelBackends: info.RequiredBackends,
-		Logger:        r.logger.Named(info.Name),
+		Logger:        r.base.logger.Named(info.Name),
 	}
 	embedder, backendUsed, err := termembeddings.NewPooledEmbedder(cfg, r.sessionManager)
-
 	if err != nil {
-		r.logger.Error("Failed to load embedder model",
-			zap.String("model", info.Name),
-			zap.String("model_type", info.ModelType),
-			zap.Error(err))
 		return nil, fmt.Errorf("loading embedder model %s: %w", info.Name, err)
 	}
 
-	// Store in cache with TTL
-	r.cache.Set(info.Name, embedder, ttlcache.DefaultTTL)
-
-	r.logger.Info("Successfully loaded embedder model",
+	r.base.logger.Info("Successfully loaded embedder model",
 		zap.String("model", info.Name),
 		zap.String("model_type", info.ModelType),
 		zap.String("backend", string(backendUsed)),
-		zap.Duration("keep_alive", r.keepAlive))
+		zap.Duration("keep_alive", r.base.keepAlive))
+
+	return embedder, nil
+}
+
+// Get returns an embedder by model name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations.
+func (r *EmbedderRegistry) Get(modelName string) (embeddings.Embedder, error) {
+	// Check pinned first
+	r.pinnedMu.RLock()
+	if embedder, ok := r.pinned[modelName]; ok {
+		r.pinnedMu.RUnlock()
+		return embedder, nil
+	}
+	r.pinnedMu.RUnlock()
+
+	return r.base.get(modelName)
+}
+
+// Acquire returns an embedder by model name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+func (r *EmbedderRegistry) Acquire(modelName string) (embeddings.Embedder, error) {
+	// Pinned models are never evicted — no ref-counting needed.
+	r.pinnedMu.RLock()
+	if embedder, ok := r.pinned[modelName]; ok {
+		r.pinnedMu.RUnlock()
+		return embedder, nil
+	}
+	r.pinnedMu.RUnlock()
+
+	return r.base.acquire(modelName)
+}
+
+// Release decrements the reference count for a model.
+func (r *EmbedderRegistry) Release(modelName string) {
+	r.base.release(modelName)
+}
+
+// AcquireSparse returns a sparse embedder by model name and increments its reference count.
+// Only valid for models with the "sparse" capability.
+func (r *EmbedderRegistry) AcquireSparse(modelName string) (embeddings.SparseEmbedder, error) {
+	// Resolve variant inline so the ref key matches the cache key.
+	r.base.mu.RLock()
+	info, known := r.base.discovered[modelName]
+	refKey := modelName
+	r.base.mu.RUnlock()
+
+	if !known {
+		if err := r.discoverModels(); err != nil {
+			r.base.logger.Debug("Embedder re-discovery failed", zap.Error(err))
+		}
+		r.base.mu.RLock()
+		var resolved string
+		info, resolved, known = resolveVariant(modelName, r.base.discovered)
+		r.base.mu.RUnlock()
+		if !known {
+			return nil, fmt.Errorf("embedder model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.base.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	if !slices.Contains(info.Capabilities, string(modelregistry.CapabilitySparse)) {
+		return nil, fmt.Errorf("model %s does not have sparse capability", modelName)
+	}
+
+	r.base.refs.incRef(refKey)
+
+	embedder, err := r.loadSparseModel(info)
+	if err != nil {
+		r.base.refs.rollbackRef(refKey)
+		return nil, err
+	}
+
+	r.base.logger.Debug("Acquired sparse embedder model",
+		zap.String("model", refKey))
+
+	return embedder, nil
+}
+
+// loadSparseModel loads a sparse model on demand.
+// Note: sparse models are managed by a separate cache and are NOT tracked by
+// the global ModelBudget. They have their own TTL and capacity limits.
+func (r *EmbedderRegistry) loadSparseModel(info *EmbedderModelInfo) (embeddings.SparseEmbedder, error) {
+	r.base.mu.Lock()
+	defer r.base.mu.Unlock()
+
+	// Double-check sparse cache after acquiring lock
+	if item := r.sparseCache.Get(info.Name); item != nil {
+		return item.Value(), nil
+	}
+
+	r.base.logger.Info("Loading sparse embedder model on demand",
+		zap.String("model", info.Name),
+		zap.String("path", info.Path),
+		zap.Int("pool_size", info.PoolSize))
+
+	cfg := termembeddings.PooledSparseEmbedderConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: info.RequiredBackends,
+		Logger:        r.base.logger.Named(info.Name),
+	}
+	embedder, backendUsed, err := termembeddings.NewPooledSparseEmbedder(cfg, r.sessionManager)
+	if err != nil {
+		return nil, fmt.Errorf("loading sparse embedder model %s: %w", info.Name, err)
+	}
+
+	r.sparseCache.Set(info.Name, embedder, ttlcache.DefaultTTL)
+
+	r.base.logger.Info("Successfully loaded sparse embedder model",
+		zap.String("model", info.Name),
+		zap.String("backend", string(backendUsed)),
+		zap.Duration("keep_alive", r.base.keepAlive))
 
 	return embedder, nil
 }
 
 // Touch refreshes the TTL for a model (call after each use to implement Ollama-style keep-alive)
 func (r *EmbedderRegistry) Touch(modelName string) {
-	if item := r.cache.Get(modelName); item != nil {
-		// Get refreshes TTL automatically
-		r.logger.Debug("Refreshed model keep-alive",
+	if item := r.base.cache.Get(modelName); item != nil {
+		r.base.logger.Debug("Refreshed model keep-alive",
 			zap.String("model", modelName))
 	}
 }
 
 // List returns all available model names (discovered + pinned built-ins).
-// Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) List() []string {
-	_ = r.discoverModels()
+	names := r.base.list()
 
-	r.mu.RLock()
-	names := make([]string, 0, len(r.discovered))
-	for name := range r.discovered {
-		names = append(names, name)
-	}
-	r.mu.RUnlock()
-
-	// Include pinned (built-in) models
 	r.pinnedMu.RLock()
 	for name := range r.pinned {
 		names = append(names, name)
@@ -716,19 +534,17 @@ func (r *EmbedderRegistry) List() []string {
 }
 
 // ListWithCapabilities returns a map of model names to their capabilities.
-// Re-scans the models directory to pick up newly pulled models.
 func (r *EmbedderRegistry) ListWithCapabilities() map[string][]string {
 	_ = r.discoverModels()
 
 	result := make(map[string][]string)
 
-	r.mu.RLock()
-	for name, info := range r.discovered {
+	r.base.mu.RLock()
+	for name, info := range r.base.discovered {
 		result[name] = info.Capabilities
 	}
-	r.mu.RUnlock()
+	r.base.mu.RUnlock()
 
-	// Include pinned (built-in) models with no capabilities
 	r.pinnedMu.RLock()
 	for name := range r.pinned {
 		if _, exists := result[name]; !exists {
@@ -742,22 +558,15 @@ func (r *EmbedderRegistry) ListWithCapabilities() map[string][]string {
 
 // ListLoaded returns currently loaded model names (from cache and pinned)
 func (r *EmbedderRegistry) ListLoaded() []string {
-	// Get cache keys
-	keys := r.cache.Keys()
+	keys := r.base.listLoaded()
 
-	// Add pinned models
 	r.pinnedMu.RLock()
-	pinnedNames := make([]string, 0, len(r.pinned))
 	for name := range r.pinned {
-		pinnedNames = append(pinnedNames, name)
+		keys = append(keys, name)
 	}
 	r.pinnedMu.RUnlock()
 
-	// Combine (pinned first, then cache)
-	names := make([]string, 0, len(keys)+len(pinnedNames))
-	names = append(names, pinnedNames...)
-	names = append(names, keys...)
-	return names
+	return keys
 }
 
 // IsLoaded checks if a model is currently loaded (in cache or pinned)
@@ -765,55 +574,44 @@ func (r *EmbedderRegistry) IsLoaded(modelName string) bool {
 	r.pinnedMu.RLock()
 	isPinned := r.pinned[modelName] != nil
 	r.pinnedMu.RUnlock()
-	return isPinned || r.cache.Has(modelName)
+	return isPinned || r.base.isLoaded(modelName)
 }
 
 // Unload explicitly unloads a model (triggers eviction callback)
-// Note: Pinned models cannot be unloaded via this method.
 func (r *EmbedderRegistry) Unload(modelName string) {
 	r.pinnedMu.RLock()
 	isPinned := r.pinned[modelName] != nil
 	r.pinnedMu.RUnlock()
 
 	if isPinned {
-		r.logger.Debug("Cannot unload pinned model",
+		r.base.logger.Debug("Cannot unload pinned model",
 			zap.String("model", modelName))
 		return
 	}
-	r.cache.Delete(modelName)
+	r.base.cache.Delete(modelName)
 }
 
-// Pin marks a model as pinned (never evicted). If the model is already loaded
-// in the cache, it is moved to the pinned map. If not loaded, it will be loaded
-// first. Pinned models survive TTL expiration and LRU eviction.
+// Pin marks a model as pinned (never evicted).
 func (r *EmbedderRegistry) Pin(modelName string) error {
-	// Check if already pinned
 	r.pinnedMu.RLock()
 	if r.pinned[modelName] != nil {
 		r.pinnedMu.RUnlock()
-		r.logger.Debug("Model already pinned",
-			zap.String("model", modelName))
 		return nil
 	}
 	r.pinnedMu.RUnlock()
 
-	// Get the model (may load it if not already loaded)
 	embedder, err := r.Get(modelName)
 	if err != nil {
 		return fmt.Errorf("pin model %s: %w", modelName, err)
 	}
 
-	// Move from cache to pinned map
 	r.pinnedMu.Lock()
 	r.pinned[modelName] = embedder
 	r.pinnedMu.Unlock()
 
-	// Remove from cache (without triggering close callback - we moved it)
-	// We use DeleteAll pattern with a filter, but simpler is to just delete
-	// and the eviction callback checks if it's now in pinned
-	r.cache.Delete(modelName)
+	r.base.cache.Delete(modelName)
 
-	r.logger.Info("Pinned model (will not be evicted)",
+	r.base.logger.Info("Pinned model (will not be evicted)",
 		zap.String("model", modelName))
 
 	return nil
@@ -826,118 +624,21 @@ func (r *EmbedderRegistry) IsPinned(modelName string) bool {
 	return r.pinned[modelName] != nil
 }
 
-// Preload loads specified models at startup to avoid first-request latency
-func (r *EmbedderRegistry) Preload(modelNames []string) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-
-	r.logger.Info("Preloading models", zap.Strings("models", modelNames))
-
-	var loaded, failed int
-	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
-			r.logger.Warn("Failed to preload model",
-				zap.String("model", name),
-				zap.Error(err))
-			failed++
-		} else {
-			r.logger.Info("Preloaded model",
-				zap.String("model", name))
-			loaded++
-		}
-	}
-
-	r.logger.Info("Preloading complete",
-		zap.Int("loaded", loaded),
-		zap.Int("failed", failed))
-
-	if failed > 0 && loaded == 0 {
-		return fmt.Errorf("all %d models failed to preload", failed)
-	}
-
-	return nil
-}
-
-// Close stops the cache and unloads all models (including pinned)
-func (r *EmbedderRegistry) Close() error {
-	r.logger.Info("Closing lazy embedder registry")
-
-	// Stop caches first to prevent new evictions
-	r.cache.Stop()
-	r.sparseCache.Stop()
-
-	// Close all cached models synchronously (don't rely on async eviction callbacks)
-	for _, key := range r.cache.Keys() {
-		if item := r.cache.Get(key); item != nil {
-			embedder := item.Value()
-			r.logger.Debug("Closing cached embedder",
-				zap.String("model", key))
-			if closer, ok := embedder.(interface{ Close() error }); ok {
-				if err := closer.Close(); err != nil {
-					r.logger.Warn("Error closing embedder",
-						zap.String("model", key),
-						zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Close all cached sparse models
-	for _, key := range r.sparseCache.Keys() {
-		if item := r.sparseCache.Get(key); item != nil {
-			embedder := item.Value()
-			r.logger.Debug("Closing cached sparse embedder",
-				zap.String("model", key))
-			if closer, ok := embedder.(interface{ Close() error }); ok {
-				if err := closer.Close(); err != nil {
-					r.logger.Warn("Error closing sparse embedder",
-						zap.String("model", key),
-						zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Clear the caches (eviction callbacks won't close since reason is EvictionReasonDeleted)
-	r.cache.DeleteAll()
-	r.sparseCache.DeleteAll()
-
-	logDrainErrors(r.logger, "embedder", r.refs.drainOrphans())
-
-	// Close all pinned models
-	r.pinnedMu.Lock()
-	for name, embedder := range r.pinned {
-		r.logger.Debug("Closing pinned model",
-			zap.String("model", name))
-		if closer, ok := embedder.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				r.logger.Warn("Error closing pinned embedder",
-					zap.String("model", name),
-					zap.Error(err))
-			}
-		}
-	}
-	r.pinned = make(map[string]embeddings.Embedder)
-	r.pinnedMu.Unlock()
-
-	return nil
-}
+func (r *EmbedderRegistry) Preload(names []string) error { return r.base.preload(names) }
 
 // HasCapability checks if a model has a specific capability (e.g., image, audio).
 func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregistry.Capability) bool {
-	r.mu.RLock()
-	info, known := r.discovered[modelName]
-	r.mu.RUnlock()
+	r.base.mu.RLock()
+	info, known := r.base.discovered[modelName]
+	r.base.mu.RUnlock()
 
 	if !known {
-		// Model not yet discovered — rescan disk for newly pulled models
 		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Embedder re-discovery failed", zap.Error(err))
+			r.base.logger.Debug("Embedder re-discovery failed", zap.Error(err))
 		}
-		r.mu.RLock()
-		info, known = r.discovered[modelName]
-		r.mu.RUnlock()
+		r.base.mu.RLock()
+		info, known = r.base.discovered[modelName]
+		r.base.mu.RUnlock()
 		if !known {
 			return false
 		}
@@ -948,7 +649,7 @@ func (r *EmbedderRegistry) HasCapability(modelName string, capability modelregis
 
 // Stats returns cache statistics
 func (r *EmbedderRegistry) Stats() map[string]any {
-	metrics := r.cache.Metrics()
+	metrics := r.base.cache.Metrics()
 
 	r.pinnedMu.RLock()
 	pinnedCount := len(r.pinned)
@@ -959,15 +660,57 @@ func (r *EmbedderRegistry) Stats() map[string]any {
 	r.pinnedMu.RUnlock()
 
 	return map[string]any{
-		"discovered":    len(r.discovered),
-		"loaded":        r.cache.Len() + pinnedCount,
+		"discovered":    len(r.base.discovered),
+		"loaded":        r.base.cache.Len() + pinnedCount,
 		"pinned":        pinnedCount,
 		"pinned_models": pinnedNames,
-		"cached":        r.cache.Len(),
+		"cached":        r.base.cache.Len(),
 		"hits":          metrics.Hits,
 		"misses":        metrics.Misses,
-		"keep_alive":    r.keepAlive.String(),
-		"max_loaded":    r.maxLoadedModels,
+		"keep_alive":    r.base.keepAlive.String(),
 		"loaded_models": r.ListLoaded(),
 	}
+}
+
+// Close stops the cache and unloads all models (including pinned)
+func (r *EmbedderRegistry) Close() error {
+	// Close base registry (dense embedders)
+	if err := r.base.close(); err != nil {
+		return err
+	}
+
+	// Stop and close sparse cache
+	r.sparseCache.Stop()
+	for _, key := range r.sparseCache.Keys() {
+		if item := r.sparseCache.Get(key); item != nil {
+			r.base.logger.Debug("Closing cached sparse embedder",
+				zap.String("model", key))
+			if closer, ok := item.Value().(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil {
+					r.base.logger.Warn("Error closing sparse embedder",
+						zap.String("model", key),
+						zap.Error(err))
+				}
+			}
+		}
+	}
+	r.sparseCache.DeleteAll()
+
+	// Close all pinned models
+	r.pinnedMu.Lock()
+	for name, embedder := range r.pinned {
+		r.base.logger.Debug("Closing pinned model",
+			zap.String("model", name))
+		if closer, ok := embedder.(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				r.base.logger.Warn("Error closing pinned embedder",
+					zap.String("model", name),
+					zap.Error(err))
+			}
+		}
+	}
+	r.pinned = make(map[string]embeddings.Embedder)
+	r.pinnedMu.Unlock()
+
+	return nil
 }

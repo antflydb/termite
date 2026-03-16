@@ -5,22 +5,26 @@
 
 ML inference service for embeddings, chunking, reranking, classification, NER, OCR, transcription, text generation, and more — with two-tier caching (memory + singleflight).
 
+Termite is the companion ML service for [Antfly](https://github.com/antflydb/antfly), the distributed search engine. It runs automatically in Antfly's swarm mode and can also be used standalone. If you're new, the [Antfly quickstart](https://antfly.io/docs/guides/quickstart) is the fastest way to see everything working together.
+
 **[Documentation](https://antfly.io/termite)** | **[Discord](https://discord.gg/zrdjguy84P)**
 
 ## Features
 
-- **Embeddings** — Dense and sparse vector generation, multimodal (text, images, audio)
-- **Chunking** — Semantic text segmentation
-- **Reranking** — Cross-encoder relevance scoring
-- **Classification** — Zero-shot text classification (NLI-based, 100+ languages)
-- **Recognition (NER)** — Named entity recognition, zero-shot labels, relation extraction
-- **Reading (OCR)** — Document understanding, OCR, visual question answering
-- **Transcription** — Speech-to-text (Whisper, Wav2Vec2)
-- **Extraction** — Schema-based structured data extraction
-- **Rewriting** — Paraphrasing, question generation (Seq2Seq)
-- **Generation** — Text generation with tool calling (OpenAI-compatible)
+- **Embeddings** — dense and sparse vectors, multimodal (text, images, audio)
+- **Chunking** — semantic text segmentation
+- **Reranking** — cross-encoder relevance scoring
+- **Classification** — zero-shot text classification (NLI-based, 100+ languages)
+- **Recognition (NER)** — named entity recognition, zero-shot labels, relation extraction
+- **Reading (OCR)** — document understanding, OCR, visual question answering
+- **Transcription** — speech-to-text (Whisper, Wav2Vec2)
+- **Extraction** — schema-based structured data extraction
+- **Rewriting** — paraphrasing, question generation (Seq2Seq)
+- **Generation** — text generation with tool calling (OpenAI-compatible)
 - **Multiple backends** — ONNX Runtime, XLA (TPU/CUDA), pure Go
-- **Kubernetes operator** — Autoscaling with TermitePool and TermiteRoute CRDs
+- **SIMD / SME acceleration** — vector math uses hardware intrinsics via [go-highway](https://github.com/ajroetker/go-highway) on x86 and ARM
+- **Native Go ML** — XLA backend powered by [GoMLX](https://github.com/gomlx/gomlx) and [GoLLMX](https://github.com/gomlx/gollmx), working toward making native Go ML/LLM inference a reality
+- **Kubernetes operator** — autoscaling with TermitePool and TermiteRoute CRDs
 
 ## Running
 
@@ -31,7 +35,7 @@ go run ./cmd/termite run
 
 ## Inference Backends
 
-Termite supports multiple inference backends selected via build tags. The **omni** build includes all backends for maximum flexibility.
+Termite supports multiple inference backends, selected via build tags. The **omni** build includes everything so you can pick at runtime.
 
 | Build | Tags | Description | Use Case |
 |-------|------|-------------|----------|
@@ -42,7 +46,7 @@ Termite supports multiple inference backends selected via build tags. The **omni
 
 ### Omni Build (Recommended)
 
-The omni build includes both ONNX and XLA backends, enabling runtime backend selection without recompilation.
+Includes both ONNX and XLA backends — pick which one to use at runtime without recompiling.
 
 ```bash
 # Download dependencies for all platforms
@@ -98,7 +102,7 @@ go build -tags="xla,XLA" -o termite ./pkg/termite/cmd
 
 **Installing Additional PJRT Plugins:**
 
-The omni and XLA builds bundle a CPU PJRT plugin that's auto-discovered from `lib/` next to the binary. To use TPU or CUDA acceleration, install the appropriate plugin:
+The omni and XLA builds bundle a CPU PJRT plugin that's auto-discovered from `lib/` next to the binary. For TPU or CUDA, install the right plugin:
 
 ```bash
 # Install TPU plugin (for Google Cloud TPU)
@@ -229,7 +233,7 @@ Models auto-discovered from `chunker_models_dir`, `embedder_models_dir`, `rerank
 
 ### Model Variants
 
-Models support multiple precision variants for different performance/accuracy tradeoffs:
+Models come in multiple precision variants, trading off size and speed for accuracy:
 
 | Variant | File | Description |
 |---------|------|-------------|
@@ -327,7 +331,7 @@ log:
 
 ### Backend Priority
 
-The `backend_priority` setting controls which inference backends Termite tries, in order. Each entry can be:
+The `backend_priority` setting controls which backends Termite tries, in order. Each entry can be:
 
 - **Backend only**: `onnx`, `xla`, `go` - uses auto device detection
 - **Backend with device**: `onnx:cuda`, `xla:tpu`, `onnx:coreml` - explicit device
@@ -361,7 +365,7 @@ Deploy on GKE with TPU support using the Termite Operator.
 
 ### Custom Resources
 
-**TermitePool**: Manages a pool of Termite replicas with autoscaling.
+**TermitePool**: manages a pool of Termite replicas with autoscaling.
 
 ```yaml
 apiVersion: termite.antfly.io/v1alpha1
@@ -395,7 +399,7 @@ spec:
         target: "50"
 ```
 
-**TermiteRoute**: Routes traffic to pools based on model or endpoint.
+**TermiteRoute**: routes traffic to pools based on model or endpoint.
 
 ### Running the Operator
 
@@ -407,11 +411,11 @@ go build -o termite-operator ./cmd/termite-operator
 make generate
 ```
 
-See `pkg/operator/` for CRD definitions and controller implementation.
+See `pkg/operator/` for CRD definitions and controller implementation. The [model registry protocol](specs/tla/model-registry-protocol.tla) is formally specified in TLA+.
 
 ## Community
 
-Join our [Discord](https://discord.gg/zrdjguy84P) for support, discussion, and updates.
+[Discord](https://discord.gg/zrdjguy84P) for questions, discussion, and updates.
 
 ## License
 

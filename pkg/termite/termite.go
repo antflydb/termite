@@ -189,10 +189,13 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 		}
 	}
 
+	// Create global model budget for cross-registry LRU eviction
+	budget := NewModelBudget(uint64(config.MaxLoadedModels), zl.Named("budget"))
+
 	// Initialize chunker with optional model directory support
 	// If models_dir is set in config, Termite will discover and load chunker models
 	// If not set, Termite falls back to semantic-only chunking
-	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, config.PoolSize, keepAlive, uint64(config.MaxLoadedModels), zl.Named("chunker"))
+	cachedChunker, err := NewCachedChunker(chunkerModelsDir, sessionManager, config.PoolSize, keepAlive, uint64(config.MaxLoadedModels), budget, zl.Named("chunker"))
 	if err != nil {
 		zl.Fatal("Failed to initialize chunker", zap.Error(err))
 	}
@@ -207,6 +210,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			PoolSize:        config.PoolSize,
 		},
 		sessionManager,
+		budget,
 		zl.Named("embedder"),
 	)
 	if err != nil {
@@ -255,6 +259,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 			PoolSize:        config.PoolSize,
 		},
 		sessionManager,
+		budget,
 		zl.Named("reranker"),
 	)
 	if err != nil {
@@ -280,6 +285,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
 			},
 			sessionManager,
+			budget,
 			zl.Named("generator"),
 		)
 		if err != nil {
@@ -311,6 +317,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
+			budget,
 			zl.Named("ner"),
 		)
 		if err != nil {
@@ -341,6 +348,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				MaxLoadedModels: uint64(config.MaxLoadedModels),
 			},
 			sessionManager,
+			budget,
 			zl.Named("seq2seq"),
 		)
 		if err != nil {
@@ -372,6 +380,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
+			budget,
 			zl.Named("classifier"),
 		)
 		if err != nil {
@@ -399,6 +408,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
+			budget,
 			zl.Named("reader"),
 		)
 		if err != nil {
@@ -426,6 +436,7 @@ func RunAsTermite(ctx context.Context, zl *zap.Logger, config Config, readyC cha
 				PoolSize:        config.PoolSize,
 			},
 			sessionManager,
+			budget,
 			zl.Named("transcriber"),
 		)
 		if err != nil {

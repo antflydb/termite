@@ -39,7 +39,7 @@ func TestRerankerRegistryLoading(t *testing.T) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = registry.Close() }()
 
@@ -66,7 +66,7 @@ func TestRerankerRegistryRerank(t *testing.T) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = registry.Close() }()
 
@@ -116,7 +116,7 @@ func TestEmbedderRegistryLoading(t *testing.T) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = registry.Close() }()
 
@@ -143,7 +143,7 @@ func TestEmbedderRegistryEmbed(t *testing.T) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = registry.Close() }()
 
@@ -213,7 +213,7 @@ func BenchmarkRerankerRegistry(b *testing.B) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewRerankerRegistry(termite.RerankerConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(b, err)
 	defer func() { _ = registry.Close() }()
 
@@ -258,7 +258,7 @@ func BenchmarkEmbedderRegistry(b *testing.B) {
 	sessionManager := backends.NewSessionManager()
 	defer func() { _ = sessionManager.Close() }()
 
-	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, zap.NewNop())
+	registry, err := termite.NewEmbedderRegistry(termite.EmbedderConfig{ModelsDir: modelsDir, MaxLoadedModels: 1}, sessionManager, nil, zap.NewNop())
 	require.NoError(b, err)
 	defer func() { _ = registry.Close() }()
 

@@ -20,14 +20,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Model is the interface for seq2seq text generation models.
@@ -140,13 +139,10 @@ type PooledSeq2SeqConfig struct {
 
 // PooledSeq2Seq manages multiple Seq2SeqPipeline instances for concurrent seq2seq generation.
 type PooledSeq2Seq struct {
-	pipelines    []*pipelines.Seq2SeqPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	config       Config
-	logger       *zap.Logger
-	poolSize     int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[*pipelines.Seq2SeqPipeline]
+	config      Config
+	logger      *zap.Logger
+	backendType backends.BackendType
 }
 
 // NewPooledSeq2Seq creates a new pooled seq2seq model.
@@ -163,12 +159,10 @@ func NewPooledSeq2Seq(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(),
-			// Cap at 2 for seq2seq models (very memory intensive)
-			2)
+		poolSize = 1
 	}
 
 	// Load seq2seq configuration
@@ -204,46 +198,46 @@ func NewPooledSeq2Seq(
 		RepetitionPenalty: 1.0,
 	}
 
-	// Create N pipelines using LoadSeq2SeqPipeline
-	pipelinesList := make([]*pipelines.Seq2SeqPipeline, poolSize)
+	// Track the backend type from the factory
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		// Load pipeline (includes model, tokenizer, and generator)
-		pipeline, bt, err := pipelines.LoadSeq2SeqPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			pipelines.WithSeq2SeqGenerationConfig(genConfig),
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	lazyPool, firstPipeline, err := pool.New(pool.Config[*pipelines.Seq2SeqPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.Seq2SeqPipeline, error) {
+			pipeline, bt, err := pipelines.LoadSeq2SeqPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				pipelines.WithSeq2SeqGenerationConfig(genConfig),
+			)
+			if err != nil {
+				return nil, err
 			}
-			logger.Error("Failed to create pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating pipeline %d: %w", i, err)
-		}
-
-		pipelinesList[i] = pipeline
-		backendUsed = bt
-		logger.Debug("Created seq2seq pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(p *pipelines.Seq2SeqPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("creating seq2seq pool: %w", err)
 	}
+
+	_ = firstPipeline // backend type captured via closure
 
 	logger.Info("Successfully created pooled seq2seq pipelines",
 		zap.Int("count", poolSize),
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledSeq2Seq{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        lazyPool,
 		config:      *seq2seqConfig,
 		logger:      logger,
-		poolSize:    poolSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
@@ -254,7 +248,7 @@ func (p *PooledSeq2Seq) BackendType() backends.BackendType {
 }
 
 // Generate runs the seq2seq model on the given inputs.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool semaphore to limit concurrent pipeline access.
 func (p *PooledSeq2Seq) Generate(ctx context.Context, inputs []string) (*GeneratedOutput, error) {
 	if len(inputs) == 0 {
 		return &GeneratedOutput{
@@ -263,15 +257,12 @@ func (p *PooledSeq2Seq) Generate(ctx context.Context, inputs []string) (*Generat
 		}, nil
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pipeline from the pool (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Using pipeline for seq2seq generation",
 		zap.Int("pipelineIndex", idx),
@@ -345,19 +336,7 @@ func (p *PooledSeq2Seq) Config() Config {
 
 // Close releases resources.
 func (p *PooledSeq2Seq) Close() error {
-	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }
 
 // LoadSeq2SeqConfig loads the seq2seq configuration from the model directory.

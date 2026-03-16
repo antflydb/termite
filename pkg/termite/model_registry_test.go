@@ -53,17 +53,17 @@ func TestRegistryEvictionRespectsRefcount(t *testing.T) {
 	reg, err := NewRerankerRegistry(RerankerConfig{
 		ModelsDir: dir,
 		KeepAlive: 20 * time.Millisecond,
-	}, nil, zap.NewNop())
+	}, nil, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = reg.Close() }()
 
 	mock := &closeTrackingReranker{}
 
 	// Simulate an active acquire (refcount > 0)
-	reg.refs.incRef("test")
+	reg.base.refs.incRef("test")
 
 	// Add model to cache — TTL eviction will fire after keepAlive
-	reg.cache.Set("test", mock, reg.keepAlive)
+	reg.base.cache.Set("test", mock, reg.base.keepAlive)
 
 	// Wait for TTL eviction
 	time.Sleep(200 * time.Millisecond)
@@ -73,9 +73,9 @@ func TestRegistryEvictionRespectsRefcount(t *testing.T) {
 		"model must not be closed while refcount > 0")
 
 	// Evicted model must be tracked in evictedHandles
-	reg.refs.mu.Lock()
-	orphanCount := len(reg.refs.evictedHandles["test"])
-	reg.refs.mu.Unlock()
+	reg.base.refs.mu.Lock()
+	orphanCount := len(reg.base.refs.evictedHandles["test"])
+	reg.base.refs.mu.Unlock()
 	assert.Greater(t, orphanCount, 0,
 		"evicted model must be tracked in evictedHandles")
 
@@ -93,7 +93,7 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 	reg, err := NewRerankerRegistry(RerankerConfig{
 		ModelsDir: dir,
 		KeepAlive: 10 * time.Millisecond,
-	}, nil, zap.NewNop())
+	}, nil, nil, zap.NewNop())
 	require.NoError(t, err)
 	defer func() { _ = reg.Close() }()
 
@@ -104,11 +104,11 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 	}
 
 	// Simulate an active acquire (refcount > 0)
-	reg.refs.incRef("test")
+	reg.base.refs.incRef("test")
 
 	// Simulate multiple evictions: each adds a model to cache, waits for eviction
 	for i := range evictions {
-		reg.cache.Set("test", mocks[i], reg.keepAlive)
+		reg.base.cache.Set("test", mocks[i], reg.base.keepAlive)
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -119,9 +119,9 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 	}
 
 	// All should be tracked as orphans
-	reg.refs.mu.Lock()
-	orphanCount := len(reg.refs.evictedHandles["test"])
-	reg.refs.mu.Unlock()
+	reg.base.refs.mu.Lock()
+	orphanCount := len(reg.base.refs.evictedHandles["test"])
+	reg.base.refs.mu.Unlock()
 	assert.Equal(t, evictions, orphanCount,
 		"all evicted models must be tracked in evictedHandles")
 
@@ -134,9 +134,9 @@ func TestRegistryOrphanCleanup(t *testing.T) {
 	}
 
 	// evictedHandles should be empty
-	reg.refs.mu.Lock()
-	remaining := len(reg.refs.evictedHandles["test"])
-	reg.refs.mu.Unlock()
+	reg.base.refs.mu.Lock()
+	remaining := len(reg.base.refs.evictedHandles["test"])
+	reg.base.refs.mu.Unlock()
 	assert.Equal(t, 0, remaining,
 		"evictedHandles must be empty after Release cleanup")
 }

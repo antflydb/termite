@@ -22,14 +22,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"github.com/knights-analytics/ortgenai"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // LoadGenerator loads a text generation model using the available backends.
@@ -139,12 +137,9 @@ var _ StreamingGenerator = (*PooledGenerativeSessionGenerator)(nil)
 // PooledGenerativeSessionGenerator wraps multiple GenerativeSessions for concurrent generation.
 // It adapts the backends.GenerativeSession interface to the generation.Generator interface.
 type PooledGenerativeSessionGenerator struct {
-	sessions    []backends.GenerativeSession
-	sem         *semaphore.Weighted
-	nextSession atomic.Uint64
-	logger      *zap.Logger
-	poolSize    int
-	modelPath   string
+	pool      *pool.LazyPool[backends.GenerativeSession]
+	logger    *zap.Logger
+	modelPath string
 	toolSupport
 }
 
@@ -160,26 +155,26 @@ func NewPooledGenerativeSessionGenerator(
 	}
 
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	logger.Info("Initializing pooled generative session generator",
 		zap.String("modelPath", modelPath),
 		zap.Int("poolSize", poolSize))
 
-	// Create N sessions
-	sessions := make([]backends.GenerativeSession, poolSize)
-	for i := 0; i < poolSize; i++ {
-		session, err := factory.CreateGenerativeSession(modelPath)
-		if err != nil {
-			// Clean up already-created sessions
-			for j := 0; j < i; j++ {
-				sessions[j].Close()
-			}
-			return nil, err
-		}
-		sessions[i] = session
-		logger.Debug("Created generative session", zap.Int("index", i))
+	p, _, err := pool.New(pool.Config[backends.GenerativeSession]{
+		Size: poolSize,
+		Factory: func() (backends.GenerativeSession, error) {
+			return factory.CreateGenerativeSession(modelPath)
+		},
+		Close: func(s backends.GenerativeSession) error {
+			s.Close()
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	logger.Info("Successfully created pooled generative sessions", zap.Int("count", poolSize))
@@ -187,10 +182,8 @@ func NewPooledGenerativeSessionGenerator(
 	toolParser, toolCallFormat := loadToolParserFromConfig(modelPath, logger)
 
 	return &PooledGenerativeSessionGenerator{
-		sessions:  sessions,
-		sem:       semaphore.NewWeighted(int64(poolSize)),
+		pool:      p,
 		logger:    logger,
-		poolSize:  poolSize,
 		modelPath: modelPath,
 		toolSupport: toolSupport{
 			toolParser:     toolParser,
@@ -201,15 +194,12 @@ func NewPooledGenerativeSessionGenerator(
 
 // Generate produces text from the given messages.
 func (p *PooledGenerativeSessionGenerator) Generate(ctx context.Context, messages []Message, opts GenerateOptions) (*GenerateResult, error) {
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a session from the pool
+	session, _, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin session selection
-	idx := int(p.nextSession.Add(1) % uint64(p.poolSize))
-	session := p.sessions[idx]
+	defer p.pool.Release()
 
 	// Convert messages to backend format
 	backendMsgs := toBackendMessages(messages)
@@ -230,14 +220,11 @@ func (p *PooledGenerativeSessionGenerator) Generate(ctx context.Context, message
 
 // GenerateStream produces tokens one at a time via channels.
 func (p *PooledGenerativeSessionGenerator) GenerateStream(ctx context.Context, messages []Message, opts GenerateOptions) (<-chan TokenDelta, <-chan error, error) {
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a session from the pool
+	session, _, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, nil, err
 	}
-
-	// Round-robin session selection
-	idx := int(p.nextSession.Add(1) % uint64(p.poolSize))
-	session := p.sessions[idx]
 
 	// Convert messages to backend format
 	backendMsgs := toBackendMessages(messages)
@@ -246,26 +233,20 @@ func (p *PooledGenerativeSessionGenerator) GenerateStream(ctx context.Context, m
 	// Start streaming
 	backendTokenChan, backendErrChan, err := session.GenerateStream(ctx, backendMsgs, backendOpts)
 	if err != nil {
-		p.sem.Release(1)
+		p.pool.Release()
 		return nil, nil, err
 	}
 
 	tokenChan, errChan := adaptBackendStream(ctx, backendTokenChan, backendErrChan, func() {
-		p.sem.Release(1)
+		p.pool.Release()
 	})
 	return tokenChan, errChan, nil
 }
 
 // Close releases resources.
 func (p *PooledGenerativeSessionGenerator) Close() error {
-	p.logger.Info("Closing pooled generative session generator", zap.Int("poolSize", p.poolSize))
-
-	for _, session := range p.sessions {
-		if session != nil {
-			session.Close()
-		}
-	}
-	return nil
+	p.logger.Info("Closing pooled generative session generator")
+	return p.pool.Close()
 }
 
 // toBackendMessages converts generation.Message to backends.GenerativeMessage.

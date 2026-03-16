@@ -15,17 +15,13 @@
 package termite
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"runtime"
-	"sync"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
 
@@ -45,24 +41,10 @@ type loadedClassifier struct {
 
 // ClassifierRegistry manages zero-shot classification models with lazy loading and TTL-based unloading
 type ClassifierRegistry struct {
+	base           *BaseRegistry[ClassifierModelInfo, *loadedClassifier]
 	modelsDir      string
 	sessionManager *backends.SessionManager
-	logger         *zap.Logger
-
-	// Model discovery (paths only, not loaded)
-	discovered map[string]*ClassifierModelInfo
-	mu         sync.RWMutex
-
-	// Loaded models with TTL cache
-	cache *ttlcache.Cache[string, *loadedClassifier]
-
-	// Reference counting to prevent eviction during active use
-	refs refTracker
-
-	// Configuration
-	keepAlive       time.Duration
-	maxLoadedModels uint64
-	poolSize        int
+	poolSize       int
 }
 
 // ClassifierConfig configures the classifier registry
@@ -77,133 +59,85 @@ type ClassifierConfig struct {
 func NewClassifierRegistry(
 	config ClassifierConfig,
 	sessionManager *backends.SessionManager,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*ClassifierRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	keepAlive := config.KeepAlive
-	if keepAlive == 0 {
-		keepAlive = ttlcache.NoTTL // Never expire
-	}
-
 	poolSize := config.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
-	registry := &ClassifierRegistry{
-		modelsDir:       config.ModelsDir,
-		sessionManager:  sessionManager,
-		logger:          logger,
-		discovered:      make(map[string]*ClassifierModelInfo),
-		refs:            newRefTracker(),
-		keepAlive:       keepAlive,
-		maxLoadedModels: config.MaxLoadedModels,
-		poolSize:        poolSize,
+	r := &ClassifierRegistry{
+		modelsDir:      config.ModelsDir,
+		sessionManager: sessionManager,
+		poolSize:       poolSize,
 	}
 
-	// Configure TTL cache with LRU eviction
-	cacheOpts := []ttlcache.Option[string, *loadedClassifier]{
-		ttlcache.WithTTL[string, *loadedClassifier](keepAlive),
-	}
-
-	if config.MaxLoadedModels > 0 {
-		cacheOpts = append(cacheOpts,
-			ttlcache.WithCapacity[string, *loadedClassifier](config.MaxLoadedModels))
-	}
-
-	registry.cache = ttlcache.New(cacheOpts...)
-
-	// Set up eviction callback to close unloaded models
-	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, *loadedClassifier]) {
-		// Skip closing on manual deletion - Close() handles cleanup synchronously
-		if reason == ttlcache.EvictionReasonDeleted {
-			logger.Debug("Classifier model removed from cache (cleanup handled separately)",
-				zap.String("model", item.Key()))
-			return
-		}
-
-		reasonStr := evictionReasonString(reason)
-
-		// Check if model is still in use (has active references)
-		model := item.Value()
-		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.classifier.Close() }) {
-			logger.Warn("Classifier model evicted while in use, deferring close",
-				zap.String("model", item.Key()),
-				zap.String("reason", reasonStr))
-			return
-		}
-
-		logger.Info("Evicting classifier model from cache",
-			zap.String("model", item.Key()),
-			zap.String("reason", reasonStr))
-		if err := model.classifier.Close(); err != nil {
-			logger.Warn("Error closing evicted classifier model",
-				zap.String("model", item.Key()),
-				zap.Error(err))
-		}
+	r.base = newBaseRegistry(BaseRegistryConfig[ClassifierModelInfo, *loadedClassifier]{
+		ModelType:       "classifier",
+		KeepAlive:       config.KeepAlive,
+		MaxLoadedModels: config.MaxLoadedModels,
+		NameFunc:        func(info *ClassifierModelInfo) string { return info.Name },
+		LoadFn:          r.loadModel,
+		CloseFn:         func(m *loadedClassifier) error { return m.classifier.Close() },
+		DiscoverFn:      func() error { return r.discoverModels() },
+		Budget:          budget,
+		Logger:          logger,
 	})
 
-	// Start cache cleanup goroutine
-	go registry.cache.Start()
-
-	// Discover models (but don't load them)
-	if err := registry.discoverModels(); err != nil {
-		registry.cache.Stop()
+	if err := r.discoverModels(); err != nil {
+		r.base.cache.Stop()
 		return nil, err
 	}
 
 	logger.Info("Lazy classifier registry initialized",
-		zap.Int("models_discovered", len(registry.discovered)),
-		zap.Duration("keep_alive", keepAlive),
+		zap.Int("models_discovered", len(r.base.discovered)),
+		zap.Duration("keep_alive", r.base.keepAlive),
 		zap.Uint64("max_loaded_models", config.MaxLoadedModels))
 
-	return registry, nil
+	return r, nil
 }
 
 // discoverModels finds all classifier models in the models directory without loading them
 func (r *ClassifierRegistry) discoverModels() error {
 	if r.modelsDir == "" {
-		r.logger.Info("No classifier models directory configured")
+		r.base.logger.Info("No classifier models directory configured")
 		return nil
 	}
 
-	// Check if directory exists
 	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
-		r.logger.Warn("Classifier models directory does not exist",
+		r.base.logger.Warn("Classifier models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil
 	}
 
-	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeClassifier, zapLogf(r.logger))
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeClassifier, zapLogf(r.base.logger))
 	if err != nil {
 		return fmt.Errorf("discovering classifier models: %w", err)
 	}
 
-	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
-	r.mu.Lock()
+	r.base.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 
-		// Check if this is a valid classifier model (has zsc_config.json or is NLI model)
 		if !classification.IsClassifierModel(modelPath) {
-			r.logger.Debug("Skipping non-classifier model",
+			r.base.logger.Debug("Skipping non-classifier model",
 				zap.String("dir", registryFullName))
 			continue
 		}
 
-		// Discover all available model variants
 		variants := dm.Variants
 		if len(variants) == 0 {
 			continue
 		}
 
-		// Store each variant for lazy loading (skip already-discovered entries)
 		anyNew := false
 		for variantID, onnxFilename := range variants {
 			registryName := registryFullName
@@ -211,11 +145,11 @@ func (r *ClassifierRegistry) discoverModels() error {
 				registryName = registryFullName + ":" + variantID
 			}
 
-			if _, exists := r.discovered[registryName]; exists {
+			if _, exists := r.base.discovered[registryName]; exists {
 				continue
 			}
 
-			r.discovered[registryName] = &ClassifierModelInfo{
+			r.base.discovered[registryName] = &ClassifierModelInfo{
 				Name:         registryName,
 				Path:         modelPath,
 				OnnxFilename: onnxFilename,
@@ -233,29 +167,49 @@ func (r *ClassifierRegistry) discoverModels() error {
 					variantIDs = append(variantIDs, v)
 				}
 			}
-			r.logger.Info("Discovered classifier model (not loaded)",
+			r.base.logger.Info("Discovered classifier model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath),
 				zap.Strings("variants", variantIDs))
 		}
 	}
-	discoveredCount := len(r.discovered)
-	r.mu.Unlock()
+	discoveredCount := len(r.base.discovered)
+	r.base.mu.Unlock()
 
-	r.logger.Info("Classifier model discovery complete",
-		zap.Int("models_discovered", discoveredCount),
-		zap.Duration("keep_alive", r.keepAlive),
-		zap.Uint64("max_loaded_models", r.maxLoadedModels))
+	r.base.logger.Info("Classifier model discovery complete",
+		zap.Int("models_discovered", discoveredCount))
 
 	return nil
 }
 
+// loadModel loads a classifier model from disk. Called by BaseRegistry.loadModel.
+func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
+	cfg := classification.PooledClassifierConfig{
+		ModelPath:     info.Path,
+		PoolSize:      info.PoolSize,
+		ModelBackends: nil, // Use all available backends
+		Logger:        r.base.logger.Named(info.Name),
+	}
+	model, backendUsed, err := classification.NewPooledClassifier(cfg, r.sessionManager)
+	if err != nil {
+		return nil, fmt.Errorf("loading classifier model %s: %w", info.Name, err)
+	}
+
+	r.base.logger.Info("Successfully loaded classifier model",
+		zap.String("name", info.Name),
+		zap.String("backend", string(backendUsed)),
+		zap.Int("poolSize", info.PoolSize))
+
+	return &loadedClassifier{
+		classifier: model,
+		config:     model.Config(),
+	}, nil
+}
+
 // Get returns a classifier model by name, loading it if necessary.
-// DEPRECATED: Use Acquire() instead for long-running operations to prevent
-// the model from being evicted during use. Get() does not track usage and
-// the returned classifier may be closed if the cache evicts it.
+// DEPRECATED: Use Acquire() instead for long-running operations.
 func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, error) {
-	loaded, err := r.getLoaded(modelName)
+	loaded, err := r.base.get(modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -265,215 +219,20 @@ func (r *ClassifierRegistry) Get(modelName string) (classification.Classifier, e
 // Acquire returns a classifier by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
 func (r *ClassifierRegistry) Acquire(modelName string) (classification.Classifier, error) {
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !ok {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Classifier re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("classifier model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	r.refs.incRef(refKey)
-
-	loaded, err := r.loadModel(info)
+	loaded, err := r.base.acquire(modelName)
 	if err != nil {
-		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
-
-	r.logger.Debug("Acquired classifier model",
-		zap.String("model", refKey))
-
 	return loaded.classifier, nil
 }
 
 // Release decrements the reference count for a model.
-// Must be called after Acquire() when the caller is done using the classifier.
 func (r *ClassifierRegistry) Release(modelName string) {
-	r.mu.RLock()
-	refKey := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
-
-	count, orphans := r.refs.releaseRef(refKey)
-
-	r.logger.Debug("Released classifier model",
-		zap.String("model", refKey),
-		zap.Int("refCount", count))
-
-	closeOrphans(r.logger, "classifier", refKey, orphans)
+	r.base.release(modelName)
 }
 
-// getLoaded gets or loads a model from cache
-func (r *ClassifierRegistry) getLoaded(modelName string) (*loadedClassifier, error) {
-	// Check cache first
-	if item := r.cache.Get(modelName); item != nil {
-		r.logger.Debug("Classifier cache hit", zap.String("model", modelName))
-		return item.Value(), nil
-	}
-
-	// Check if model is discovered
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
-
-	if !ok {
-		// Model not yet discovered — rescan disk for newly pulled models
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Classifier re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("classifier model not found: %s", modelName)
-		}
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	// Load the model
-	return r.loadModel(info)
-}
-
-// loadModel loads a classifier model from disk
-func (r *ClassifierRegistry) loadModel(info *ClassifierModelInfo) (*loadedClassifier, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
-	if item := r.cache.Get(info.Name); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading classifier model on demand",
-		zap.String("model", info.Name),
-		zap.String("path", info.Path))
-
-	// Load using pipeline-based classifier
-	cfg := classification.PooledClassifierConfig{
-		ModelPath:     info.Path,
-		PoolSize:      info.PoolSize,
-		ModelBackends: nil, // Use all available backends
-		Logger:        r.logger.Named(info.Name),
-	}
-	model, backendUsed, err := classification.NewPooledClassifier(cfg, r.sessionManager)
-	if err != nil {
-		return nil, fmt.Errorf("loading classifier model %s: %w", info.Name, err)
-	}
-
-	r.logger.Info("Successfully loaded classifier model",
-		zap.String("name", info.Name),
-		zap.String("backend", string(backendUsed)),
-		zap.Int("poolSize", info.PoolSize))
-
-	loaded := &loadedClassifier{
-		classifier: model,
-		config:     model.Config(),
-	}
-
-	// Add to cache
-	r.cache.Set(info.Name, loaded, r.keepAlive)
-
-	return loaded, nil
-}
-
-// List returns all available classifier model names (discovered, not necessarily loaded).
-// Re-scans the models directory to pick up newly pulled models.
-func (r *ClassifierRegistry) List() []string {
-	_ = r.discoverModels()
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.discovered))
-	for name := range r.discovered {
-		names = append(names, name)
-	}
-	return names
-}
-
-// ListLoaded returns only the currently loaded classifier model names
-func (r *ClassifierRegistry) ListLoaded() []string {
-	return r.cache.Keys()
-}
-
-// IsLoaded returns whether a model is currently loaded in memory
-func (r *ClassifierRegistry) IsLoaded(modelName string) bool {
-	return r.cache.Has(modelName)
-}
-
-// Preload loads specified models at startup to avoid first-request latency
-func (r *ClassifierRegistry) Preload(modelNames []string) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-
-	r.logger.Info("Preloading classifier models", zap.Strings("models", modelNames))
-
-	var loaded, failed int
-	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
-			r.logger.Warn("Failed to preload classifier model",
-				zap.String("model", name),
-				zap.Error(err))
-			failed++
-		} else {
-			loaded++
-		}
-	}
-
-	r.logger.Info("Classifier model preloading complete",
-		zap.Int("loaded", loaded),
-		zap.Int("failed", failed))
-
-	return nil
-}
-
-// Close closes all loaded models and stops the cache
-func (r *ClassifierRegistry) Close() error {
-	r.logger.Info("Closing classifier registry")
-
-	// Stop the cache cleanup goroutine FIRST to prevent eviction callbacks
-	// firing during shutdown (race window if Stop comes after iteration)
-	r.cache.Stop()
-
-	// Close all loaded models synchronously (don't rely on async eviction callbacks)
-	for _, name := range r.cache.Keys() {
-		if item := r.cache.Get(name); item != nil {
-			if err := item.Value().classifier.Close(); err != nil {
-				r.logger.Warn("Error closing classifier model",
-					zap.String("model", name),
-					zap.Error(err))
-			}
-		}
-	}
-
-	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
-	r.cache.DeleteAll()
-
-	// Close any orphaned handles that were evicted while in use
-	logDrainErrors(r.logger, "classifier", r.refs.drainOrphans())
-
-	return nil
-}
+func (r *ClassifierRegistry) List() []string            { return r.base.list() }
+func (r *ClassifierRegistry) ListLoaded() []string       { return r.base.listLoaded() }
+func (r *ClassifierRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *ClassifierRegistry) Preload(names []string) error { return r.base.preload(names) }
+func (r *ClassifierRegistry) Close() error                { return r.base.close() }
