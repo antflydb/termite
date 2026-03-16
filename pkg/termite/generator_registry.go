@@ -260,10 +260,16 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 
@@ -275,18 +281,41 @@ func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) 
 // The caller MUST call Release() when done to allow the model to be evicted.
 // This prevents the model from being closed while in use.
 func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, error) {
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between Get() returning and the refcount being visible.
-	r.refs.incRef(modelName)
+	// Resolve variant inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	refKey := modelName
+	r.mu.RUnlock()
 
-	gen, err := r.Get(modelName)
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
+		refKey = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
+	}
+
+	r.refs.incRef(refKey)
+
+	gen, err := r.loadModel(info)
 	if err != nil {
-		r.refs.rollbackRef(modelName)
+		r.refs.rollbackRef(refKey)
 		return nil, err
 	}
 
 	r.logger.Debug("Acquired generator model",
-		zap.String("model", modelName))
+		zap.String("model", refKey))
 
 	return gen, nil
 }
@@ -294,30 +323,68 @@ func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, err
 // Release decrements the reference count for a model.
 // Must be called after Acquire() when the caller is done using the generator.
 func (r *GeneratorRegistry) Release(modelName string) {
-	count, orphans := r.refs.releaseRef(modelName)
+	r.mu.RLock()
+	refKey := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
+	count, orphans := r.refs.releaseRef(refKey)
 
 	r.logger.Debug("Released generator model",
-		zap.String("model", modelName),
+		zap.String("model", refKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "generator", modelName, orphans)
+	closeOrphans(r.logger, "generator", refKey, orphans)
 }
 
 // AcquireWithVariant returns a generator by name with a specific variant
 // and increments its reference count.
 // The caller MUST call ReleaseWithVariant() when done.
 func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (generation.Generator, error) {
-	// Build cache key including variant
-	cacheKey := modelName
-	if variant != "" {
-		cacheKey = modelName + ":" + variant
+	// Resolve base model name inline so the ref key matches the cache key.
+	r.mu.RLock()
+	info, ok := r.discovered[modelName]
+	resolvedBase := modelName
+	r.mu.RUnlock()
+
+	if !ok {
+		if err := r.discoverModels(); err != nil {
+			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+		}
+		r.mu.RLock()
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
+		resolvedBase = resolved
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
+		}
 	}
 
-	// Pre-increment refcount to prevent eviction callback from closing
-	// the model between GetWithVariant() returning and the refcount being visible.
+	// Build cache key including variant
+	cacheKey := resolvedBase
+	if variant != "" {
+		cacheKey = resolvedBase + ":" + variant
+	}
+
+	// Determine path based on variant
+	modelPath := info.Path
+	if variant != "" {
+		variantPath, found := info.Variants[variant]
+		if !found {
+			return nil, fmt.Errorf("variant %q not found for model %s (available: %v)",
+				variant, modelName, r.ListVariants(modelName))
+		}
+		modelPath = variantPath
+	}
+
 	r.refs.incRef(cacheKey)
 
-	gen, err := r.GetWithVariant(modelName, variant)
+	gen, err := r.loadModelFromPath(cacheKey, modelPath)
 	if err != nil {
 		r.refs.rollbackRef(cacheKey)
 		return nil, err
@@ -331,10 +398,15 @@ func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (gener
 
 // ReleaseWithVariant decrements the reference count for a model variant.
 func (r *GeneratorRegistry) ReleaseWithVariant(modelName, variant string) {
+	// Resolve variant so the ref key matches the cache key.
+	r.mu.RLock()
+	resolved := resolveRefName(modelName, r.discovered)
+	r.mu.RUnlock()
+
 	// Build cache key including variant
-	cacheKey := modelName
+	cacheKey := resolved
 	if variant != "" {
-		cacheKey = modelName + ":" + variant
+		cacheKey = resolved + ":" + variant
 	}
 
 	count, orphans := r.refs.releaseRef(cacheKey)
@@ -421,10 +493,16 @@ func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generatio
 			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
 		}
 		r.mu.RLock()
-		info, ok = r.discovered[modelName]
+		var resolved string
+		info, resolved, ok = resolveVariant(modelName, r.discovered)
 		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("generator model not found: %s", modelName)
+		}
+		if resolved != modelName {
+			r.logger.Info("Resolved model name to variant",
+				zap.String("requested", modelName),
+				zap.String("resolved", resolved))
 		}
 	}
 

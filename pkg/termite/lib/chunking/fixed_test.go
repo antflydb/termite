@@ -222,8 +222,10 @@ func TestFlattenOversizedSections_SplitsOnSentences(t *testing.T) {
 	fc := newTestChunker(t, FixedChunkerConfig{TargetTokens: 100, OverlapTokens: 0})
 
 	// Build a section with no newlines but sentence boundaries.
-	sent1 := strings.Repeat("alpha ", 8)
-	sent2 := strings.Repeat("beta ", 8)
+	// Use 7 repeats so each sentence half fits within 10 BPE tokens
+	// (7 "alpha" + "." = 10 tokens; 8 would be 11 and trigger force-split).
+	sent1 := strings.Repeat("alpha ", 7)
+	sent2 := strings.Repeat("beta ", 7)
 	oversized := strings.TrimSpace(sent1) + ". " + strings.TrimSpace(sent2) // no newlines
 
 	result := fc.flattenOversizedSections(toPositionedSections([]string{oversized}), 10)
