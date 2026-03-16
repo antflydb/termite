@@ -194,9 +194,9 @@ func (r *Seq2SeqRegistry) GetQuestionGenerator(modelName string) (seq2seq.Questi
 }
 
 // List returns all available Seq2Seq model names (discovered, not necessarily loaded).
-func (r *Seq2SeqRegistry) List() []string          { return r.base.list() }
-func (r *Seq2SeqRegistry) ListLoaded() []string     { return r.base.listLoaded() }
-func (r *Seq2SeqRegistry) IsLoaded(name string) bool { return r.base.isLoaded(name) }
+func (r *Seq2SeqRegistry) List() []string               { return r.base.list() }
+func (r *Seq2SeqRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *Seq2SeqRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *Seq2SeqRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *Seq2SeqRegistry) PreloadAll() error        { return r.base.preloadAll() }
-func (r *Seq2SeqRegistry) Close() error             { return r.base.close() }
+func (r *Seq2SeqRegistry) PreloadAll() error            { return r.base.preloadAll() }
+func (r *Seq2SeqRegistry) Close() error                 { return r.base.close() }

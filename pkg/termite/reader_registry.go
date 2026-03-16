@@ -255,9 +255,9 @@ func (r *ReaderRegistry) ListWithCapabilities() map[string][]string {
 	return result
 }
 
-func (r *ReaderRegistry) List() []string            { return r.base.list() }
-func (r *ReaderRegistry) ListLoaded() []string       { return r.base.listLoaded() }
-func (r *ReaderRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *ReaderRegistry) List() []string               { return r.base.list() }
+func (r *ReaderRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *ReaderRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *ReaderRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *ReaderRegistry) PreloadAll() error           { return r.base.preloadAll() }
-func (r *ReaderRegistry) Close() error                { return r.base.close() }
+func (r *ReaderRegistry) PreloadAll() error            { return r.base.preloadAll() }
+func (r *ReaderRegistry) Close() error                 { return r.base.close() }

@@ -458,8 +458,8 @@ func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.C
 	return slices.Contains(caps, string(capability))
 }
 
-func (r *NERRegistry) ListLoaded() []string       { return r.base.listLoaded() }
-func (r *NERRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *NERRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *NERRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *NERRegistry) Preload(names []string) error { return r.base.preload(names) }
 
 // PreloadAll loads all discovered models (for eager loading mode)

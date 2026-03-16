@@ -399,9 +399,9 @@ func (r *GeneratorRegistry) ListVariants(modelName string) []string {
 	return variants
 }
 
-func (r *GeneratorRegistry) List() []string            { return r.base.list() }
-func (r *GeneratorRegistry) ListLoaded() []string       { return r.base.listLoaded() }
-func (r *GeneratorRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *GeneratorRegistry) List() []string               { return r.base.list() }
+func (r *GeneratorRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *GeneratorRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *GeneratorRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *GeneratorRegistry) PreloadAll() error           { return r.base.preloadAll() }
-func (r *GeneratorRegistry) Close() error                { return r.base.close() }
+func (r *GeneratorRegistry) PreloadAll() error            { return r.base.preloadAll() }
+func (r *GeneratorRegistry) Close() error                 { return r.base.close() }

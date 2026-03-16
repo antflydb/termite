@@ -39,7 +39,7 @@ func TestModelBudget_Unlimited(t *testing.T) {
 	b := NewModelBudget(0, nil)
 
 	// Should always succeed with unlimited budget
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if err := b.Reserve(); err != nil {
 			t.Fatalf("Reserve() with unlimited budget: %v", err)
 		}
@@ -52,7 +52,7 @@ func TestModelBudget_Unlimited(t *testing.T) {
 func TestModelBudget_ReserveUnderLimit(t *testing.T) {
 	b := NewModelBudget(3, nil)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := b.Reserve(); err != nil {
 			t.Fatalf("Reserve() #%d: %v", i, err)
 		}
@@ -137,7 +137,7 @@ func TestModelBudget_ConcurrentAccess(t *testing.T) {
 	b := NewModelBudget(0, nil) // unlimited
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()

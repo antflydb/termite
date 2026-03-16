@@ -65,4 +65,3 @@ func resolveVariant[T any](requested string, discovered map[string]*T) (*T, stri
 	}
 	return nil, "", false
 }
-

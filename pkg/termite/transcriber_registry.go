@@ -208,9 +208,9 @@ func (r *TranscriberRegistry) Get(modelName string) (transcribing.Transcriber, e
 }
 
 // List returns all available transcriber model names (discovered, not necessarily loaded).
-func (r *TranscriberRegistry) List() []string          { return r.base.list() }
-func (r *TranscriberRegistry) ListLoaded() []string     { return r.base.listLoaded() }
-func (r *TranscriberRegistry) IsLoaded(name string) bool { return r.base.isLoaded(name) }
+func (r *TranscriberRegistry) List() []string               { return r.base.list() }
+func (r *TranscriberRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *TranscriberRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *TranscriberRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *TranscriberRegistry) PreloadAll() error        { return r.base.preloadAll() }
-func (r *TranscriberRegistry) Close() error             { return r.base.close() }
+func (r *TranscriberRegistry) PreloadAll() error            { return r.base.preloadAll() }
+func (r *TranscriberRegistry) Close() error                 { return r.base.close() }

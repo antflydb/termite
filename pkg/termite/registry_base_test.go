@@ -16,6 +16,7 @@ package termite
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,9 +62,7 @@ func newTestRegistry(t *testing.T, discovered map[string]*testModelInfo, opts ..
 
 	r := newBaseRegistry(cfg)
 	r.mu.Lock()
-	for k, v := range discovered {
-		r.discovered[k] = v
-	}
+	maps.Copy(r.discovered, discovered)
 	r.mu.Unlock()
 
 	t.Cleanup(func() { _ = r.close() })
@@ -119,12 +118,10 @@ func TestBaseRegistry_DoubleCheckAfterLock(t *testing.T) {
 
 	// Load concurrently
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			_, _ = r.get("model-c")
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -231,9 +228,7 @@ func TestBaseRegistry_Close(t *testing.T) {
 
 	r := newBaseRegistry(cfg)
 	r.mu.Lock()
-	for k, v := range discovered {
-		r.discovered[k] = v
-	}
+	maps.Copy(r.discovered, discovered)
 	r.mu.Unlock()
 
 	// Load both models
