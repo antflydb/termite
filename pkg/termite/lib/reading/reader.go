@@ -18,14 +18,12 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // OutputParser transforms raw model text output into a structured Result.
@@ -93,13 +91,10 @@ type Reader interface {
 var _ Reader = (*PooledReader)(nil)
 
 // PooledReader manages multiple Vision2Seq pipelines for concurrent OCR/document reading.
-// Each request acquires a pipeline slot via semaphore, enabling true parallelism.
+// Each request acquires a pipeline slot via the pool, enabling true parallelism.
 type PooledReader struct {
-	pipelines    []*pipelines.Vision2SeqPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
+	pool         *pool.LazyPool[*pipelines.Vision2SeqPipeline]
 	logger       *zap.Logger
-	poolSize     int
 	outputParser OutputParser
 	modelPath    string
 }
@@ -109,7 +104,7 @@ type PooledReaderConfig struct {
 	// ModelPath is the path to the Vision2Seq model.
 	ModelPath string
 
-	// PoolSize is the number of concurrent pipelines (0 = auto-detect from CPU count).
+	// PoolSize is the number of concurrent pipelines (0 = default of 1).
 	PoolSize int
 
 	// GenerationConfig holds text generation parameters. If nil, uses defaults.
@@ -140,7 +135,7 @@ func NewPooledReader(
 
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	// Detect output parser from path
@@ -157,35 +152,37 @@ func NewPooledReader(
 		opts = append(opts, pipelines.WithVision2SeqGenerationConfig(cfg.GenerationConfig))
 	}
 
-	// Create pooled pipelines using LoadVision2SeqPipeline
-	pipelineSlice := make([]*pipelines.Vision2SeqPipeline, poolSize)
+	// Create lazy pool of pipelines; capture backend type from the factory.
 	var backendType backends.BackendType
-
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadVision2SeqPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			modelBackends,
-			opts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelineSlice[j] != nil {
-					_ = pipelineSlice[j].Close()
-				}
+	p, _, err := pool.New(pool.Config[*pipelines.Vision2SeqPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.Vision2SeqPipeline, error) {
+			pipeline, bt, err := pipelines.LoadVision2SeqPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				modelBackends,
+				opts...,
+			)
+			if err == nil {
+				backendType = bt
 			}
-			return nil, "", fmt.Errorf("loading Vision2Seq pipeline %d: %w", i, err)
-		}
-		pipelineSlice[i] = pipeline
-		backendType = bt
+			return pipeline, err
+		},
+		Close: func(p *pipelines.Vision2SeqPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("creating pipeline pool: %w", err)
 	}
 
 	reader := &PooledReader{
-		pipelines:    pipelineSlice,
-		sem:          semaphore.NewWeighted(int64(poolSize)),
+		pool:         p,
 		logger:       logger,
-		poolSize:     poolSize,
 		outputParser: outputParser,
 		modelPath:    cfg.ModelPath,
 	}
@@ -218,15 +215,12 @@ func (r *PooledReader) Read(ctx context.Context, images []image.Image, prompt st
 		return nil, fmt.Errorf("no images provided")
 	}
 
-	// Acquire a pipeline slot
-	if err := r.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire a pipeline from the pool
+	pipeline, _, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring pipeline from pool: %w", err)
 	}
-	defer r.sem.Release(1)
-
-	// Get the next pipeline in round-robin fashion
-	idx := r.nextPipeline.Add(1) - 1
-	pipeline := r.pipelines[idx%uint64(r.poolSize)]
+	defer r.pool.Release()
 
 	// Temporarily override max tokens if specified
 	originalMaxTokens := pipeline.GenerationConfig.MaxNewTokens
@@ -271,26 +265,8 @@ func (r *PooledReader) parseOutput(text string, prompt string) Result {
 
 // Close releases all pipeline resources.
 func (r *PooledReader) Close() error {
-	r.logger.Info("Closing pooled reader", zap.Int("poolSize", r.poolSize))
-
-	var errs []error
-
-	// Close all pipelines
-	for i, pipeline := range r.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				r.logger.Warn("Error closing pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				errs = append(errs, err)
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors closing reader: %v", errs)
-	}
-	return nil
+	r.logger.Info("Closing pooled reader")
+	return r.pool.Close()
 }
 
 // truncateString truncates a string to maxLen, adding "..." if truncated.

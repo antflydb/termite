@@ -23,14 +23,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+
 	"sort"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Classification represents a single classification prediction.
@@ -109,13 +108,10 @@ type PooledClassifierConfig struct {
 // PooledClassifier manages multiple ClassificationPipeline instances for concurrent zero-shot classification.
 // Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledClassifier struct {
-	pipelines    []*pipelines.ClassificationPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	config       Config
-	logger       *zap.Logger
-	poolSize     int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[*pipelines.ClassificationPipeline]
+	config      Config
+	logger      *zap.Logger
+	backendType backends.BackendType
 }
 
 // NewPooledClassifier creates a new ClassificationPipeline-based pooled zero-shot classifier.
@@ -133,12 +129,10 @@ func NewPooledClassifier(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(),
-			// Cap at 4 for ZSC models (memory intensive)
-			4)
+		poolSize = 1
 	}
 
 	// Load ZSC configuration (hypothesis template, multi-label settings)
@@ -159,45 +153,47 @@ func NewPooledClassifier(
 		zap.Int("poolSize", poolSize),
 		zap.String("hypothesisTemplate", zscConfig.HypothesisTemplate))
 
-	// Create N ClassificationPipelines
-	pipelinesList := make([]*pipelines.ClassificationPipeline, poolSize)
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadClassificationPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			pipelines.WithHypothesisTemplate(zscConfig.HypothesisTemplate),
-			pipelines.WithClassificationMultiLabel(zscConfig.MultiLabel),
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	lazyPool, first, err := pool.New(pool.Config[*pipelines.ClassificationPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.ClassificationPipeline, error) {
+			pipeline, bt, err := pipelines.LoadClassificationPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				pipelines.WithHypothesisTemplate(zscConfig.HypothesisTemplate),
+				pipelines.WithClassificationMultiLabel(zscConfig.MultiLabel),
+			)
+			if err != nil {
+				return nil, fmt.Errorf("creating classification pipeline: %w", err)
 			}
-			logger.Error("Failed to create classification pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating classification pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendUsed = bt
-		logger.Debug("Created classification pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(p *pipelines.ClassificationPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", err
 	}
+
+	// backendUsed is set from the eagerly-created first item
+	_ = first
 
 	logger.Info("Successfully created pooled ZSC pipelines",
 		zap.Int("count", poolSize),
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledClassifier{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        lazyPool,
 		config:      *zscConfig,
 		logger:      logger,
-		poolSize:    poolSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
@@ -224,15 +220,12 @@ func (p *PooledClassifier) ClassifyWithHypothesis(ctx context.Context, texts []s
 		return nil, fmt.Errorf("at least one label is required")
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pipeline from the pool (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Using pipeline for ZSC",
 		zap.Int("pipelineIndex", idx),
@@ -302,19 +295,7 @@ func (p *PooledClassifier) MultiLabelClassify(ctx context.Context, texts []strin
 
 // Close releases resources.
 func (p *PooledClassifier) Close() error {
-	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }
 
 // Config returns the classifier configuration.

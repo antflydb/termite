@@ -15,20 +15,16 @@
 package termite
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
 
@@ -62,24 +58,10 @@ type loadedNERModel struct {
 
 // NERRegistry manages NER models with lazy loading and TTL-based unloading
 type NERRegistry struct {
+	base           *BaseRegistry[NERModelInfo, *loadedNERModel]
 	modelsDir      string
 	sessionManager *backends.SessionManager
-	logger         *zap.Logger
-
-	// Model discovery (paths only, not loaded)
-	discovered map[string]*NERModelInfo
-	mu         sync.RWMutex
-
-	// Loaded models with TTL cache
-	cache *ttlcache.Cache[string, *loadedNERModel]
-
-	// Reference counting to prevent eviction during active use
-	refs refTracker
-
-	// Configuration
-	keepAlive       time.Duration
-	maxLoadedModels uint64
-	poolSize        int
+	poolSize       int
 }
 
 // NERConfig configures the NER registry
@@ -94,137 +76,87 @@ type NERConfig struct {
 func NewNERRegistry(
 	config NERConfig,
 	sessionManager *backends.SessionManager,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*NERRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	keepAlive := config.KeepAlive
-	if keepAlive == 0 {
-		keepAlive = ttlcache.NoTTL // Never expire
-	}
-
 	poolSize := config.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
-	registry := &NERRegistry{
-		modelsDir:       config.ModelsDir,
-		sessionManager:  sessionManager,
-		logger:          logger,
-		discovered:      make(map[string]*NERModelInfo),
-		refs:            newRefTracker(),
-		keepAlive:       keepAlive,
-		maxLoadedModels: config.MaxLoadedModels,
-		poolSize:        poolSize,
+	r := &NERRegistry{
+		modelsDir:      config.ModelsDir,
+		sessionManager: sessionManager,
+		poolSize:       poolSize,
 	}
 
-	// Configure TTL cache with LRU eviction
-	cacheOpts := []ttlcache.Option[string, *loadedNERModel]{
-		ttlcache.WithTTL[string, *loadedNERModel](keepAlive),
-	}
-
-	if config.MaxLoadedModels > 0 {
-		cacheOpts = append(cacheOpts,
-			ttlcache.WithCapacity[string, *loadedNERModel](config.MaxLoadedModels))
-	}
-
-	registry.cache = ttlcache.New(cacheOpts...)
-
-	// Set up eviction callback to close unloaded models
-	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
-	// (manual deletion during Close() handles cleanup synchronously)
-	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, *loadedNERModel]) {
-		// Skip closing on manual deletion - Close() handles cleanup synchronously
-		if reason == ttlcache.EvictionReasonDeleted {
-			logger.Debug("NER model removed from cache (cleanup handled separately)",
-				zap.String("model", item.Key()))
-			return
-		}
-
-		reasonStr := evictionReasonString(reason)
-
-		// Check if model is still in use (has active references)
-		model := item.Value()
-		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.model.Close() }) {
-			logger.Warn("NER model evicted while in use, deferring close",
-				zap.String("model", item.Key()),
-				zap.String("reason", reasonStr))
-			return
-		}
-
-		logger.Info("Evicting NER model from cache",
-			zap.String("model", item.Key()),
-			zap.String("reason", reasonStr))
-		if err := model.model.Close(); err != nil {
-			logger.Warn("Error closing evicted NER model",
-				zap.String("model", item.Key()),
-				zap.Error(err))
-		}
+	r.base = newBaseRegistry(BaseRegistryConfig[NERModelInfo, *loadedNERModel]{
+		ModelType:       "NER",
+		KeepAlive:       config.KeepAlive,
+		MaxLoadedModels: config.MaxLoadedModels,
+		NameFunc:        func(info *NERModelInfo) string { return info.Name },
+		LoadFn:          r.loadModel,
+		CloseFn:         func(m *loadedNERModel) error { return m.model.Close() },
+		DiscoverFn:      func() error { return r.discoverModels() },
+		Budget:          budget,
+		Logger:          logger,
 	})
 
-	// Start cache cleanup goroutine
-	go registry.cache.Start()
-
-	// Discover models (but don't load them)
-	if err := registry.discoverModels(); err != nil {
-		registry.cache.Stop()
+	if err := r.discoverModels(); err != nil {
+		r.base.cache.Stop()
 		return nil, err
 	}
 
 	logger.Info("Lazy NER registry initialized",
-		zap.Int("models_discovered", len(registry.discovered)),
-		zap.Duration("keep_alive", keepAlive),
+		zap.Int("models_discovered", len(r.base.discovered)),
+		zap.Duration("keep_alive", r.base.keepAlive),
 		zap.Uint64("max_loaded_models", config.MaxLoadedModels))
 
-	return registry, nil
+	return r, nil
 }
 
 // discoverModels finds all NER models in the models directory without loading them
 func (r *NERRegistry) discoverModels() error {
 	if r.modelsDir == "" {
-		r.logger.Info("No NER models directory configured")
+		r.base.logger.Info("No NER models directory configured")
 		return nil
 	}
 
-	// Check if directory exists
 	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
-		r.logger.Warn("NER models directory does not exist",
+		r.base.logger.Warn("NER models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil
 	}
 
-	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRecognizer, zapLogf(r.logger))
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeRecognizer, zapLogf(r.base.logger))
 	if err != nil {
 		return fmt.Errorf("discovering NER models: %w", err)
 	}
 
-	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
-	r.mu.Lock()
+	r.base.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 
-		// Check model type: GLiNER, REBEL, or traditional NER
 		isGLiNER := ner.IsGLiNERModel(modelPath)
 		isREBEL := ner.IsREBELModel(modelPath)
 
 		if isREBEL {
-			if _, exists := r.discovered[registryFullName]; exists {
+			if _, exists := r.base.discovered[registryFullName]; exists {
 				continue
 			}
 
-			r.logger.Info("Discovered REBEL model (not loaded)",
+			r.base.logger.Info("Discovered REBEL model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath))
 
-			// REBEL models have 'relations', 'zeroshot', and 'extraction' capabilities
 			caps := []string{string(modelregistry.CapabilityRelations), string(modelregistry.CapabilityZeroshot), string(modelregistry.CapabilityExtraction)}
-			// Check manifest for additional capabilities
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
 				var manifest modelregistry.ModelManifest
@@ -233,7 +165,7 @@ func (r *NERRegistry) discoverModels() error {
 				}
 			}
 
-			r.discovered[registryFullName] = &NERModelInfo{
+			r.base.discovered[registryFullName] = &NERModelInfo{
 				Name:         registryFullName,
 				Path:         modelPath,
 				PoolSize:     poolSize,
@@ -241,25 +173,23 @@ func (r *NERRegistry) discoverModels() error {
 				Capabilities: caps,
 			}
 		} else if isGLiNER {
-			if _, exists := r.discovered[registryFullName]; exists {
+			if _, exists := r.base.discovered[registryFullName]; exists {
 				continue
 			}
 
-			// Try quantized first, then non-quantized
 			quantized := false
 			if _, err := os.Stat(filepath.Join(modelPath, "model_quantized.onnx")); err == nil {
 				quantized = true
 			} else if _, err := os.Stat(filepath.Join(modelPath, "model.onnx")); err != nil {
-				r.logger.Debug("Skipping GLiNER directory without model files",
+				r.base.logger.Debug("Skipping GLiNER directory without model files",
 					zap.String("dir", registryFullName))
 				continue
 			}
 
-			r.logger.Info("Discovered GLiNER model (not loaded)",
+			r.base.logger.Info("Discovered GLiNER model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath))
 
-			// Load capabilities from manifest if available
 			caps := []string{string(modelregistry.CapabilityLabels), string(modelregistry.CapabilityZeroshot)}
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
@@ -269,12 +199,10 @@ func (r *NERRegistry) discoverModels() error {
 				}
 			}
 
-			// Also check gliner_config.json for capabilities (used by export script)
 			glinerConfigPath := filepath.Join(modelPath, "gliner_config.json")
 			if data, err := os.ReadFile(glinerConfigPath); err == nil {
 				var glinerConfig ner.GLiNERConfig
 				if err := json.Unmarshal(data, &glinerConfig); err == nil && len(glinerConfig.Capabilities) > 0 {
-					// Merge capabilities from gliner_config.json
 					for _, cap := range glinerConfig.Capabilities {
 						if !slices.Contains(caps, cap) {
 							caps = append(caps, cap)
@@ -283,13 +211,12 @@ func (r *NERRegistry) discoverModels() error {
 				}
 			}
 
-			// Models with relations capability also support structured extraction
 			if slices.Contains(caps, string(modelregistry.CapabilityRelations)) &&
 				!slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
 				caps = append(caps, string(modelregistry.CapabilityExtraction))
 			}
 
-			r.discovered[registryFullName] = &NERModelInfo{
+			r.base.discovered[registryFullName] = &NERModelInfo{
 				Name:         registryFullName,
 				Path:         modelPath,
 				PoolSize:     poolSize,
@@ -298,13 +225,11 @@ func (r *NERRegistry) discoverModels() error {
 				Capabilities: caps,
 			}
 		} else {
-			// Discover all available model variants for regular NER models
 			variants := dm.Variants
 			if len(variants) == 0 {
 				continue
 			}
 
-			// Load capabilities from manifest if available
 			caps := []string{string(modelregistry.CapabilityLabels)}
 			manifestPath := filepath.Join(modelPath, "manifest.json")
 			if data, err := os.ReadFile(manifestPath); err == nil {
@@ -314,7 +239,6 @@ func (r *NERRegistry) discoverModels() error {
 				}
 			}
 
-			// Store each variant for lazy loading (skip already-discovered entries)
 			anyNew := false
 			for variantID, onnxFilename := range variants {
 				registryName := registryFullName
@@ -322,11 +246,11 @@ func (r *NERRegistry) discoverModels() error {
 					registryName = registryFullName + "-" + variantID
 				}
 
-				if _, exists := r.discovered[registryName]; exists {
+				if _, exists := r.base.discovered[registryName]; exists {
 					continue
 				}
 
-				r.discovered[registryName] = &NERModelInfo{
+				r.base.discovered[registryName] = &NERModelInfo{
 					Name:         registryName,
 					Path:         modelPath,
 					OnnxFilename: onnxFilename,
@@ -346,143 +270,25 @@ func (r *NERRegistry) discoverModels() error {
 						variantIDs = append(variantIDs, v)
 					}
 				}
-				r.logger.Info("Discovered NER model (not loaded)",
+				r.base.logger.Info("Discovered NER model (not loaded)",
 					zap.String("name", registryFullName),
 					zap.String("path", modelPath),
 					zap.Strings("variants", variantIDs))
 			}
 		}
 	}
-	discoveredCount := len(r.discovered)
-	r.mu.Unlock()
+	discoveredCount := len(r.base.discovered)
+	r.base.mu.Unlock()
 
-	r.logger.Info("NER model discovery complete",
-		zap.Int("models_discovered", discoveredCount),
-		zap.Duration("keep_alive", r.keepAlive),
-		zap.Uint64("max_loaded_models", r.maxLoadedModels))
+	r.base.logger.Info("NER model discovery complete",
+		zap.Int("models_discovered", discoveredCount))
 
 	return nil
 }
 
-// Get returns a NER model by name, loading it if necessary
-func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
-	loaded, err := r.getLoaded(modelName)
-	if err != nil {
-		return nil, err
-	}
-	return loaded.model, nil
-}
-
-// getLoaded gets or loads a model from cache
-func (r *NERRegistry) getLoaded(modelName string) (*loadedNERModel, error) {
-	// Check cache first
-	if item := r.cache.Get(modelName); item != nil {
-		r.logger.Debug("NER cache hit", zap.String("model", modelName))
-		return item.Value(), nil
-	}
-
-	// Check if model is discovered
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
-
-	if !ok {
-		// Model not yet discovered — rescan disk for newly pulled models
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("NER re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("NER model not found: %s", modelName)
-		}
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	// Load the model
-	return r.loadModel(info)
-}
-
-// Acquire returns a NER model by name and increments its reference count.
-// The caller MUST call Release() when done to allow the model to be evicted.
-// Type-assert to ner.Recognizer if HasCapability returns true for CapabilityZeroshot.
-func (r *NERRegistry) Acquire(modelName string) (ner.Model, error) {
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !ok {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("NER re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("NER model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	r.refs.incRef(refKey)
-
-	loaded, err := r.loadModel(info)
-	if err != nil {
-		r.refs.rollbackRef(refKey)
-		return nil, err
-	}
-
-	r.logger.Debug("Acquired NER model",
-		zap.String("model", refKey))
-
-	// Return recognizer if available (it embeds ner.Model), otherwise return model
-	if loaded.recognizer != nil {
-		return loaded.recognizer, nil
-	}
-	return loaded.model, nil
-}
-
-// Release decrements the reference count for a model.
-// Must be called after Acquire() when the caller is done using the NER model.
-func (r *NERRegistry) Release(modelName string) {
-	r.mu.RLock()
-	refKey := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
-
-	count, orphans := r.refs.releaseRef(refKey)
-
-	r.logger.Debug("Released NER model",
-		zap.String("model", refKey),
-		zap.Int("refCount", count))
-
-	closeOrphans(r.logger, "NER", refKey, orphans)
-}
-
-// loadModel loads a NER model from disk
+// loadModel loads a NER model from disk. Called by BaseRegistry.loadModel.
 func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
-	if item := r.cache.Get(info.Name); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading NER model on demand",
+	r.base.logger.Info("Loading NER model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path),
 		zap.Int("modelType", int(info.ModelType)))
@@ -494,14 +300,14 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		cfg := ner.PooledREBELConfig{
 			ModelPath:     info.Path,
 			PoolSize:      info.PoolSize,
-			ModelBackends: nil, // Use all available backends
-			Logger:        r.logger.Named(info.Name),
+			ModelBackends: nil,
+			Logger:        r.base.logger.Named(info.Name),
 		}
 		model, backendUsed, err := ner.NewPooledREBEL(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading REBEL model %s: %w", info.Name, err)
 		}
-		r.logger.Info("Successfully loaded REBEL model",
+		r.base.logger.Info("Successfully loaded REBEL model",
 			zap.String("name", info.Name),
 			zap.String("backend", string(backendUsed)),
 			zap.Int("poolSize", info.PoolSize),
@@ -518,25 +324,21 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 			ModelPath:     info.Path,
 			PoolSize:      info.PoolSize,
 			Quantized:     info.Quantized,
-			ModelBackends: nil, // Use all available backends
-			Logger:        r.logger.Named(info.Name),
+			ModelBackends: nil,
+			Logger:        r.base.logger.Named(info.Name),
 		}
 		model, backendUsed, err := ner.NewPooledGLiNER(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading GLiNER model %s: %w", info.Name, err)
 		}
-		// Update capabilities based on loaded model
-		// First, check if the model config has capabilities from gliner_config.json
 		caps := info.Capabilities
 		if modelCaps := model.Capabilities(); len(modelCaps) > 0 {
-			// Merge capabilities from model config with discovered capabilities
 			for _, cap := range modelCaps {
 				if !slices.Contains(caps, cap) {
 					caps = append(caps, cap)
 				}
 			}
 		}
-		// Also check model methods for capabilities
 		if model.SupportsRelationExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityRelations)) {
 			caps = append(caps, string(modelregistry.CapabilityRelations))
 		}
@@ -549,7 +351,7 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		if model.SupportsExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
 			caps = append(caps, string(modelregistry.CapabilityExtraction))
 		}
-		r.logger.Info("Successfully loaded GLiNER model",
+		r.base.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
 			zap.Bool("quantized", info.Quantized),
 			zap.String("backend", string(backendUsed)),
@@ -564,46 +366,73 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		}
 
 	default: // NERModelTypeStandard
-		// Load using pipeline-based NER
 		cfg := ner.PooledNERConfig{
 			ModelPath:     info.Path,
 			PoolSize:      info.PoolSize,
-			ModelBackends: nil, // Use all available backends
-			Logger:        r.logger.Named(info.Name),
+			ModelBackends: nil,
+			Logger:        r.base.logger.Named(info.Name),
 		}
 		model, backendUsed, err := ner.NewPooledNER(cfg, r.sessionManager)
 		if err != nil {
 			return nil, fmt.Errorf("loading NER model %s: %w", info.Name, err)
 		}
-		r.logger.Info("Successfully loaded NER model",
+		r.base.logger.Info("Successfully loaded NER model",
 			zap.String("name", info.Name),
 			zap.String("backend", string(backendUsed)),
 			zap.Int("poolSize", info.PoolSize),
 			zap.Strings("capabilities", info.Capabilities))
 		loaded = &loadedNERModel{
 			model:        model,
-			recognizer:   nil, // Standard NER models don't implement Recognizer
+			recognizer:   nil,
 			modelType:    NERModelTypeStandard,
 			capabilities: info.Capabilities,
 		}
 	}
 
-	// Add to cache
-	r.cache.Set(info.Name, loaded, r.keepAlive)
-
 	return loaded, nil
+}
+
+// Get returns a NER model by name, loading it if necessary
+func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
+	loaded, err := r.base.get(modelName)
+	if err != nil {
+		return nil, err
+	}
+	return loaded.model, nil
+}
+
+// Acquire returns a NER model by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+// Type-assert to ner.Recognizer if HasCapability returns true for CapabilityZeroshot.
+func (r *NERRegistry) Acquire(modelName string) (ner.Model, error) {
+	loaded, err := r.base.acquire(modelName)
+	if err != nil {
+		return nil, err
+	}
+	// Return recognizer if available (it embeds ner.Model), otherwise return model
+	if loaded.recognizer != nil {
+		return loaded.recognizer, nil
+	}
+	return loaded.model, nil
+}
+
+// Release decrements the reference count for a model.
+func (r *NERRegistry) Release(modelName string) {
+	r.base.release(modelName)
 }
 
 // List returns all available NER model names (discovered, not necessarily loaded).
 // Re-scans the models directory to pick up newly pulled models.
 func (r *NERRegistry) List() map[string][]string {
-	_ = r.discoverModels()
+	if r.base.discoverFn != nil {
+		_ = r.base.discoverFn()
+	}
 
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.base.mu.RLock()
+	defer r.base.mu.RUnlock()
 
-	result := make(map[string][]string, len(r.discovered))
-	for name, info := range r.discovered {
+	result := make(map[string][]string, len(r.base.discovered))
+	for name, info := range r.base.discovered {
 		capsCopy := make([]string, len(info.Capabilities))
 		copy(capsCopy, info.Capabilities)
 		result[name] = capsCopy
@@ -611,22 +440,11 @@ func (r *NERRegistry) List() map[string][]string {
 	return result
 }
 
-// ListLoaded returns only the currently loaded NER model names
-func (r *NERRegistry) ListLoaded() []string {
-	return r.cache.Keys()
-}
-
-// IsLoaded returns whether a model is currently loaded in memory
-func (r *NERRegistry) IsLoaded(modelName string) bool {
-	return r.cache.Has(modelName)
-}
-
 // GetCapabilities returns the capabilities for a specific model.
-// Returns nil if the model is not found.
 func (r *NERRegistry) GetCapabilities(modelName string) []string {
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
+	r.base.mu.RLock()
+	info, ok := r.base.discovered[modelName]
+	r.base.mu.RUnlock()
 
 	if !ok {
 		return nil
@@ -640,38 +458,9 @@ func (r *NERRegistry) HasCapability(modelName string, capability modelregistry.C
 	return slices.Contains(caps, string(capability))
 }
 
-// Preload loads specified models at startup to avoid first-request latency
-func (r *NERRegistry) Preload(modelNames []string) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-
-	r.logger.Info("Preloading NER models", zap.Strings("models", modelNames))
-
-	var loaded, failed int
-	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
-			r.logger.Warn("Failed to preload NER model",
-				zap.String("model", name),
-				zap.Error(err))
-			failed++
-		} else {
-			r.logger.Info("Preloaded NER model",
-				zap.String("model", name))
-			loaded++
-		}
-	}
-
-	r.logger.Info("NER preloading complete",
-		zap.Int("loaded", loaded),
-		zap.Int("failed", failed))
-
-	if failed > 0 && loaded == 0 {
-		return fmt.Errorf("all %d NER models failed to preload", failed)
-	}
-
-	return nil
-}
+func (r *NERRegistry) ListLoaded() []string       { return r.base.listLoaded() }
+func (r *NERRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *NERRegistry) Preload(names []string) error { return r.base.preload(names) }
 
 // PreloadAll loads all discovered models (for eager loading mode)
 func (r *NERRegistry) PreloadAll() error {
@@ -680,35 +469,7 @@ func (r *NERRegistry) PreloadAll() error {
 	for name := range models {
 		names = append(names, name)
 	}
-	return r.Preload(names)
+	return r.base.preload(names)
 }
 
-// Close stops the cache and unloads all models
-func (r *NERRegistry) Close() error {
-	r.logger.Info("Closing lazy NER registry")
-
-	// Stop cache first to prevent new evictions
-	r.cache.Stop()
-
-	// Close all cached models synchronously (don't rely on async eviction callbacks)
-	for _, key := range r.cache.Keys() {
-		if item := r.cache.Get(key); item != nil {
-			loaded := item.Value()
-			r.logger.Debug("Closing cached NER model",
-				zap.String("model", key))
-			if err := loaded.model.Close(); err != nil {
-				r.logger.Warn("Error closing NER model",
-					zap.String("model", key),
-					zap.Error(err))
-			}
-		}
-	}
-
-	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
-	r.cache.DeleteAll()
-
-	// Close any orphaned handles that were evicted while in use
-	logDrainErrors(r.logger, "NER", r.refs.drainOrphans())
-
-	return nil
-}
+func (r *NERRegistry) Close() error { return r.base.close() }

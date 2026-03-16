@@ -17,29 +17,23 @@ package embeddings
 import (
 	"context"
 	"fmt"
-	"runtime"
-	"sync/atomic"
 
 	"github.com/antflydb/antfly/pkg/libaf/embeddings"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledSparseEmbedder implements the SparseEmbedder interface
 var _ embeddings.SparseEmbedder = (*PooledSparseEmbedder)(nil)
 
 // PooledSparseEmbedder manages multiple sparse embedding pipelines for concurrent inference.
-// Mirrors PooledEmbedder's semaphore + round-robin pattern.
 type PooledSparseEmbedder struct {
-	pipelines    []*pipelines.SparseEmbeddingPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	logger       *zap.Logger
-	poolSize     int
-	batchSize    int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[*pipelines.SparseEmbeddingPipeline]
+	logger      *zap.Logger
+	batchSize   int
+	backendType backends.BackendType
 }
 
 // PooledSparseEmbedderConfig holds configuration for creating a PooledSparseEmbedder.
@@ -69,7 +63,7 @@ func NewPooledSparseEmbedder(
 
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
+		poolSize = 1
 	}
 
 	batchSize := cfg.BatchSize
@@ -91,28 +85,34 @@ func NewPooledSparseEmbedder(
 		zap.Int("poolSize", poolSize),
 		zap.Int("batchSize", batchSize))
 
-	pipelinesList := make([]*pipelines.SparseEmbeddingPipeline, poolSize)
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadSparseEmbeddingPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			opts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				_ = pipelinesList[j].Close()
+	p, _, err := pool.New(pool.Config[*pipelines.SparseEmbeddingPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.SparseEmbeddingPipeline, error) {
+			pipeline, bt, err := pipelines.LoadSparseEmbeddingPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				opts...,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("creating sparse pipeline: %w", err)
 			}
-			logger.Error("Failed to create sparse pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating sparse pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendUsed = bt
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(pipeline *pipelines.SparseEmbeddingPipeline) error {
+			if pipeline != nil {
+				return pipeline.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("Failed to create sparse pipeline pool", zap.Error(err))
+		return nil, "", err
 	}
 
 	logger.Info("Successfully created pooled sparse embedder",
@@ -120,31 +120,26 @@ func NewPooledSparseEmbedder(
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledSparseEmbedder{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        p,
 		logger:      logger,
-		poolSize:    poolSize,
 		batchSize:   batchSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
 
 // SparseEmbed generates sparse embeddings for the given texts.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 func (p *PooledSparseEmbedder) SparseEmbed(ctx context.Context, texts []string) ([]embeddings.SparseVector, error) {
 	if len(texts) == 0 {
 		return []embeddings.SparseVector{}, nil
 	}
 
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire pool slot
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	// Process in batches
 	result := make([]embeddings.SparseVector, 0, len(texts))
@@ -182,15 +177,5 @@ func (p *PooledSparseEmbedder) BackendType() backends.BackendType {
 
 // Close releases resources.
 func (p *PooledSparseEmbedder) Close() error {
-	var lastErr error
-	for i := range p.pipelines {
-		if err := p.pipelines[i].Close(); err != nil {
-			p.logger.Warn("Failed to close sparse pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			lastErr = err
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }

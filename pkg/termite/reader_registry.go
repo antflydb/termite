@@ -15,18 +15,14 @@
 package termite
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"runtime"
-	"sync"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/reading"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
 
@@ -41,24 +37,10 @@ type ReaderModelEntry struct {
 
 // ReaderRegistry manages reader models with lazy loading and TTL-based unloading
 type ReaderRegistry struct {
+	base           *BaseRegistry[ReaderModelEntry, reading.Reader]
 	modelsDir      string
 	sessionManager *backends.SessionManager
-	logger         *zap.Logger
-
-	// Model discovery (paths only, not loaded)
-	discovered map[string]*ReaderModelEntry
-	mu         sync.RWMutex
-
-	// Loaded models with TTL cache
-	cache *ttlcache.Cache[string, reading.Reader]
-
-	// Reference counting to prevent eviction during active use
-	refs refTracker
-
-	// Configuration
-	keepAlive       time.Duration
-	maxLoadedModels uint64
-	poolSize        int
+	poolSize       int
 }
 
 // ReaderConfig configures the reader registry
@@ -73,137 +55,85 @@ type ReaderConfig struct {
 func NewReaderRegistry(
 	config ReaderConfig,
 	sessionManager *backends.SessionManager,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*ReaderRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	keepAlive := config.KeepAlive
-	if keepAlive == 0 {
-		keepAlive = ttlcache.NoTTL // Never expire
-	}
-
 	poolSize := config.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
-	registry := &ReaderRegistry{
-		modelsDir:       config.ModelsDir,
-		sessionManager:  sessionManager,
-		logger:          logger,
-		discovered:      make(map[string]*ReaderModelEntry),
-		refs:            newRefTracker(),
-		keepAlive:       keepAlive,
-		maxLoadedModels: config.MaxLoadedModels,
-		poolSize:        poolSize,
+	r := &ReaderRegistry{
+		modelsDir:      config.ModelsDir,
+		sessionManager: sessionManager,
+		poolSize:       poolSize,
 	}
 
-	// Configure TTL cache with LRU eviction
-	cacheOpts := []ttlcache.Option[string, reading.Reader]{
-		ttlcache.WithTTL[string, reading.Reader](keepAlive),
-	}
-
-	if config.MaxLoadedModels > 0 {
-		cacheOpts = append(cacheOpts,
-			ttlcache.WithCapacity[string, reading.Reader](config.MaxLoadedModels))
-	}
-
-	registry.cache = ttlcache.New(cacheOpts...)
-
-	// Set up eviction callback to close unloaded models
-	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
-	// (manual deletion during Close() handles cleanup synchronously)
-	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, reading.Reader]) {
-		// Skip closing on manual deletion - Close() handles cleanup synchronously
-		if reason == ttlcache.EvictionReasonDeleted {
-			logger.Debug("Reader model removed from cache (cleanup handled separately)",
-				zap.String("model", item.Key()))
-			return
-		}
-
-		reasonStr := evictionReasonString(reason)
-
-		// Check if model is still in use (has active references)
-		model := item.Value()
-		if registry.refs.deferCloseIfInUse(item.Key(), func() error { return model.Close() }) {
-			logger.Warn("Reader model evicted while in use, deferring close",
-				zap.String("model", item.Key()),
-				zap.String("reason", reasonStr))
-			return
-		}
-
-		logger.Info("Evicting reader model from cache",
-			zap.String("model", item.Key()),
-			zap.String("reason", reasonStr))
-		if err := model.Close(); err != nil {
-			logger.Warn("Error closing evicted reader model",
-				zap.String("model", item.Key()),
-				zap.Error(err))
-		}
+	r.base = newBaseRegistry(BaseRegistryConfig[ReaderModelEntry, reading.Reader]{
+		ModelType:       "reader",
+		KeepAlive:       config.KeepAlive,
+		MaxLoadedModels: config.MaxLoadedModels,
+		NameFunc:        func(info *ReaderModelEntry) string { return info.Name },
+		LoadFn:          r.loadModel,
+		CloseFn:         func(m reading.Reader) error { return m.Close() },
+		DiscoverFn:      func() error { return r.discoverModels() },
+		Budget:          budget,
+		Logger:          logger,
 	})
 
-	// Start cache cleanup goroutine
-	go registry.cache.Start()
-
-	// Discover models (but don't load them)
-	if err := registry.discoverModels(); err != nil {
-		registry.cache.Stop()
+	if err := r.discoverModels(); err != nil {
+		r.base.cache.Stop()
 		return nil, err
 	}
 
 	logger.Info("Lazy reader registry initialized",
-		zap.Int("models_discovered", len(registry.discovered)),
-		zap.Duration("keep_alive", keepAlive),
+		zap.Int("models_discovered", len(r.base.discovered)),
+		zap.Duration("keep_alive", r.base.keepAlive),
 		zap.Uint64("max_loaded_models", config.MaxLoadedModels))
 
-	return registry, nil
+	return r, nil
 }
 
 // discoverModels finds all reader models in the models directory without loading them
 func (r *ReaderRegistry) discoverModels() error {
 	if r.modelsDir == "" {
-		r.logger.Info("No reader models directory configured")
+		r.base.logger.Info("No reader models directory configured")
 		return nil
 	}
 
-	// Check if directory exists
 	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
-		r.logger.Warn("Reader models directory does not exist",
+		r.base.logger.Warn("Reader models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil
 	}
 
-	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReader, zapLogf(r.logger))
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeReader, zapLogf(r.base.logger))
 	if err != nil {
 		return fmt.Errorf("discovering reader models: %w", err)
 	}
 
-	// Pool size for concurrent pipeline access
 	poolSize := r.poolSize
 
-	r.mu.Lock()
+	r.base.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 		variants := dm.Variants
 
-		// Skip if no model files exist. Models without standard model.onnx
-		// variants (e.g. PaddleOCR, Florence-2) are still valid as long as
-		// they contain at least one .onnx file; the pipeline loader handles
-		// architecture-specific file layouts at load time.
+		// Models without standard model.onnx variants (e.g. PaddleOCR, Florence-2)
+		// are still valid as long as they contain at least one .onnx file.
 		if len(variants) == 0 && !modelregistry.HasAnyONNXFiles(modelPath) {
 			continue
 		}
 
-		// Models without model.onnx variants; register under the default
-		// (empty) variant key so the pipeline loader can resolve files.
 		if len(variants) == 0 {
 			variants = map[string]string{"": ""}
 		}
 
-		// Store each variant for lazy loading (skip already-discovered entries)
 		anyNew := false
 		for variantID := range variants {
 			registryName := registryFullName
@@ -211,17 +141,16 @@ func (r *ReaderRegistry) discoverModels() error {
 				registryName = registryFullName + "-" + variantID
 			}
 
-			if _, exists := r.discovered[registryName]; exists {
+			if _, exists := r.base.discovered[registryName]; exists {
 				continue
 			}
 
-			// Extract capabilities from manifest if available
 			var caps []string
 			if dm.Manifest != nil {
 				caps = dm.Manifest.Capabilities
 			}
 
-			r.discovered[registryName] = &ReaderModelEntry{
+			r.base.discovered[registryName] = &ReaderModelEntry{
 				Name:         registryName,
 				Path:         modelPath,
 				PoolSize:     poolSize,
@@ -239,134 +168,26 @@ func (r *ReaderRegistry) discoverModels() error {
 					variantIDs = append(variantIDs, v)
 				}
 			}
-			r.logger.Info("Discovered reader model (not loaded)",
+			r.base.logger.Info("Discovered reader model (not loaded)",
 				zap.String("name", registryFullName),
 				zap.String("path", modelPath),
 				zap.Strings("variants", variantIDs))
 		}
 	}
-	discoveredCount := len(r.discovered)
-	r.mu.Unlock()
+	discoveredCount := len(r.base.discovered)
+	r.base.mu.Unlock()
 
-	r.logger.Info("Reader model discovery complete",
-		zap.Int("models_discovered", discoveredCount),
-		zap.Duration("keep_alive", r.keepAlive),
-		zap.Uint64("max_loaded_models", r.maxLoadedModels))
+	r.base.logger.Info("Reader model discovery complete",
+		zap.Int("models_discovered", discoveredCount))
 
 	return nil
 }
 
-// Get returns a reader by name, loading it if necessary.
-// DEPRECATED: Use Acquire() instead for long-running operations to prevent
-// the model from being evicted during use. Get() does not track usage and
-// the returned reader may be closed if the cache evicts it.
-func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
-	// Check cache first
-	if item := r.cache.Get(modelName); item != nil {
-		r.logger.Debug("Reader cache hit", zap.String("model", modelName))
-		return item.Value(), nil
-	}
-
-	// Check if model is discovered
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
-
-	if !ok {
-		// Model not yet discovered — rescan disk for newly pulled models
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Reader re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("reader model not found: %s", modelName)
-		}
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	// Load the model
-	return r.loadModel(info)
-}
-
-// Acquire returns a reader by name and increments its reference count.
-// The caller MUST call Release() when done to allow the model to be evicted.
-// This prevents the model from being closed while in use.
-func (r *ReaderRegistry) Acquire(modelName string) (reading.Reader, error) {
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !ok {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Reader re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("reader model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	r.refs.incRef(refKey)
-
-	reader, err := r.loadModel(info)
-	if err != nil {
-		r.refs.rollbackRef(refKey)
-		return nil, err
-	}
-
-	r.logger.Debug("Acquired reader model",
-		zap.String("model", refKey))
-
-	return reader, nil
-}
-
-// Release decrements the reference count for a model.
-// Must be called after Acquire() when the caller is done using the reader.
-func (r *ReaderRegistry) Release(modelName string) {
-	r.mu.RLock()
-	refKey := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
-
-	count, orphans := r.refs.releaseRef(refKey)
-
-	r.logger.Debug("Released reader model",
-		zap.String("model", refKey),
-		zap.Int("refCount", count))
-
-	closeOrphans(r.logger, "reader", refKey, orphans)
-}
-
-// loadModel loads a reader model from disk.
+// loadModel loads a reader model from disk. Called by BaseRegistry.loadModel.
 // Multi-stage OCR models (Surya, PaddleOCR) are dispatched to MultiStageReader,
 // while Vision2Seq models (TrOCR, Donut, Florence-2, Nougat, Pix2Struct) use PooledReader.
 func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
-	if item := r.cache.Get(info.Name); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading reader model on demand",
+	r.base.logger.Info("Loading reader model on demand",
 		zap.String("model", info.Name),
 		zap.String("path", info.Path))
 
@@ -374,25 +195,23 @@ func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, erro
 	var backendUsed backends.BackendType
 	var err error
 
-	// Check if this is a multi-stage OCR model
 	if pipelines.IsMultiStageModel(info.Path) {
-		r.logger.Info("Detected multi-stage OCR model",
+		r.base.logger.Info("Detected multi-stage OCR model",
 			zap.String("model", info.Name))
 
 		cfg := &reading.MultiStageReaderConfig{
 			ModelPath: info.Path,
-			Logger:    r.logger.Named(info.Name),
+			Logger:    r.base.logger.Named(info.Name),
 		}
 		model, backendUsed, err = reading.NewMultiStageReader(cfg, r.sessionManager, nil)
 		if err != nil {
 			return nil, fmt.Errorf("loading multi-stage reader model %s: %w", info.Name, err)
 		}
 	} else {
-		// Load using pipeline-based Vision2Seq reader
 		cfg := &reading.PooledReaderConfig{
 			ModelPath: info.Path,
 			PoolSize:  info.PoolSize,
-			Logger:    r.logger.Named(info.Name),
+			Logger:    r.base.logger.Named(info.Name),
 		}
 		model, backendUsed, err = reading.NewPooledReader(cfg, r.sessionManager, nil)
 		if err != nil {
@@ -400,118 +219,45 @@ func (r *ReaderRegistry) loadModel(info *ReaderModelEntry) (reading.Reader, erro
 		}
 	}
 
-	r.logger.Info("Successfully loaded reader model",
+	r.base.logger.Info("Successfully loaded reader model",
 		zap.String("name", info.Name),
 		zap.String("backend", string(backendUsed)))
-
-	// Add to cache
-	r.cache.Set(info.Name, model, r.keepAlive)
 
 	return model, nil
 }
 
-// List returns all available reader model names (discovered, not necessarily loaded).
-// Re-scans the models directory to pick up newly pulled models.
-func (r *ReaderRegistry) List() []string {
-	_ = r.discoverModels()
+// Acquire returns a reader by name and increments its reference count.
+// The caller MUST call Release() when done to allow the model to be evicted.
+func (r *ReaderRegistry) Acquire(modelName string) (reading.Reader, error) {
+	return r.base.acquire(modelName)
+}
 
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+// Release decrements the reference count for a model.
+func (r *ReaderRegistry) Release(modelName string) {
+	r.base.release(modelName)
+}
 
-	names := make([]string, 0, len(r.discovered))
-	for name := range r.discovered {
-		names = append(names, name)
-	}
-	return names
+// Get returns a reader by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations.
+func (r *ReaderRegistry) Get(modelName string) (reading.Reader, error) {
+	return r.base.get(modelName)
 }
 
 // ListWithCapabilities returns a map of model name to capabilities for all discovered models.
 func (r *ReaderRegistry) ListWithCapabilities() map[string][]string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.base.mu.RLock()
+	defer r.base.mu.RUnlock()
 
-	result := make(map[string][]string, len(r.discovered))
-	for name, info := range r.discovered {
+	result := make(map[string][]string, len(r.base.discovered))
+	for name, info := range r.base.discovered {
 		result[name] = info.Capabilities
 	}
 	return result
 }
 
-// ListLoaded returns only the currently loaded reader model names
-func (r *ReaderRegistry) ListLoaded() []string {
-	keys := r.cache.Keys()
-	return keys
-}
-
-// IsLoaded returns whether a model is currently loaded in memory
-func (r *ReaderRegistry) IsLoaded(modelName string) bool {
-	return r.cache.Has(modelName)
-}
-
-// Preload loads specified models at startup to avoid first-request latency
-func (r *ReaderRegistry) Preload(modelNames []string) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-
-	r.logger.Info("Preloading reader models", zap.Strings("models", modelNames))
-
-	var loaded, failed int
-	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
-			r.logger.Warn("Failed to preload reader model",
-				zap.String("model", name),
-				zap.Error(err))
-			failed++
-		} else {
-			r.logger.Info("Preloaded reader model",
-				zap.String("model", name))
-			loaded++
-		}
-	}
-
-	r.logger.Info("Reader preloading complete",
-		zap.Int("loaded", loaded),
-		zap.Int("failed", failed))
-
-	if failed > 0 && loaded == 0 {
-		return fmt.Errorf("all %d reader models failed to preload", failed)
-	}
-
-	return nil
-}
-
-// PreloadAll loads all discovered models (for eager loading mode)
-func (r *ReaderRegistry) PreloadAll() error {
-	return r.Preload(r.List())
-}
-
-// Close stops the cache and unloads all models
-func (r *ReaderRegistry) Close() error {
-	r.logger.Info("Closing lazy reader registry")
-
-	// Stop cache first to prevent new evictions
-	r.cache.Stop()
-
-	// Close all cached models synchronously (don't rely on async eviction callbacks)
-	for _, key := range r.cache.Keys() {
-		if item := r.cache.Get(key); item != nil {
-			model := item.Value()
-			r.logger.Debug("Closing cached reader model",
-				zap.String("model", key))
-			if err := model.Close(); err != nil {
-				r.logger.Warn("Error closing reader model",
-					zap.String("model", key),
-					zap.Error(err))
-			}
-		}
-	}
-
-	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
-	r.cache.DeleteAll()
-
-	// Close any orphaned handles that were evicted while in use
-	logDrainErrors(r.logger, "reader", r.refs.drainOrphans())
-
-	return nil
-}
+func (r *ReaderRegistry) List() []string            { return r.base.list() }
+func (r *ReaderRegistry) ListLoaded() []string       { return r.base.listLoaded() }
+func (r *ReaderRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *ReaderRegistry) Preload(names []string) error { return r.base.preload(names) }
+func (r *ReaderRegistry) PreloadAll() error           { return r.base.preloadAll() }
+func (r *ReaderRegistry) Close() error                { return r.base.close() }

@@ -2095,9 +2095,9 @@ components:
         max_loaded_models:
           type: integer
           description: |
-            Maximum number of models to keep loaded in memory simultaneously.
-            When this limit is reached, the least recently used model is unloaded (LRU eviction).
-            Set to 0 for unlimited (default). Only effective when keep_alive is non-zero.
+            Maximum total models loaded across all registry types (embedders, rerankers,
+            generators, chunkers, etc.). When the limit is reached, the least-recently-used
+            idle model from any registry is evicted to make room. Set to 0 for unlimited (default).
           default: 0
           example: 3
         pool_size:

@@ -108,7 +108,7 @@ func TestTermiteNode_HandleApiGenerate_InvalidRequest(t *testing.T) {
 
 func TestGeneratorRegistry_EmptyDirectory(t *testing.T) {
 	// Test with no models directory
-	registry, err := NewGeneratorRegistry(GeneratorConfig{ModelsDir: ""}, nil, zap.NewNop())
+	registry, err := NewGeneratorRegistry(GeneratorConfig{ModelsDir: ""}, nil, nil, zap.NewNop())
 	require.NoError(t, err)
 	require.NotNil(t, registry)
 	assert.Empty(t, registry.List())
@@ -117,7 +117,7 @@ func TestGeneratorRegistry_EmptyDirectory(t *testing.T) {
 
 func TestGeneratorRegistry_NonexistentDirectory(t *testing.T) {
 	// Test with non-existent directory
-	registry, err := NewGeneratorRegistry(GeneratorConfig{ModelsDir: "/nonexistent/path"}, nil, zap.NewNop())
+	registry, err := NewGeneratorRegistry(GeneratorConfig{ModelsDir: "/nonexistent/path"}, nil, nil, zap.NewNop())
 	require.NoError(t, err) // Should not error, just log warning
 	require.NotNil(t, registry)
 	assert.Empty(t, registry.List())

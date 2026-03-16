@@ -15,17 +15,14 @@
 package termite
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
-	"github.com/jellydator/ttlcache/v3"
 	"go.uber.org/zap"
 )
 
@@ -39,23 +36,9 @@ type GeneratorModelInfo struct {
 
 // GeneratorRegistry manages generator models with lazy loading and TTL-based unloading
 type GeneratorRegistry struct {
+	base           *BaseRegistry[GeneratorModelInfo, generation.Generator]
 	modelsDir      string
 	sessionManager *backends.SessionManager
-	logger         *zap.Logger
-
-	// Model discovery (paths only, not loaded)
-	discovered map[string]*GeneratorModelInfo
-	mu         sync.RWMutex
-
-	// Loaded models with TTL cache
-	cache *ttlcache.Cache[string, generation.Generator]
-
-	// Reference counting to prevent eviction during active use
-	refs refTracker
-
-	// Configuration
-	keepAlive       time.Duration
-	maxLoadedModels uint64
 }
 
 // GeneratorConfig configures the generator registry
@@ -69,110 +52,62 @@ type GeneratorConfig struct {
 func NewGeneratorRegistry(
 	config GeneratorConfig,
 	sessionManager *backends.SessionManager,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*GeneratorRegistry, error) {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
 
-	keepAlive := config.KeepAlive
-	if keepAlive == 0 {
-		keepAlive = ttlcache.NoTTL // Never expire
+	r := &GeneratorRegistry{
+		modelsDir:      config.ModelsDir,
+		sessionManager: sessionManager,
 	}
 
-	registry := &GeneratorRegistry{
-		modelsDir:       config.ModelsDir,
-		sessionManager:  sessionManager,
-		logger:          logger,
-		discovered:      make(map[string]*GeneratorModelInfo),
-		refs:            newRefTracker(),
-		keepAlive:       keepAlive,
-		maxLoadedModels: config.MaxLoadedModels,
-	}
-
-	// Configure TTL cache with LRU eviction
-	cacheOpts := []ttlcache.Option[string, generation.Generator]{
-		ttlcache.WithTTL[string, generation.Generator](keepAlive),
-	}
-
-	if config.MaxLoadedModels > 0 {
-		cacheOpts = append(cacheOpts,
-			ttlcache.WithCapacity[string, generation.Generator](config.MaxLoadedModels))
-	}
-
-	registry.cache = ttlcache.New(cacheOpts...)
-
-	// Set up eviction callback to close unloaded models
-	// Note: Only close on TTL expiration or capacity eviction, not on manual deletion
-	// (manual deletion during Close() handles cleanup synchronously)
-	registry.cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, item *ttlcache.Item[string, generation.Generator]) {
-		// Skip closing on manual deletion - Close() handles cleanup synchronously
-		if reason == ttlcache.EvictionReasonDeleted {
-			logger.Debug("Generator model removed from cache (cleanup handled separately)",
-				zap.String("model", item.Key()))
-			return
-		}
-
-		reasonStr := evictionReasonString(reason)
-
-		// Check if model is still in use (has active references)
-		model := item.Value()
-		if registry.refs.deferCloseIfInUse(item.Key(), func() error {
-			if closer, ok := model.(interface{ Close() error }); ok {
+	r.base = newBaseRegistry(BaseRegistryConfig[GeneratorModelInfo, generation.Generator]{
+		ModelType:       "generator",
+		KeepAlive:       config.KeepAlive,
+		MaxLoadedModels: config.MaxLoadedModels,
+		NameFunc:        func(info *GeneratorModelInfo) string { return info.Name },
+		LoadFn:          r.loadModel,
+		CloseFn: func(m generation.Generator) error {
+			if closer, ok := m.(interface{ Close() error }); ok {
 				return closer.Close()
 			}
 			return nil
-		}) {
-			logger.Warn("Generator model evicted while in use, deferring close",
-				zap.String("model", item.Key()),
-				zap.String("reason", reasonStr))
-			return
-		}
-
-		logger.Info("Evicting generator model from cache",
-			zap.String("model", item.Key()),
-			zap.String("reason", reasonStr))
-		if closer, ok := model.(interface{ Close() error }); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("Error closing evicted generator model",
-					zap.String("model", item.Key()),
-					zap.Error(err))
-			}
-		}
+		},
+		DiscoverFn: func() error { return r.discoverModels() },
+		Budget:     budget,
+		Logger:     logger,
 	})
 
-	// Start cache cleanup goroutine
-	go registry.cache.Start()
-
-	// Discover models (but don't load them)
-	if err := registry.discoverModels(); err != nil {
-		registry.cache.Stop()
+	if err := r.discoverModels(); err != nil {
+		r.base.cache.Stop()
 		return nil, err
 	}
 
 	logger.Info("Lazy generator registry initialized",
-		zap.Int("models_discovered", len(registry.discovered)),
-		zap.Duration("keep_alive", keepAlive),
+		zap.Int("models_discovered", len(r.base.discovered)),
+		zap.Duration("keep_alive", r.base.keepAlive),
 		zap.Uint64("max_loaded_models", config.MaxLoadedModels))
 
-	return registry, nil
+	return r, nil
 }
 
 // discoverModels finds all generator models in the models directory without loading them
 func (r *GeneratorRegistry) discoverModels() error {
 	if r.modelsDir == "" {
-		r.logger.Info("No generator models directory configured")
+		r.base.logger.Info("No generator models directory configured")
 		return nil
 	}
 
-	// Check if directory exists
 	if _, err := os.Stat(r.modelsDir); os.IsNotExist(err) {
-		r.logger.Warn("Generator models directory does not exist",
+		r.base.logger.Warn("Generator models directory does not exist",
 			zap.String("dir", r.modelsDir))
 		return nil
 	}
 
-	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeGenerator, zapLogf(r.logger))
+	discovered, err := modelregistry.DiscoverModelsInDir(r.modelsDir, modelregistry.ModelTypeGenerator, zapLogf(r.base.logger))
 	if err != nil {
 		return fmt.Errorf("discovering generator models: %w", err)
 	}
@@ -180,13 +115,13 @@ func (r *GeneratorRegistry) discoverModels() error {
 	// Known variant subdirectory names for generators
 	knownVariants := []string{"i4", "i4-cuda", "i4-dml"}
 
-	r.mu.Lock()
+	r.base.mu.Lock()
 	for _, dm := range discovered {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 
 		// Skip if already discovered
-		if _, exists := r.discovered[registryFullName]; exists {
+		if _, exists := r.base.discovered[registryFullName]; exists {
 			continue
 		}
 
@@ -197,7 +132,7 @@ func (r *GeneratorRegistry) discoverModels() error {
 			if isValidGeneratorModel(onnxSubpath) {
 				modelPath = onnxSubpath
 			} else {
-				r.logger.Debug("Skipping directory - not a valid generator model",
+				r.base.logger.Debug("Skipping directory - not a valid generator model",
 					zap.String("dir", registryFullName))
 				continue
 			}
@@ -209,131 +144,111 @@ func (r *GeneratorRegistry) discoverModels() error {
 			variantPath := filepath.Join(dm.Path, variantName)
 			if isValidGeneratorModel(variantPath) {
 				variants[variantName] = variantPath
-				r.logger.Debug("Found generator variant",
+				r.base.logger.Debug("Found generator variant",
 					zap.String("model", registryFullName),
 					zap.String("variant", variantName),
 					zap.String("path", variantPath))
 			}
 		}
 
-		r.logger.Info("Discovered generator model (not loaded)",
+		r.base.logger.Info("Discovered generator model (not loaded)",
 			zap.String("name", registryFullName),
 			zap.String("path", modelPath),
 			zap.Int("variants", len(variants)))
 
-		r.discovered[registryFullName] = &GeneratorModelInfo{
+		r.base.discovered[registryFullName] = &GeneratorModelInfo{
 			Name:     registryFullName,
 			Path:     modelPath,
 			Variants: variants,
 		}
 	}
-	discoveredCount := len(r.discovered)
-	r.mu.Unlock()
+	discoveredCount := len(r.base.discovered)
+	r.base.mu.Unlock()
 
-	r.logger.Info("Generator model discovery complete",
-		zap.Int("models_discovered", discoveredCount),
-		zap.Duration("keep_alive", r.keepAlive),
-		zap.Uint64("max_loaded_models", r.maxLoadedModels))
+	r.base.logger.Info("Generator model discovery complete",
+		zap.Int("models_discovered", discoveredCount))
 
 	return nil
 }
 
-// Get returns a generator by name, loading it if necessary.
-// DEPRECATED: Use Acquire() instead for long-running operations to prevent
-// the model from being evicted during use. Get() does not track usage and
-// the returned generator may be closed if the cache evicts it.
-func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) {
-	// Check cache first
-	if item := r.cache.Get(modelName); item != nil {
-		r.logger.Debug("Generator cache hit", zap.String("model", modelName))
+// loadModel loads a generator model from disk (base variant). Called by BaseRegistry.loadModel
+// which already handles budget reservation — do NOT reserve budget here.
+func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Generator, error) {
+	return r.loadModelInternal(info.Name, info.Path)
+}
+
+// loadModelWithBudget loads a generator model from a specific path, reserving a budget
+// slot. Used by variant paths (AcquireWithVariant/GetWithVariant) that bypass BaseRegistry.loadModel.
+func (r *GeneratorRegistry) loadModelWithBudget(cacheKey, modelPath string) (generation.Generator, error) {
+	if r.base.budget != nil {
+		if err := r.base.budget.Reserve(); err != nil {
+			return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, err)
+		}
+	}
+	model, err := r.loadModelInternal(cacheKey, modelPath)
+	if err != nil {
+		if r.base.budget != nil {
+			r.base.budget.Release()
+		}
+		return nil, err
+	}
+	return model, nil
+}
+
+// loadModelInternal loads a generator model from a specific path.
+// Does NOT manage budget — caller is responsible for budget reservation.
+func (r *GeneratorRegistry) loadModelInternal(cacheKey, modelPath string) (generation.Generator, error) {
+	r.base.mu.Lock()
+	defer r.base.mu.Unlock()
+
+	// Double-check cache after acquiring lock
+	if item := r.base.cache.Get(cacheKey); item != nil {
 		return item.Value(), nil
 	}
 
-	// Check if model is discovered
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
+	r.base.logger.Info("Loading generator model on demand",
+		zap.String("cacheKey", cacheKey),
+		zap.String("path", modelPath))
 
-	if !ok {
-		// Model not yet discovered — rescan disk for newly pulled models
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("generator model not found: %s", modelName)
-		}
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
+	// Ensure chat_template.jinja exists for chat template rendering.
+	ensureGeneratorPrereqs(modelPath, r.base.logger)
+
+	model, backendUsed, loadErr := generation.LoadGenerator(
+		modelPath,
+		1, // Use single pipeline, registry manages caching
+		r.base.logger.Named(cacheKey),
+		r.sessionManager,
+		[]string{"onnx"}, // Generative models currently only support ONNX
+	)
+
+	if loadErr != nil {
+		return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, loadErr)
 	}
 
-	// Load the model
-	return r.loadModel(info)
+	r.base.logger.Info("Successfully loaded generator model",
+		zap.String("cacheKey", cacheKey),
+		zap.String("backend", string(backendUsed)))
+
+	r.base.cache.Set(cacheKey, model, r.base.keepAlive)
+
+	return model, nil
+}
+
+// Get returns a generator by name, loading it if necessary.
+// DEPRECATED: Use Acquire() instead for long-running operations.
+func (r *GeneratorRegistry) Get(modelName string) (generation.Generator, error) {
+	return r.base.get(modelName)
 }
 
 // Acquire returns a generator by name and increments its reference count.
 // The caller MUST call Release() when done to allow the model to be evicted.
-// This prevents the model from being closed while in use.
 func (r *GeneratorRegistry) Acquire(modelName string) (generation.Generator, error) {
-	// Resolve variant inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	refKey := modelName
-	r.mu.RUnlock()
-
-	if !ok {
-		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
-		}
-		r.mu.RLock()
-		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
-		if !ok {
-			return nil, fmt.Errorf("generator model not found: %s", modelName)
-		}
-		refKey = resolved
-		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
-				zap.String("requested", modelName),
-				zap.String("resolved", resolved))
-		}
-	}
-
-	r.refs.incRef(refKey)
-
-	gen, err := r.loadModel(info)
-	if err != nil {
-		r.refs.rollbackRef(refKey)
-		return nil, err
-	}
-
-	r.logger.Debug("Acquired generator model",
-		zap.String("model", refKey))
-
-	return gen, nil
+	return r.base.acquire(modelName)
 }
 
 // Release decrements the reference count for a model.
-// Must be called after Acquire() when the caller is done using the generator.
 func (r *GeneratorRegistry) Release(modelName string) {
-	r.mu.RLock()
-	refKey := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
-
-	count, orphans := r.refs.releaseRef(refKey)
-
-	r.logger.Debug("Released generator model",
-		zap.String("model", refKey),
-		zap.Int("refCount", count))
-
-	closeOrphans(r.logger, "generator", refKey, orphans)
+	r.base.release(modelName)
 }
 
 // AcquireWithVariant returns a generator by name with a specific variant
@@ -341,25 +256,25 @@ func (r *GeneratorRegistry) Release(modelName string) {
 // The caller MUST call ReleaseWithVariant() when done.
 func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (generation.Generator, error) {
 	// Resolve base model name inline so the ref key matches the cache key.
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
+	r.base.mu.RLock()
+	info, ok := r.base.discovered[modelName]
 	resolvedBase := modelName
-	r.mu.RUnlock()
+	r.base.mu.RUnlock()
 
 	if !ok {
 		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+			r.base.logger.Debug("Generator re-discovery failed", zap.Error(err))
 		}
-		r.mu.RLock()
+		r.base.mu.RLock()
 		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
+		info, resolved, ok = resolveVariant(modelName, r.base.discovered)
+		r.base.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("generator model not found: %s", modelName)
 		}
 		resolvedBase = resolved
 		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
+			r.base.logger.Info("Resolved model name to variant",
 				zap.String("requested", modelName),
 				zap.String("resolved", resolved))
 		}
@@ -382,15 +297,15 @@ func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (gener
 		modelPath = variantPath
 	}
 
-	r.refs.incRef(cacheKey)
+	r.base.refs.incRef(cacheKey)
 
-	gen, err := r.loadModelFromPath(cacheKey, modelPath)
+	gen, err := r.loadModelWithBudget(cacheKey, modelPath)
 	if err != nil {
-		r.refs.rollbackRef(cacheKey)
+		r.base.refs.rollbackRef(cacheKey)
 		return nil, err
 	}
 
-	r.logger.Debug("Acquired generator model with variant",
+	r.base.logger.Debug("Acquired generator model with variant",
 		zap.String("model", cacheKey))
 
 	return gen, nil
@@ -398,77 +313,25 @@ func (r *GeneratorRegistry) AcquireWithVariant(modelName, variant string) (gener
 
 // ReleaseWithVariant decrements the reference count for a model variant.
 func (r *GeneratorRegistry) ReleaseWithVariant(modelName, variant string) {
-	// Resolve variant so the ref key matches the cache key.
-	r.mu.RLock()
-	resolved := resolveRefName(modelName, r.discovered)
-	r.mu.RUnlock()
+	r.base.mu.RLock()
+	resolved := resolveRefName(modelName, r.base.discovered)
+	r.base.mu.RUnlock()
 
-	// Build cache key including variant
 	cacheKey := resolved
 	if variant != "" {
 		cacheKey = resolved + ":" + variant
 	}
 
-	count, orphans := r.refs.releaseRef(cacheKey)
+	count, orphans := r.base.refs.releaseRef(cacheKey)
 
-	r.logger.Debug("Released generator model with variant",
+	r.base.logger.Debug("Released generator model with variant",
 		zap.String("model", cacheKey),
 		zap.Int("refCount", count))
 
-	closeOrphans(r.logger, "generator", cacheKey, orphans)
-}
-
-// loadModel loads a generator model from disk (base variant)
-func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Generator, error) {
-	return r.loadModelFromPath(info.Name, info.Path)
-}
-
-// loadModelFromPath loads a generator model from a specific path
-func (r *GeneratorRegistry) loadModelFromPath(cacheKey, modelPath string) (generation.Generator, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double-check cache after acquiring lock to prevent concurrent duplicate loads
-	if item := r.cache.Get(cacheKey); item != nil {
-		return item.Value(), nil
-	}
-
-	r.logger.Info("Loading generator model on demand",
-		zap.String("cacheKey", cacheKey),
-		zap.String("path", modelPath))
-
-	// Ensure chat_template.jinja exists for chat template rendering.
-	// We do NOT generate genai_config.json for HuggingFace models —
-	// ORT GenAI's model loader cannot parse standard HuggingFace ONNX exports.
-	// These models use Termite's pipeline-based inference instead.
-	ensureGeneratorPrereqs(modelPath, r.logger)
-
-	// Load the generator model
-	// This will try the pipeline-based approach first, then fall back to ortgenai
-	model, backendUsed, loadErr := generation.LoadGenerator(
-		modelPath,
-		1, // Use single pipeline, registry manages caching
-		r.logger.Named(cacheKey),
-		r.sessionManager,
-		[]string{"onnx"}, // Generative models currently only support ONNX
-	)
-
-	if loadErr != nil {
-		return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, loadErr)
-	}
-
-	r.logger.Info("Successfully loaded generator model",
-		zap.String("cacheKey", cacheKey),
-		zap.String("backend", string(backendUsed)))
-
-	// Add to cache
-	r.cache.Set(cacheKey, model, r.keepAlive)
-
-	return model, nil
+	closeOrphans(r.base.logger, "generator", cacheKey, orphans)
 }
 
 // GetWithVariant returns a generator by name with a specific variant, loading it if necessary.
-// If variant is empty, the base model is loaded.
 func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generation.Generator, error) {
 	// Build cache key including variant
 	cacheKey := modelName
@@ -477,30 +340,29 @@ func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generatio
 	}
 
 	// Check cache first
-	if item := r.cache.Get(cacheKey); item != nil {
-		r.logger.Debug("Generator cache hit", zap.String("model", cacheKey))
+	if item := r.base.cache.Get(cacheKey); item != nil {
+		r.base.logger.Debug("Generator cache hit", zap.String("model", cacheKey))
 		return item.Value(), nil
 	}
 
 	// Check if model is discovered
-	r.mu.RLock()
-	info, ok := r.discovered[modelName]
-	r.mu.RUnlock()
+	r.base.mu.RLock()
+	info, ok := r.base.discovered[modelName]
+	r.base.mu.RUnlock()
 
 	if !ok {
-		// Model not yet discovered — rescan disk for newly pulled models
 		if err := r.discoverModels(); err != nil {
-			r.logger.Debug("Generator re-discovery failed", zap.Error(err))
+			r.base.logger.Debug("Generator re-discovery failed", zap.Error(err))
 		}
-		r.mu.RLock()
+		r.base.mu.RLock()
 		var resolved string
-		info, resolved, ok = resolveVariant(modelName, r.discovered)
-		r.mu.RUnlock()
+		info, resolved, ok = resolveVariant(modelName, r.base.discovered)
+		r.base.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("generator model not found: %s", modelName)
 		}
 		if resolved != modelName {
-			r.logger.Info("Resolved model name to variant",
+			r.base.logger.Info("Resolved model name to variant",
 				zap.String("requested", modelName),
 				zap.String("resolved", resolved))
 		}
@@ -517,16 +379,15 @@ func (r *GeneratorRegistry) GetWithVariant(modelName, variant string) (generatio
 		modelPath = variantPath
 	}
 
-	// Load the model with the specific path
-	return r.loadModelFromPath(cacheKey, modelPath)
+	return r.loadModelWithBudget(cacheKey, modelPath)
 }
 
 // ListVariants returns the available variant names for a model
 func (r *GeneratorRegistry) ListVariants(modelName string) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.base.mu.RLock()
+	defer r.base.mu.RUnlock()
 
-	info, ok := r.discovered[modelName]
+	info, ok := r.base.discovered[modelName]
 	if !ok {
 		return nil
 	}
@@ -538,98 +399,9 @@ func (r *GeneratorRegistry) ListVariants(modelName string) []string {
 	return variants
 }
 
-// List returns all available generator model names (discovered, not necessarily loaded).
-// Re-scans the models directory to pick up newly pulled models.
-func (r *GeneratorRegistry) List() []string {
-	_ = r.discoverModels()
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]string, 0, len(r.discovered))
-	for name := range r.discovered {
-		names = append(names, name)
-	}
-	return names
-}
-
-// ListLoaded returns only the currently loaded generator model names
-func (r *GeneratorRegistry) ListLoaded() []string {
-	keys := r.cache.Keys()
-	return keys
-}
-
-// IsLoaded returns whether a model is currently loaded in memory
-func (r *GeneratorRegistry) IsLoaded(modelName string) bool {
-	return r.cache.Has(modelName)
-}
-
-// Preload loads specified models at startup to avoid first-request latency
-func (r *GeneratorRegistry) Preload(modelNames []string) error {
-	if len(modelNames) == 0 {
-		return nil
-	}
-
-	r.logger.Info("Preloading generator models", zap.Strings("models", modelNames))
-
-	var loaded, failed int
-	for _, name := range modelNames {
-		if _, err := r.Get(name); err != nil {
-			r.logger.Warn("Failed to preload generator model",
-				zap.String("model", name),
-				zap.Error(err))
-			failed++
-		} else {
-			r.logger.Info("Preloaded generator model",
-				zap.String("model", name))
-			loaded++
-		}
-	}
-
-	r.logger.Info("Generator preloading complete",
-		zap.Int("loaded", loaded),
-		zap.Int("failed", failed))
-
-	if failed > 0 && loaded == 0 {
-		return fmt.Errorf("all %d generator models failed to preload", failed)
-	}
-
-	return nil
-}
-
-// PreloadAll loads all discovered models (for eager loading mode)
-func (r *GeneratorRegistry) PreloadAll() error {
-	return r.Preload(r.List())
-}
-
-// Close stops the cache and unloads all models
-func (r *GeneratorRegistry) Close() error {
-	r.logger.Info("Closing lazy generator registry")
-
-	// Stop cache first to prevent new evictions
-	r.cache.Stop()
-
-	// Close all cached models synchronously (don't rely on async eviction callbacks)
-	for _, key := range r.cache.Keys() {
-		if item := r.cache.Get(key); item != nil {
-			model := item.Value()
-			r.logger.Debug("Closing cached generator model",
-				zap.String("model", key))
-			if closer, ok := model.(interface{ Close() error }); ok {
-				if err := closer.Close(); err != nil {
-					r.logger.Warn("Error closing generator model",
-						zap.String("model", key),
-						zap.Error(err))
-				}
-			}
-		}
-	}
-
-	// Clear the cache (eviction callbacks won't close since reason is EvictionReasonDeleted)
-	r.cache.DeleteAll()
-
-	// Close any orphaned handles that were evicted while in use
-	logDrainErrors(r.logger, "generator", r.refs.drainOrphans())
-
-	return nil
-}
+func (r *GeneratorRegistry) List() []string            { return r.base.list() }
+func (r *GeneratorRegistry) ListLoaded() []string       { return r.base.listLoaded() }
+func (r *GeneratorRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *GeneratorRegistry) Preload(names []string) error { return r.base.preload(names) }
+func (r *GeneratorRegistry) PreloadAll() error           { return r.base.preloadAll() }
+func (r *GeneratorRegistry) Close() error                { return r.base.close() }

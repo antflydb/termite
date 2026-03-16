@@ -17,14 +17,12 @@ package chunking
 import (
 	"context"
 	"fmt"
-	"runtime"
-	"sync/atomic"
 
 	"github.com/antflydb/antfly/pkg/libaf/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledChunker implements the Chunker interface
@@ -56,7 +54,7 @@ type PooledChunkerConfig struct {
 	// ModelPath is the path to the model directory
 	ModelPath string
 
-	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count)
+	// PoolSize determines how many concurrent requests can be processed (0 = 1)
 	PoolSize int
 
 	// ChunkerConfig contains chunking-specific settings
@@ -72,13 +70,10 @@ type PooledChunkerConfig struct {
 // PooledChunker manages multiple ChunkingPipeline instances for concurrent chunking.
 // Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledChunker struct {
-	pipelines    []*pipelines.ChunkingPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	config       ChunkerConfig
-	logger       *zap.Logger
-	poolSize     int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[*pipelines.ChunkingPipeline]
+	config      ChunkerConfig
+	logger      *zap.Logger
+	backendType backends.BackendType
 }
 
 // NewPooledChunker creates a new ChunkingPipeline-based pooled chunker.
@@ -108,10 +103,10 @@ func NewPooledChunker(
 		chunkerCfg.TargetTokens = 500
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size to 1 if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
+		poolSize = 1
 	}
 
 	logger.Info("Initializing pooled chunker",
@@ -121,33 +116,36 @@ func NewPooledChunker(
 		zap.Float32("threshold", chunkerCfg.Threshold),
 		zap.Int("targetTokens", chunkerCfg.TargetTokens))
 
-	// Create N ChunkingPipelines
-	pipelinesList := make([]*pipelines.ChunkingPipeline, poolSize)
+	// Capture backendUsed from the first factory call
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadChunkingPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			pipelines.WithChunkingThreshold(chunkerCfg.Threshold),
-			pipelines.WithChunkingTargetTokens(chunkerCfg.TargetTokens),
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	lazyPool, _, err := pool.New(pool.Config[*pipelines.ChunkingPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.ChunkingPipeline, error) {
+			pipeline, bt, err := pipelines.LoadChunkingPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				pipelines.WithChunkingThreshold(chunkerCfg.Threshold),
+				pipelines.WithChunkingTargetTokens(chunkerCfg.TargetTokens),
+			)
+			if err != nil {
+				return nil, err
 			}
-			logger.Error("Failed to create chunking pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating chunking pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendUsed = bt
-		logger.Debug("Created chunking pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(p *pipelines.ChunkingPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("Failed to create chunking pipeline pool", zap.Error(err))
+		return nil, "", fmt.Errorf("creating chunking pipeline pool: %w", err)
 	}
 
 	logger.Info("Successfully created pooled chunker pipelines",
@@ -155,11 +153,9 @@ func NewPooledChunker(
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledChunker{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        lazyPool,
 		config:      chunkerCfg,
 		logger:      logger,
-		poolSize:    poolSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
@@ -170,7 +166,7 @@ func (p *PooledChunker) BackendType() backends.BackendType {
 }
 
 // Chunk splits text using neural token classification.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 // Note: per-request options (opts) are currently ignored; pipeline uses config from creation time.
 func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.ChunkOptions) ([]chunking.Chunk, error) {
 	if text == "" {
@@ -178,15 +174,12 @@ func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.Ch
 		return nil, nil
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pipeline from the pool (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	textLen := len(text)
 	textPreview := text
@@ -237,17 +230,5 @@ func (p *PooledChunker) Chunk(ctx context.Context, text string, opts chunking.Ch
 
 // Close releases resources.
 func (p *PooledChunker) Close() error {
-	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }

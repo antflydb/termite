@@ -57,6 +57,7 @@ func NewCachedChunker(
 	poolSize int,
 	mediaKeepAlive time.Duration,
 	maxLoadedModels uint64,
+	budget *ModelBudget,
 	logger *zap.Logger,
 ) (*CachedChunker, error) {
 	cache := NewResultCache[ChunkResult]("Chunking", 2*time.Minute, logger.Named("cache"))
@@ -80,6 +81,7 @@ func NewCachedChunker(
 			PoolSize:        poolSize, // Number of concurrent pipelines per model
 		},
 		sessionManager,
+		budget,
 		logger.Named("registry"),
 	)
 	if err != nil {

@@ -20,15 +20,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledGLiNER implements Model, Recognizer, Classifier, and Extractor interfaces.
@@ -166,7 +164,7 @@ type PooledGLiNERConfig struct {
 	// ModelPath is the path to the model directory.
 	ModelPath string
 
-	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count).
+	// PoolSize determines how many concurrent requests can be processed (0 = default 1).
 	PoolSize int
 
 	// Quantized if true, use quantized model (model_quantized.onnx).
@@ -182,11 +180,8 @@ type PooledGLiNERConfig struct {
 // PooledGLiNER manages multiple GLiNER pipelines for concurrent zero-shot NER.
 // Uses the pipelines.GLiNERPipeline for inference.
 type PooledGLiNER struct {
-	pipelineList   []*pipelines.GLiNERPipeline
-	sem            *semaphore.Weighted
-	nextPipeline   atomic.Uint64
+	pool           *pool.LazyPool[*pipelines.GLiNERPipeline]
 	logger         *zap.Logger
-	poolSize       int
 	backendType    backends.BackendType
 	config         GLiNERConfig
 	labels         []string // Default labels from config
@@ -207,10 +202,10 @@ func NewPooledGLiNER(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size to 1 if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	// Load GLiNER config
@@ -239,32 +234,35 @@ func NewPooledGLiNER(
 		pipelines.WithGLiNERQuantized(cfg.Quantized),
 	}
 
-	// Create N GLiNER pipelines
-	pipelinesList := make([]*pipelines.GLiNERPipeline, poolSize)
+	// Capture backendType from the first pipeline creation
 	var backendType backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadGLiNERPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			loaderOpts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	lazyPool, _, err := pool.New(pool.Config[*pipelines.GLiNERPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.GLiNERPipeline, error) {
+			pipeline, bt, err := pipelines.LoadGLiNERPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				loaderOpts...,
+			)
+			if err != nil {
+				return nil, err
 			}
-			logger.Error("Failed to create GLiNER pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating GLiNER pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendType = bt
-		logger.Debug("Created GLiNER pipeline", zap.Int("index", i))
+			backendType = bt
+			return pipeline, nil
+		},
+		Close: func(p *pipelines.GLiNERPipeline) error {
+			if p != nil {
+				return p.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("Failed to create GLiNER pipeline pool", zap.Error(err))
+		return nil, "", fmt.Errorf("creating GLiNER pipeline pool: %w", err)
 	}
 
 	logger.Info("Successfully created pooled GLiNER pipelines",
@@ -273,10 +271,8 @@ func NewPooledGLiNER(
 		zap.Strings("default_labels", config.DefaultLabels))
 
 	return &PooledGLiNER{
-		pipelineList:   pipelinesList,
-		sem:            semaphore.NewWeighted(int64(poolSize)),
+		pool:           lazyPool,
 		logger:         logger,
-		poolSize:       poolSize,
 		backendType:    backendType,
 		config:         config,
 		labels:         config.DefaultLabels,
@@ -308,13 +304,7 @@ func (p *PooledGLiNER) Recognize(ctx context.Context, texts []string) ([][]Entit
 // Implements ner.Model interface.
 func (p *PooledGLiNER) Close() error {
 	p.logger.Info("Closing PooledGLiNER")
-	for _, pipeline := range p.pipelineList {
-		if pipeline != nil {
-			_ = pipeline.Close()
-		}
-	}
-	p.pipelineList = nil
-	return nil
+	return p.pool.Close()
 }
 
 // =============================================================================
@@ -333,15 +323,12 @@ func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, 
 		labels = p.labels
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelineList[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Starting GLiNER recognition",
 		zap.Int("pipelineIndex", idx),
@@ -397,15 +384,12 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 		relationLabels = p.relationLabels
 	}
 
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelineList[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Starting GLiNER relation extraction",
 		zap.Int("pipelineIndex", idx),
@@ -460,15 +444,12 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 		return nil, ErrNotSupported
 	}
 
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelineList[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Starting GLiNER question answering",
 		zap.Int("pipelineIndex", idx),
@@ -537,10 +518,7 @@ func (p *PooledGLiNER) RelationLabels() []string {
 
 // SupportsRelationExtraction returns true if the model supports relation extraction.
 func (p *PooledGLiNER) SupportsRelationExtraction() bool {
-	if len(p.pipelineList) == 0 {
-		return false
-	}
-	return p.pipelineList[0].SupportsRelationExtraction()
+	return p.pool.First().SupportsRelationExtraction()
 }
 
 // SupportsQA returns true if the model supports question answering.
@@ -595,15 +573,12 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		config = &defaultConfig
 	}
 
-	// Acquire semaphore slot
-	if err := p.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire pool slot
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelineList[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Starting GLiNER2 classification",
 		zap.Int("pipelineIndex", idx),
@@ -689,14 +664,13 @@ func (p *PooledGLiNER) Extract(ctx context.Context, texts []string, schemas []Ex
 	// requests can interleave rather than one batch hogging a slot.
 	results := make([]ExtractionResult, len(texts))
 	for i, text := range texts {
-		if err := p.sem.Acquire(ctx, 1); err != nil {
-			return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+		pipeline, idx, err := p.pool.Acquire(ctx)
+		if err != nil {
+			return nil, err
 		}
-		idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-		pipeline := p.pipelineList[idx]
 
 		result, err := extractFromText(ctx, pipeline, text, schemas, config, p.logger)
-		p.sem.Release(1)
+		p.pool.Release()
 		if err != nil {
 			p.logger.Error("GLiNER2 extraction failed",
 				zap.Int("pipelineIndex", idx),
@@ -719,10 +693,7 @@ func (p *PooledGLiNER) Extract(ctx context.Context, texts []string, schemas []Ex
 
 // IsBiEncoder returns true if this is a BiEncoder model that supports label caching.
 func (p *PooledGLiNER) IsBiEncoder() bool {
-	if len(p.pipelineList) == 0 {
-		return false
-	}
-	return p.pipelineList[0].IsBiEncoder()
+	return p.pool.First().IsBiEncoder()
 }
 
 // PrecomputeLabelEmbeddings precomputes and caches embeddings for the given labels.
@@ -733,19 +704,23 @@ func (p *PooledGLiNER) IsBiEncoder() bool {
 // embeddings that can be reused. For UniEncoder models, this is a no-op since
 // labels are encoded together with the text.
 func (p *PooledGLiNER) PrecomputeLabelEmbeddings(labels []string) error {
-	if len(p.pipelineList) == 0 {
-		return nil
+	// Initialize all pipelines so we can precompute for each one
+	if err := p.pool.InitAll(); err != nil {
+		return fmt.Errorf("initializing all pipelines for label precomputation: %w", err)
 	}
 
-	// Precompute embeddings for all pipelines in the pool
-	// Since each pipeline has its own session, we need to compute for each one
-	for i, pipeline := range p.pipelineList {
-		if err := pipeline.PrecomputeLabelEmbeddings(labels); err != nil {
-			p.logger.Error("Failed to precompute label embeddings",
-				zap.Int("pipelineIndex", i),
-				zap.Error(err))
-			return fmt.Errorf("precomputing label embeddings for pipeline %d: %w", i, err)
+	var precomputeErr error
+	p.pool.ForEachInitialized(func(pipeline *pipelines.GLiNERPipeline) {
+		if precomputeErr != nil {
+			return
 		}
+		if err := pipeline.PrecomputeLabelEmbeddings(labels); err != nil {
+			p.logger.Error("Failed to precompute label embeddings", zap.Error(err))
+			precomputeErr = fmt.Errorf("precomputing label embeddings: %w", err)
+		}
+	})
+	if precomputeErr != nil {
+		return precomputeErr
 	}
 
 	p.logger.Debug("Precomputed label embeddings",
@@ -757,25 +732,19 @@ func (p *PooledGLiNER) PrecomputeLabelEmbeddings(labels []string) error {
 
 // HasCachedLabelEmbeddings returns true if label embeddings are currently cached.
 func (p *PooledGLiNER) HasCachedLabelEmbeddings() bool {
-	if len(p.pipelineList) == 0 {
-		return false
-	}
-	return p.pipelineList[0].HasCachedLabelEmbeddings()
+	return p.pool.First().HasCachedLabelEmbeddings()
 }
 
 // CachedLabels returns the list of labels that are currently cached.
 func (p *PooledGLiNER) CachedLabels() []string {
-	if len(p.pipelineList) == 0 {
-		return nil
-	}
-	return p.pipelineList[0].CachedLabels()
+	return p.pool.First().CachedLabels()
 }
 
 // ClearLabelEmbeddingCache clears all cached label embeddings across all pooled pipelines.
 func (p *PooledGLiNER) ClearLabelEmbeddingCache() {
-	for _, pipeline := range p.pipelineList {
+	p.pool.ForEachInitialized(func(pipeline *pipelines.GLiNERPipeline) {
 		pipeline.ClearLabelEmbeddingCache()
-	}
+	})
 
 	p.logger.Debug("Cleared label embedding cache")
 }

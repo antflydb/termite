@@ -17,14 +17,12 @@ package transcribing
 import (
 	"context"
 	"fmt"
-	"runtime"
 	"strings"
-	"sync/atomic"
 
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // ModelType represents the type of Speech2Seq model for output parsing.
@@ -82,15 +80,12 @@ type Transcriber interface {
 var _ Transcriber = (*PooledTranscriber)(nil)
 
 // PooledTranscriber manages multiple Speech2Seq pipelines for concurrent transcription.
-// Each request acquires a pipeline slot via semaphore, enabling true parallelism.
+// Each request acquires a pipeline slot via the pool, enabling true parallelism.
 type PooledTranscriber struct {
-	pipelines    []*pipelines.Speech2SeqPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	logger       *zap.Logger
-	poolSize     int
-	modelType    ModelType
-	modelPath    string
+	pool      *pool.LazyPool[*pipelines.Speech2SeqPipeline]
+	logger    *zap.Logger
+	modelType ModelType
+	modelPath string
 }
 
 // PooledTranscriberConfig holds configuration for creating a PooledTranscriber.
@@ -98,7 +93,7 @@ type PooledTranscriberConfig struct {
 	// ModelPath is the path to the Speech2Seq model.
 	ModelPath string
 
-	// PoolSize is the number of concurrent pipelines (0 = auto-detect from CPU count).
+	// PoolSize is the number of concurrent pipelines (0 = 1).
 	PoolSize int
 
 	// GenerationConfig holds text generation parameters. If nil, uses defaults.
@@ -129,7 +124,7 @@ func NewPooledTranscriber(
 
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = min(runtime.NumCPU(), 4)
+		poolSize = 1
 	}
 
 	// Detect model type from path
@@ -147,35 +142,40 @@ func NewPooledTranscriber(
 		opts = append(opts, pipelines.WithSpeech2SeqGenerationConfig(cfg.GenerationConfig))
 	}
 
-	// Create pooled pipelines using LoadSpeech2SeqPipeline
-	pipelineSlice := make([]*pipelines.Speech2SeqPipeline, poolSize)
+	// Create the lazy pool
 	var backendType backends.BackendType
-
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadSpeech2SeqPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			modelBackends,
-			opts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelineSlice[j] != nil {
-					_ = pipelineSlice[j].Close()
-				}
+	p, first, err := pool.New(pool.Config[*pipelines.Speech2SeqPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.Speech2SeqPipeline, error) {
+			pipeline, bt, err := pipelines.LoadSpeech2SeqPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				modelBackends,
+				opts...,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("loading Speech2Seq pipeline: %w", err)
 			}
-			return nil, "", fmt.Errorf("loading Speech2Seq pipeline %d: %w", i, err)
-		}
-		pipelineSlice[i] = pipeline
-		backendType = bt
+			backendType = bt
+			return pipeline, nil
+		},
+		Close: func(pipeline *pipelines.Speech2SeqPipeline) error {
+			if pipeline != nil {
+				return pipeline.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		return nil, "", err
 	}
+	// Capture backend type from the eagerly-initialized first item.
+	_ = first
 
 	transcriber := &PooledTranscriber{
-		pipelines: pipelineSlice,
-		sem:       semaphore.NewWeighted(int64(poolSize)),
+		pool:      p,
 		logger:    logger,
-		poolSize:  poolSize,
 		modelType: modelType,
 		modelPath: cfg.ModelPath,
 	}
@@ -216,15 +216,12 @@ func (t *PooledTranscriber) TranscribeWithOptions(ctx context.Context, audioData
 		return nil, fmt.Errorf("no audio data provided")
 	}
 
-	// Acquire a pipeline slot
-	if err := t.sem.Acquire(ctx, 1); err != nil {
-		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
+	// Acquire a pipeline from the pool
+	pipeline, _, err := t.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
 	}
-	defer t.sem.Release(1)
-
-	// Get the next pipeline in round-robin fashion
-	idx := t.nextPipeline.Add(1) - 1
-	pipeline := t.pipelines[idx%uint64(t.poolSize)]
+	defer t.pool.Release()
 
 	// Temporarily override max tokens if specified
 	originalMaxTokens := pipeline.GenerationConfig.MaxNewTokens
@@ -305,26 +302,8 @@ func cleanWhisperOutput(text string) string {
 
 // Close releases all pipeline resources.
 func (t *PooledTranscriber) Close() error {
-	t.logger.Info("Closing pooled transcriber", zap.Int("poolSize", t.poolSize))
-
-	var errs []error
-
-	// Close all pipelines
-	for i, pipeline := range t.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				t.logger.Warn("Error closing pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				errs = append(errs, err)
-			}
-		}
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors closing transcriber: %v", errs)
-	}
-	return nil
+	t.logger.Info("Closing pooled transcriber")
+	return t.pool.Close()
 }
 
 // ModelType returns the detected model type.

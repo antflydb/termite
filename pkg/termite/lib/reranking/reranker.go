@@ -18,14 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
-	"sync/atomic"
 
 	"github.com/antflydb/antfly/pkg/libaf/reranking"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
+	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 )
 
 // Ensure PooledReranker implements the Model interface
@@ -34,12 +32,9 @@ var _ reranking.Model = (*PooledReranker)(nil)
 // PooledReranker manages multiple RerankingPipeline instances for concurrent reranking.
 // Uses the new backends package (go-huggingface + gomlx/onnxruntime).
 type PooledReranker struct {
-	pipelines    []*pipelines.RerankingPipeline
-	sem          *semaphore.Weighted
-	nextPipeline atomic.Uint64
-	logger       *zap.Logger
-	poolSize     int
-	backendType  backends.BackendType
+	pool        *pool.LazyPool[*pipelines.RerankingPipeline]
+	logger      *zap.Logger
+	backendType backends.BackendType
 }
 
 // PooledRerankerConfig holds configuration for creating a PooledReranker.
@@ -47,7 +42,7 @@ type PooledRerankerConfig struct {
 	// ModelPath is the path to the model directory
 	ModelPath string
 
-	// PoolSize determines how many concurrent requests can be processed (0 = auto-detect from CPU count)
+	// PoolSize determines how many concurrent requests can be processed (0 = 1)
 	PoolSize int
 
 	// MaxLength is the maximum sequence length for tokenization (0 = use default 512)
@@ -75,10 +70,10 @@ func NewPooledReranker(
 		logger = zap.NewNop()
 	}
 
-	// Auto-detect pool size from CPU count if not specified
+	// Default pool size to 1 if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
-		poolSize = runtime.NumCPU()
+		poolSize = 1
 	}
 
 	logger.Info("Initializing pooled reranker",
@@ -91,43 +86,46 @@ func NewPooledReranker(
 		loaderOpts = append(loaderOpts, pipelines.WithRerankingMaxLength(cfg.MaxLength))
 	}
 
-	// Create N pipelines
-	pipelinesList := make([]*pipelines.RerankingPipeline, poolSize)
+	// Track the backend type from the first pipeline
 	var backendUsed backends.BackendType
 
-	for i := 0; i < poolSize; i++ {
-		pipeline, bt, err := pipelines.LoadRerankingPipeline(
-			cfg.ModelPath,
-			sessionManager,
-			cfg.ModelBackends,
-			loaderOpts...,
-		)
-		if err != nil {
-			// Clean up already-created pipelines
-			for j := 0; j < i; j++ {
-				if pipelinesList[j] != nil {
-					_ = pipelinesList[j].Close()
-				}
+	p, first, err := pool.New(pool.Config[*pipelines.RerankingPipeline]{
+		Size: poolSize,
+		Factory: func() (*pipelines.RerankingPipeline, error) {
+			pipeline, bt, err := pipelines.LoadRerankingPipeline(
+				cfg.ModelPath,
+				sessionManager,
+				cfg.ModelBackends,
+				loaderOpts...,
+			)
+			if err != nil {
+				return nil, err
 			}
-			logger.Error("Failed to create reranking pipeline",
-				zap.Int("index", i),
-				zap.Error(err))
-			return nil, "", fmt.Errorf("creating reranking pipeline %d: %w", i, err)
-		}
-		pipelinesList[i] = pipeline
-		backendUsed = bt
-		logger.Debug("Created reranking pipeline", zap.Int("index", i), zap.String("backend", string(bt)))
+			backendUsed = bt
+			return pipeline, nil
+		},
+		Close: func(pipeline *pipelines.RerankingPipeline) error {
+			if pipeline != nil {
+				return pipeline.Close()
+			}
+			return nil
+		},
+		Logger: logger,
+	})
+	if err != nil {
+		logger.Error("Failed to create reranking pipeline pool", zap.Error(err))
+		return nil, "", fmt.Errorf("creating reranking pipeline pool: %w", err)
 	}
+
+	_ = first // backend type already captured via backendUsed
 
 	logger.Info("Successfully created pooled reranker pipelines",
 		zap.Int("count", poolSize),
 		zap.String("backend", string(backendUsed)))
 
 	return &PooledReranker{
-		pipelines:   pipelinesList,
-		sem:         semaphore.NewWeighted(int64(poolSize)),
+		pool:        p,
 		logger:      logger,
-		poolSize:    poolSize,
 		backendType: backendUsed,
 	}, backendUsed, nil
 }
@@ -138,7 +136,7 @@ func (p *PooledReranker) BackendType() backends.BackendType {
 }
 
 // Rerank scores documents based on relevance to the query.
-// Thread-safe: uses semaphore to limit concurrent pipeline access.
+// Thread-safe: uses pool to limit concurrent pipeline access.
 // Returns one score per document, higher scores indicate more relevance.
 func (p *PooledReranker) Rerank(ctx context.Context, query string, documents []string) ([]float32, error) {
 	if len(documents) == 0 {
@@ -149,15 +147,12 @@ func (p *PooledReranker) Rerank(ctx context.Context, query string, documents []s
 		return nil, errors.New("query is required for reranking")
 	}
 
-	// Acquire semaphore slot (blocks if all pipelines busy)
-	if err := p.sem.Acquire(ctx, 1); err != nil {
+	// Acquire a pipeline from the pool (blocks if all pipelines busy)
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
 	}
-	defer p.sem.Release(1)
-
-	// Round-robin pipeline selection
-	idx := int(p.nextPipeline.Add(1) % uint64(p.poolSize))
-	pipeline := p.pipelines[idx]
+	defer p.pool.Release()
 
 	p.logger.Debug("Using pipeline for reranking",
 		zap.Int("pipelineIndex", idx),
@@ -183,19 +178,7 @@ func (p *PooledReranker) Rerank(ctx context.Context, query string, documents []s
 
 // Close releases resources.
 func (p *PooledReranker) Close() error {
-	var lastErr error
-	for i, pipeline := range p.pipelines {
-		if pipeline != nil {
-			if err := pipeline.Close(); err != nil {
-				p.logger.Warn("Failed to close pipeline",
-					zap.Int("index", i),
-					zap.Error(err))
-				lastErr = err
-			}
-		}
-	}
-	p.pipelines = nil
-	return lastErr
+	return p.pool.Close()
 }
 
 // minScore returns the minimum score from a slice of scores.
