@@ -78,7 +78,7 @@ func TestMoondreamParseFields_EmptyDescription(t *testing.T) {
 	desc, fields := MoondreamParseFields(input)
 
 	// When description is empty, fallback to raw text
-	assert.Equal(t, `{"description": "", "mood": "neutral"}`, desc)
+	assert.JSONEq(t, `{"description": "", "mood": "neutral"}`, desc)
 	assert.Equal(t, "neutral", fields["mood"])
 }
 
@@ -107,14 +107,14 @@ func TestMoondreamParseFields_TemporalFlow(t *testing.T) {
 func TestMoondreamParseFields_EmptyInput(t *testing.T) {
 	desc, fields := MoondreamParseFields("")
 
-	assert.Equal(t, "", desc)
+	assert.Empty(t, desc)
 	assert.Empty(t, fields)
 }
 
 func TestMoondreamParseFields_WhitespaceOnly(t *testing.T) {
 	desc, fields := MoondreamParseFields("   \n\t  ")
 
-	assert.Equal(t, "", desc)
+	assert.Empty(t, desc)
 	assert.Empty(t, fields)
 }
 

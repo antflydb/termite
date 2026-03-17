@@ -85,7 +85,7 @@ func TestFindONNXFile_NoMatch(t *testing.T) {
 	dir := t.TempDir()
 
 	result := FindONNXFile(dir, []string{"model.onnx"})
-	assert.Equal(t, "", result)
+	assert.Empty(t, result)
 }
 
 func TestFindONNXFile_CandidateOrderPreserved(t *testing.T) {
@@ -111,5 +111,5 @@ func TestFindONNXFile_NonOnnxCandidateSkipped(t *testing.T) {
 	dir := t.TempDir()
 	// Non-.onnx candidates should be skipped in variant expansion
 	result := FindONNXFile(dir, []string{"tokenizer.json"})
-	assert.Equal(t, "", result)
+	assert.Empty(t, result)
 }

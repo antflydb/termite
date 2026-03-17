@@ -183,12 +183,12 @@ func TestConfigDefaults(t *testing.T) {
 	config := Config{}
 
 	// Default values should be zero-values
-	assert.Equal(t, "", config.ModelID)
-	assert.Equal(t, "", config.Task)
+	assert.Empty(t, config.ModelID)
+	assert.Empty(t, config.Task)
 	assert.Equal(t, 0, config.MaxLength)
 	assert.Equal(t, 0, config.NumBeams)
 	assert.Equal(t, 0, config.NumReturnSequences)
-	assert.Equal(t, "", config.InputFormat)
+	assert.Empty(t, config.InputFormat)
 	assert.False(t, config.DoSample)
 	assert.Equal(t, float32(0), config.TopP)
 	assert.Equal(t, float32(0), config.Temperature)

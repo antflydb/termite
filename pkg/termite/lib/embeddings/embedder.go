@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/gif"  // Register GIF decoder
+	_ "image/gif" // Register GIF decoder
 	stdjpeg "image/jpeg"
 	_ "image/png" // Register PNG decoder
 	"strings"

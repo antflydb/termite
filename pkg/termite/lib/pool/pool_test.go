@@ -78,13 +78,13 @@ func TestAcquire_LazyInit(t *testing.T) {
 		Close: func(m *mockPipeline) error { m.closed.Store(true); return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
 	// Acquire 3 slots — slots 1 and 2 should be lazily created.
 	items := make([]*mockPipeline, 3)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		item, _, err := p.Acquire(ctx)
 		require.NoError(t, err)
 		items[i] = item
@@ -93,7 +93,7 @@ func TestAcquire_LazyInit(t *testing.T) {
 	// All 3 slots should now be initialized.
 	assert.Equal(t, int32(3), created.Load())
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		p.Release()
 	}
 }
@@ -113,7 +113,7 @@ func TestAcquire_FactoryRetryOnError(t *testing.T) {
 		Close: func(m *mockPipeline) error { m.closed.Store(true); return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 
@@ -143,7 +143,7 @@ func TestFirst(t *testing.T) {
 		Close:   func(m *mockPipeline) error { return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	assert.Equal(t, first, p.First())
 	assert.Equal(t, 42, p.First().id)
@@ -190,7 +190,7 @@ func TestInitAll(t *testing.T) {
 		Close: func(m *mockPipeline) error { return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	assert.Equal(t, int32(1), created.Load())
 
@@ -206,12 +206,12 @@ func TestInitAll(t *testing.T) {
 
 func TestForEachInitialized(t *testing.T) {
 	p, _, err := New(Config[*mockPipeline]{
-		Size: 4,
+		Size:    4,
 		Factory: func() (*mockPipeline, error) { return &mockPipeline{}, nil },
 		Close:   func(m *mockPipeline) error { return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Only slot 0 initialized.
 	var count int
@@ -232,7 +232,7 @@ func TestAcquire_ContextCancellation(t *testing.T) {
 		Close:   func(m *mockPipeline) error { return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	// Acquire the only slot.
 	_, _, err = p.Acquire(context.Background())
@@ -260,7 +260,7 @@ func TestSize1_NoLazyInit(t *testing.T) {
 		Close: func(m *mockPipeline) error { return nil },
 	})
 	require.NoError(t, err)
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	ctx := context.Background()
 	item, idx, err := p.Acquire(ctx)

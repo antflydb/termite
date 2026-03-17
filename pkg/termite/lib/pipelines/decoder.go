@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"sort"
 
 	"github.com/ajroetker/go-highway/hwy/contrib/nn"
@@ -102,12 +103,7 @@ func (g *Generator) isEOS(token int32) bool {
 	if token == g.EOSTokenID {
 		return true
 	}
-	for _, eos := range g.EOSTokenIDs {
-		if token == eos {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g.EOSTokenIDs, token)
 }
 
 // suppressAllEOS sets logits to -inf for all EOS tokens.

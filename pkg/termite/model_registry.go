@@ -197,9 +197,9 @@ func generateGenaiConfig(modelPath string, logger *zap.Logger) error {
 				"head_size":       headDim,
 				"hidden_size":     hiddenSize,
 				"inputs": map[string]string{
-					"input_ids":       "input_ids",
-					"attention_mask":  "attention_mask",
-					"past_key_names":  "past_key_values.%d.key",
+					"input_ids":        "input_ids",
+					"attention_mask":   "attention_mask",
+					"past_key_names":   "past_key_values.%d.key",
 					"past_value_names": "past_key_values.%d.value",
 				},
 				"num_attention_heads": numAttentionHeads,

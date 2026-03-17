@@ -41,7 +41,7 @@ type ChatTemplate struct {
 func LoadChatTemplate(modelPath string) (*ChatTemplate, error) {
 	// Read the Jinja template
 	templatePath := filepath.Join(modelPath, "chat_template.jinja")
-	templateData, err := os.ReadFile(templatePath)
+	templateData, err := os.ReadFile(templatePath) //nolint:gosec // modelPath is a trusted internal path, not user input
 	if err != nil {
 		return nil, nil // No template found — not an error
 	}
@@ -86,15 +86,15 @@ func LoadChatTemplate(modelPath string) (*ChatTemplate, error) {
 // [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
 func (ct *ChatTemplate) Apply(messages []Message, addGenerationPrompt bool) (string, error) {
 	// Convert messages to the map format expected by Jinja templates
-	msgMaps := make([]map[string]interface{}, len(messages))
+	msgMaps := make([]map[string]any, len(messages))
 	for i, m := range messages {
-		msgMaps[i] = map[string]interface{}{
+		msgMaps[i] = map[string]any{
 			"role":    m.Role,
 			"content": m.GetTextContent(),
 		}
 	}
 
-	ctx := exec.NewContext(map[string]interface{}{
+	ctx := exec.NewContext(map[string]any{
 		"messages":              msgMaps,
 		"add_generation_prompt": addGenerationPrompt,
 		"bos_token":             ct.bosToken,
@@ -144,7 +144,6 @@ func normalizeMultilineStrings(template string) string {
 				if template[i] == '\'' || template[i] == '"' {
 					quote := template[i]
 					result.WriteString(template[tagStart:i])
-					tagStart = i
 					i++ // skip opening quote
 					result.WriteByte(quote)
 
@@ -157,11 +156,12 @@ func normalizeMultilineStrings(template string) string {
 							i += 2
 							continue
 						}
-						if template[i] == '\n' {
+						switch template[i] {
+						case '\n':
 							result.WriteString(`\n`)
-						} else if template[i] == '\r' {
+						case '\r':
 							result.WriteString(`\r`)
-						} else {
+						default:
 							result.WriteByte(template[i])
 						}
 						i++
@@ -554,12 +554,12 @@ func findTagEnd(template string, pos int, closer string) int {
 // loadSpecialTokens reads special tokens from tokenizer_config.json.
 func loadSpecialTokens(modelPath string) (bos, eos, unk, pad string) {
 	configPath := filepath.Join(modelPath, "tokenizer_config.json")
-	data, err := os.ReadFile(configPath)
+	data, err := os.ReadFile(configPath) //nolint:gosec // modelPath is a trusted internal path, not user input
 	if err != nil {
 		return "", "", "", ""
 	}
 
-	var config map[string]interface{}
+	var config map[string]any
 	if err := json.Unmarshal(data, &config); err != nil {
 		return "", "", "", ""
 	}
@@ -573,7 +573,7 @@ func loadSpecialTokens(modelPath string) (bos, eos, unk, pad string) {
 
 // extractToken extracts a token string from config. Tokens can be strings
 // or objects with a "content" field.
-func extractToken(config map[string]interface{}, key string) string {
+func extractToken(config map[string]any, key string) string {
 	v, ok := config[key]
 	if !ok {
 		return ""
@@ -581,7 +581,7 @@ func extractToken(config map[string]interface{}, key string) string {
 	switch val := v.(type) {
 	case string:
 		return val
-	case map[string]interface{}:
+	case map[string]any:
 		if content, ok := val["content"].(string); ok {
 			return content
 		}

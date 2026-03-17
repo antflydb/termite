@@ -485,11 +485,11 @@ func (r *ChunkerRegistry) HasCapability(modelName string, capability modelregist
 	return slices.Contains(info.Capabilities, string(capability))
 }
 
-func (r *ChunkerRegistry) List() []string            { return r.base.list() }
-func (r *ChunkerRegistry) ListLoaded() []string       { return r.base.listLoaded() }
-func (r *ChunkerRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *ChunkerRegistry) List() []string               { return r.base.list() }
+func (r *ChunkerRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *ChunkerRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *ChunkerRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *ChunkerRegistry) PreloadAll() error           { return r.base.preloadAll() }
+func (r *ChunkerRegistry) PreloadAll() error            { return r.base.preloadAll() }
 
 // Close stops the caches and unloads all models
 func (r *ChunkerRegistry) Close() error {

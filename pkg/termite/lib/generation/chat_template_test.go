@@ -87,7 +87,7 @@ func TestRewriteInlineIf(t *testing.T) {
 
 func TestLoadChatTemplateFromGemma(t *testing.T) {
 	modelPath := filepath.Join(os.Getenv("HOME"), ".termite/models/generators/onnx-community/gemma-3-270m-it-ONNX")
-	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil {
+	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil { //nolint:gosec // test-only path
 		t.Skip("Gemma model not downloaded, skipping")
 	}
 
@@ -116,7 +116,7 @@ func TestLoadChatTemplateFromGemma(t *testing.T) {
 
 func TestLoadChatTemplateMultiTurn(t *testing.T) {
 	modelPath := filepath.Join(os.Getenv("HOME"), ".termite/models/generators/onnx-community/gemma-3-270m-it-ONNX")
-	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil {
+	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil { //nolint:gosec // test-only path
 		t.Skip("Gemma model not downloaded, skipping")
 	}
 
@@ -144,7 +144,7 @@ func TestLoadChatTemplateMultiTurn(t *testing.T) {
 
 func TestLoadChatTemplateWithSystem(t *testing.T) {
 	modelPath := filepath.Join(os.Getenv("HOME"), ".termite/models/generators/onnx-community/gemma-3-270m-it-ONNX")
-	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil {
+	if _, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err != nil { //nolint:gosec // test-only path
 		t.Skip("Gemma model not downloaded, skipping")
 	}
 

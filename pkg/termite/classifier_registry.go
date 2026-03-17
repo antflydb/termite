@@ -231,8 +231,8 @@ func (r *ClassifierRegistry) Release(modelName string) {
 	r.base.release(modelName)
 }
 
-func (r *ClassifierRegistry) List() []string            { return r.base.list() }
-func (r *ClassifierRegistry) ListLoaded() []string       { return r.base.listLoaded() }
-func (r *ClassifierRegistry) IsLoaded(name string) bool   { return r.base.isLoaded(name) }
+func (r *ClassifierRegistry) List() []string               { return r.base.list() }
+func (r *ClassifierRegistry) ListLoaded() []string         { return r.base.listLoaded() }
+func (r *ClassifierRegistry) IsLoaded(name string) bool    { return r.base.isLoaded(name) }
 func (r *ClassifierRegistry) Preload(names []string) error { return r.base.preload(names) }
-func (r *ClassifierRegistry) Close() error                { return r.base.close() }
+func (r *ClassifierRegistry) Close() error                 { return r.base.close() }
