@@ -148,6 +148,8 @@ download_onnxruntime() {
             cp -r "${extracted_dir}/onnxruntime"/* "${output_path}/" 2>/dev/null || true
         fi
 
+        # Ensure shared libraries have correct permissions for downstream packaging
+        chmod 755 "${output_path}"/lib/*.so* "${output_path}"/lib/*.dylib* 2>/dev/null || true
         info "Successfully installed ONNX Runtime for ${our_platform}"
     else
         warn "Unexpected archive structure for ${our_platform}"
@@ -211,6 +213,8 @@ download_genai() {
         # Also copy any bundled onnxruntime library if present (GenAI often includes it)
         cp -r "${extracted_dir}"/lib/libonnxruntime*.${lib_ext}* "${output_path}/lib/" 2>/dev/null || true
 
+        # Ensure shared libraries have correct permissions for downstream packaging
+        chmod 755 "${output_path}"/lib/*.so* "${output_path}"/lib/*.dylib* 2>/dev/null || true
         info "Successfully installed ONNX Runtime GenAI for ${our_platform}"
     else
         # Try alternative structure
@@ -218,6 +222,7 @@ download_genai() {
         if [[ -n "$found_lib" ]]; then
             cp "$(dirname "$found_lib")"/libonnxruntime-genai*.${lib_ext}* "${output_path}/lib/" 2>/dev/null || true
             cp "$(dirname "$found_lib")"/libonnxruntime*.${lib_ext}* "${output_path}/lib/" 2>/dev/null || true
+            chmod 755 "${output_path}"/lib/*.so* "${output_path}"/lib/*.dylib* 2>/dev/null || true
             info "Successfully installed ONNX Runtime GenAI for ${our_platform}"
         else
             warn "Could not find GenAI libraries in archive for ${our_platform}"
