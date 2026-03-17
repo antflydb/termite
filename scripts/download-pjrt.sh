@@ -123,6 +123,7 @@ download_pjrt() {
 
     if [[ -n "$plugin_file" ]]; then
         cp "$plugin_file" "${output_path}/lib/"
+        chmod 755 "${output_path}/lib/$(basename "$plugin_file")"
         info "Successfully installed PJRT CPU plugin for ${our_platform}"
     else
         warn "Could not find PJRT plugin in archive for ${our_platform}"
