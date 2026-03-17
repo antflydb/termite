@@ -76,7 +76,7 @@ func TestRegistryEvictionRespectsRefcount(t *testing.T) {
 	reg.base.refs.mu.Lock()
 	orphanCount := len(reg.base.refs.evictedHandles["test"])
 	reg.base.refs.mu.Unlock()
-	assert.Greater(t, orphanCount, 0,
+	assert.Positive(t, orphanCount,
 		"evicted model must be tracked in evictedHandles")
 
 	// Release — should close orphaned handle
