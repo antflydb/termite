@@ -172,9 +172,10 @@ func (r *GeneratorRegistry) discoverModels() error {
 }
 
 // loadModel loads a generator model from disk (base variant). Called by BaseRegistry.loadModel
-// which already handles budget reservation — do NOT reserve budget here.
+// which already holds r.base.mu and handles budget/cache — do NOT lock, reserve budget, or
+// set cache here.
 func (r *GeneratorRegistry) loadModel(info *GeneratorModelInfo) (generation.Generator, error) {
-	return r.loadModelInternal(info.Name, info.Path)
+	return r.loadGeneratorFromPath(info.Name, info.Path)
 }
 
 // loadModelWithBudget loads a generator model from a specific path, reserving a budget
@@ -185,27 +186,33 @@ func (r *GeneratorRegistry) loadModelWithBudget(cacheKey, modelPath string) (gen
 			return nil, fmt.Errorf("loading generator model %s: %w", cacheKey, err)
 		}
 	}
-	model, err := r.loadModelInternal(cacheKey, modelPath)
+
+	r.base.mu.Lock()
+	defer r.base.mu.Unlock()
+
+	// Double-check cache after acquiring lock
+	if item := r.base.cache.Get(cacheKey); item != nil {
+		if r.base.budget != nil {
+			r.base.budget.Release()
+		}
+		return item.Value(), nil
+	}
+
+	model, err := r.loadGeneratorFromPath(cacheKey, modelPath)
 	if err != nil {
 		if r.base.budget != nil {
 			r.base.budget.Release()
 		}
 		return nil, err
 	}
+
+	r.base.cache.Set(cacheKey, model, r.base.keepAlive)
 	return model, nil
 }
 
-// loadModelInternal loads a generator model from a specific path.
-// Does NOT manage budget — caller is responsible for budget reservation.
-func (r *GeneratorRegistry) loadModelInternal(cacheKey, modelPath string) (generation.Generator, error) {
-	r.base.mu.Lock()
-	defer r.base.mu.Unlock()
-
-	// Double-check cache after acquiring lock
-	if item := r.base.cache.Get(cacheKey); item != nil {
-		return item.Value(), nil
-	}
-
+// loadGeneratorFromPath loads a generator model from a specific path.
+// Caller must hold r.base.mu. Does NOT manage budget or cache — caller is responsible.
+func (r *GeneratorRegistry) loadGeneratorFromPath(cacheKey, modelPath string) (generation.Generator, error) {
 	r.base.logger.Info("Loading generator model on demand",
 		zap.String("cacheKey", cacheKey),
 		zap.String("path", modelPath))
@@ -228,8 +235,6 @@ func (r *GeneratorRegistry) loadModelInternal(cacheKey, modelPath string) (gener
 	r.base.logger.Info("Successfully loaded generator model",
 		zap.String("cacheKey", cacheKey),
 		zap.String("backend", string(backendUsed)))
-
-	r.base.cache.Set(cacheKey, model, r.base.keepAlive)
 
 	return model, nil
 }
