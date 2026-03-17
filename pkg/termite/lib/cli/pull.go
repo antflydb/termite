@@ -180,7 +180,7 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 
 	// Count supporting files (non-ONNX) and f32 ONNX files if requested
 	for _, f := range manifest.Files {
-		if strings.HasSuffix(f.Name, ".onnx") {
+		if strings.HasSuffix(f.Name, ".onnx") || strings.HasSuffix(f.Name, ".onnx.data") {
 			// Count all ONNX files in base manifest if f32 is requested
 			// This supports both single-model (model.onnx) and multi-model (visual_model.onnx, text_model.onnx)
 			if requestedVariants[modelregistry.VariantF32] {

@@ -267,6 +267,105 @@ func TestClientHashMismatch(t *testing.T) {
 	}
 }
 
+func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
+	// Simulate a CLIP-style multimodal model with .onnx.data external data files.
+	// When pulling only "i8", the f32 .onnx and .onnx.data files should NOT be downloaded.
+	makeContent := func(name string) ([]byte, string) {
+		content := []byte("content-of-" + name)
+		h := sha256.New()
+		h.Write(content)
+		return content, "sha256:" + hex.EncodeToString(h.Sum(nil))
+	}
+
+	tokContent, tokDigest := makeContent("tokenizer.json")
+	visualOnnx, visualOnnxDigest := makeContent("visual_model.onnx")
+	visualData, visualDataDigest := makeContent("visual_model.onnx.data")
+	textOnnx, textOnnxDigest := makeContent("text_model.onnx")
+	textData, textDataDigest := makeContent("text_model.onnx.data")
+	visualI8, visualI8Digest := makeContent("visual_model_i8.onnx")
+	textI8, textI8Digest := makeContent("text_model_i8.onnx")
+
+	blobs := map[string][]byte{
+		tokDigest:        tokContent,
+		visualOnnxDigest: visualOnnx,
+		visualDataDigest: visualData,
+		textOnnxDigest:   textOnnx,
+		textDataDigest:   textData,
+		visualI8Digest:   visualI8,
+		textI8Digest:     textI8,
+	}
+
+	downloaded := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Path: /v1/blobs/sha256:...
+		digest := r.URL.Path[len("/v1/blobs/"):]
+		if content, ok := blobs[digest]; ok {
+			downloaded[digest] = true
+			_, _ = w.Write(content)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL+"/v1"), WithLogger(zap.NewNop()))
+
+	manifest := &ModelManifest{
+		SchemaVersion: 2,
+		Name:          "clip-vit-base-patch32",
+		Owner:         "openai",
+		Type:          ModelTypeEmbedder,
+		Capabilities:  []string{"image"},
+		Files: []ModelFile{
+			{Name: "visual_model.onnx", Digest: visualOnnxDigest, Size: int64(len(visualOnnx))},
+			{Name: "visual_model.onnx.data", Digest: visualDataDigest, Size: int64(len(visualData))},
+			{Name: "text_model.onnx", Digest: textOnnxDigest, Size: int64(len(textOnnx))},
+			{Name: "text_model.onnx.data", Digest: textDataDigest, Size: int64(len(textData))},
+			{Name: "tokenizer.json", Digest: tokDigest, Size: int64(len(tokContent))},
+		},
+		Variants: map[string]VariantEntry{
+			"i8": {Files: []ModelFile{
+				{Name: "visual_model_i8.onnx", Digest: visualI8Digest, Size: int64(len(visualI8))},
+				{Name: "text_model_i8.onnx", Digest: textI8Digest, Size: int64(len(textI8))},
+			}},
+		},
+	}
+
+	tmpDir := t.TempDir()
+
+	// Pull only i8 variant — f32 .onnx and .onnx.data should be skipped
+	if err := client.PullModel(context.Background(), manifest, tmpDir, []string{"i8"}); err != nil {
+		t.Fatalf("PullModel() error = %v", err)
+	}
+
+	// Supporting file should be downloaded
+	if !downloaded[tokDigest] {
+		t.Error("tokenizer.json should have been downloaded")
+	}
+
+	// Variant files should be downloaded
+	if !downloaded[visualI8Digest] {
+		t.Error("visual_model_i8.onnx should have been downloaded")
+	}
+	if !downloaded[textI8Digest] {
+		t.Error("text_model_i8.onnx should have been downloaded")
+	}
+
+	// f32 ONNX files and their .onnx.data should NOT be downloaded
+	if downloaded[visualOnnxDigest] {
+		t.Error("visual_model.onnx should NOT have been downloaded when only i8 requested")
+	}
+	if downloaded[visualDataDigest] {
+		t.Error("visual_model.onnx.data should NOT have been downloaded when only i8 requested")
+	}
+	if downloaded[textOnnxDigest] {
+		t.Error("text_model.onnx should NOT have been downloaded when only i8 requested")
+	}
+	if downloaded[textDataDigest] {
+		t.Error("text_model.onnx.data should NOT have been downloaded when only i8 requested")
+	}
+}
+
 func TestNewClientOptions(t *testing.T) {
 	logger := zap.NewNop()
 
