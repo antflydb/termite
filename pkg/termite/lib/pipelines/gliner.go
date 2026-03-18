@@ -684,7 +684,7 @@ func (p *GLiNERPipeline) processTextForRelations(
 	}
 
 	// Step 4: Match relation heads to entities and find tail entities
-	relations := p.matchRelations(entities, relationHeadSpans, entityLabels)
+	relations := p.matchRelations(entities, relationHeadSpans)
 
 	return entities, relations, nil
 }
@@ -693,7 +693,6 @@ func (p *GLiNERPipeline) processTextForRelations(
 func (p *GLiNERPipeline) matchRelations(
 	entities []GLiNEREntity,
 	relationHeadSpans []GLiNEREntity,
-	entityLabels []string,
 ) []GLiNERRelation {
 	var relations []GLiNERRelation
 
