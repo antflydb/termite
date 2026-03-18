@@ -15,13 +15,14 @@
 package pipelines
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -133,11 +134,11 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 			if rawConfig.Threshold > 0 {
 				config.Threshold = rawConfig.Threshold
 			}
-			if rawConfig.FlatNER {
-				config.FlatNER = rawConfig.FlatNER
+			if rawConfig.FlatNER != nil {
+				config.FlatNER = *rawConfig.FlatNER
 			}
-			if rawConfig.MultiLabel {
-				config.MultiLabel = rawConfig.MultiLabel
+			if rawConfig.MultiLabel != nil {
+				config.MultiLabel = *rawConfig.MultiLabel
 			}
 			if rawConfig.ModelType != "" {
 				config.ModelType = GLiNERModelType(rawConfig.ModelType)
@@ -154,8 +155,8 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 		}
 	}
 
-	// Detect model type from model name if not specified in config
-	if config.ModelType == "" || config.ModelType == GLiNERModelUniEncoder {
+	// Detect model type from model name if not explicitly set in config
+	if config.ModelType == GLiNERModelUniEncoder {
 		config.ModelType = detectGLiNERModelType(modelPath)
 	}
 
@@ -163,13 +164,14 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 }
 
 // rawGLiNERConfig represents gliner_config.json structure.
+// Pointer fields distinguish "not set" from "set to zero/false".
 type rawGLiNERConfig struct {
 	MaxWidth          int      `json:"max_width"`
 	MaxLength         int      `json:"max_len"`
 	Labels            []string `json:"labels"`
 	Threshold         float32  `json:"threshold"`
-	FlatNER           bool     `json:"flat_ner"`
-	MultiLabel        bool     `json:"multi_label"`
+	FlatNER           *bool    `json:"flat_ner"`
+	MultiLabel        *bool    `json:"multi_label"`
 	ModelType         string   `json:"model_type"`
 	RelationLabels    []string `json:"relation_labels"`
 	RelationThreshold float32  `json:"relation_threshold"`
@@ -473,13 +475,6 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 		if err != nil {
 			return nil, fmt.Errorf("parsing GLiNER2 outputs: %w", err)
 		}
-
-		sort.Slice(entities, func(i, j int) bool {
-			if entities[i].Start != entities[j].Start {
-				return entities[i].Start < entities[j].Start
-			}
-			return entities[i].End < entities[j].End
-		})
 
 		return entities, nil
 	}
@@ -855,23 +850,7 @@ func (p *GLiNERPipeline) classifySingleText(
 			})
 		}
 
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].Score > results[j].Score
-		})
-
-		if !config.MultiLabel && len(results) > 0 {
-			k := 1
-			if config.TopK > 0 {
-				k = config.TopK
-			}
-			if len(results) > k {
-				results = results[:k]
-			}
-		} else if config.TopK > 0 && len(results) > config.TopK {
-			results = results[:config.TopK]
-		}
-
-		return results, nil
+		return sortAndTruncateClassifications(results, config), nil
 	}
 
 	// GLiNER v1: per-label inference with old prompt format.
@@ -904,12 +883,15 @@ func (p *GLiNERPipeline) classifySingleText(
 		})
 	}
 
-	// Sort by score descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
+	return sortAndTruncateClassifications(results, config), nil
+}
+
+// sortAndTruncateClassifications sorts results by score descending and applies TopK/MultiLabel filtering.
+func sortAndTruncateClassifications(results []GLiNER2Classification, config *GLiNER2ClassificationConfig) []GLiNER2Classification {
+	slices.SortFunc(results, func(a, b GLiNER2Classification) int {
+		return cmp.Compare(b.Score, a.Score) // descending
 	})
 
-	// Apply single-label / TopK filtering
 	if !config.MultiLabel && len(results) > 0 {
 		k := 1
 		if config.TopK > 0 {
@@ -922,7 +904,7 @@ func (p *GLiNERPipeline) classifySingleText(
 		results = results[:config.TopK]
 	}
 
-	return results, nil
+	return results
 }
 
 // maxLabelScore extracts the maximum sigmoid-activated score for a specific label
@@ -1012,20 +994,15 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 	}
 
 	// Tokenize text words (lowercased, each word individually)
-	type wordTokenInfo struct {
-		tokens   []int
-		firstIdx int // index of first sub-token in final sequence
-	}
-	wordInfos := make([]wordTokenInfo, len(words))
+	wordTokens := make([][]int, len(words))
 	for i, word := range words {
-		tokens := p.Tokenizer.EncodeWithOptions(strings.ToLower(word), false)
-		wordInfos[i] = wordTokenInfo{tokens: tokens}
+		wordTokens[i] = p.Tokenizer.EncodeWithOptions(strings.ToLower(word), false)
 	}
 
 	// Count total text sub-tokens
 	totalTextSubTokens := 0
-	for _, wi := range wordInfos {
-		totalTextSubTokens += len(wi.tokens)
+	for _, wt := range wordTokens {
+		totalTextSubTokens += len(wt)
 	}
 
 	// Build full sequence
@@ -1052,19 +1029,17 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 
 	// Fill text tokens with word tracking
 	numWords := 0
-	for i := range wordInfos {
+	for i, wt := range wordTokens {
 		if idx >= seqLen {
 			break
 		}
-		wordInfos[i].firstIdx = idx
-		for j, tok := range wordInfos[i].tokens {
+		for _, tok := range wt {
 			if idx >= seqLen {
 				break
 			}
 			inputIDs[idx] = int64(tok)
 			attentionMask[idx] = 1
 			wordsMask[idx] = int64(i + 1) // 1-indexed word ID
-			_ = j
 			idx++
 		}
 		numWords = i + 1
@@ -1151,7 +1126,6 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	clsID := int64(1) // DeBERTa [CLS]
 	sepID := int64(2) // DeBERTa [SEP]
 	padID := int64(0) // DeBERTa [PAD]
-	_ = padID         // unused for now, padding handled later
 
 	idx := 0
 	inputIDs[idx] = clsID
@@ -1176,16 +1150,9 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	textStartIdx := idx
 
 	// Add text tokens with word tracking.
-	// Track per-word sub-token boundaries so we can build word-level spans.
-	// wordFirstToken[w] = index of first sub-token for word w (relative to textStartIdx)
-	// wordLastToken[w]  = index of last sub-token for word w (relative to textStartIdx)
-	wordFirstToken := make([]int, 0, len(textTokens))
-	wordLastToken := make([]int, 0, len(textTokens))
-
 	wordIdx := int64(1) // Start at 1 (0 reserved for non-word tokens)
 	for _, wordTokens := range textTokens {
-		first := -1
-		last := -1
+		added := false
 		for _, tok := range wordTokens {
 			// Skip special tokens that tokenizer adds
 			if tok == 0 || tok == 1 || tok == 2 {
@@ -1194,19 +1161,13 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 			if idx >= seqLen-1 {
 				break
 			}
-			relPos := idx - textStartIdx
-			if first < 0 {
-				first = relPos
-			}
-			last = relPos
 			inputIDs[idx] = int64(tok)
 			attentionMask[idx] = 1
 			wordsMask[idx] = wordIdx
 			idx++
+			added = true
 		}
-		if first >= 0 {
-			wordFirstToken = append(wordFirstToken, first)
-			wordLastToken = append(wordLastToken, last)
+		if added {
 			wordIdx++
 		}
 		if idx >= seqLen-1 {
@@ -1217,7 +1178,6 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	// Record text length (number of sub-tokens)
 	numTextTokens := idx - textStartIdx
 	textLengths[0] = int64(numTextTokens)
-	numWords := len(wordFirstToken)
 
 	// Add final separator
 	if idx < seqLen {
@@ -1234,58 +1194,24 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 
 	maxWidth := p.PipelineConfig.MaxWidth
 
-	var numSpans int
-	var spanIdx []int64
-	var spanMask []bool
+	// GLiNER v1: Build span indices at sub-token level.
+	// The v1 ONNX model has an internal Reshape that expects
+	// numSpans = numTextTokens * maxWidth.
+	if numTextTokens < 1 {
+		numTextTokens = 1
+	}
+	numSpans := numTextTokens * maxWidth
+	spanIdx := make([]int64, numSpans*2)
+	spanMask := make([]bool, numSpans)
 
-	if p.IsGLiNER2() {
-		// GLiNER2: Build span indices at word level.
-		// The ONNX wrapper uses torch.gather on span_idx positions directly,
-		// so we map word pairs to their sub-token boundaries.
-		// For span (w, w+wi): start = first sub-token of word w, end = last sub-token of word w+wi.
-		// This gives numSpans = numWords * maxWidth, aligned with parseOutputs.
-		if numWords < 1 {
-			numWords = 1
-		}
-		numSpans = numWords * maxWidth
-		spanIdx = make([]int64, numSpans*2)
-		spanMask = make([]bool, numSpans)
-
-		for w := 0; w < numWords; w++ {
-			for wi := range maxWidth {
-				spanI := w*maxWidth + wi
-				endWord := w + wi
-				if w < len(wordFirstToken) && endWord < len(wordLastToken) {
-					spanIdx[spanI*2] = int64(wordFirstToken[w])
-					spanIdx[spanI*2+1] = int64(wordLastToken[endWord])
-					spanMask[spanI] = true
-				} else {
-					spanIdx[spanI*2] = 0
-					spanIdx[spanI*2+1] = 0
-					spanMask[spanI] = false
-				}
-			}
-		}
-	} else {
-		// GLiNER v1: Build span indices at sub-token level.
-		// The v1 ONNX model has an internal Reshape that expects
-		// numSpans = numTextTokens * maxWidth.
-		if numTextTokens < 1 {
-			numTextTokens = 1
-		}
-		numSpans = numTextTokens * maxWidth
-		spanIdx = make([]int64, numSpans*2)
-		spanMask = make([]bool, numSpans)
-
-		for t := 0; t < numTextTokens; t++ {
-			for wi := range maxWidth {
-				spanI := t*maxWidth + wi
-				start := t
-				end := t + wi
-				spanIdx[spanI*2] = int64(start)
-				spanIdx[spanI*2+1] = int64(end)
-				spanMask[spanI] = end < numTextTokens
-			}
+	for t := 0; t < numTextTokens; t++ {
+		for wi := range maxWidth {
+			spanI := t*maxWidth + wi
+			start := t
+			end := t + wi
+			spanIdx[spanI*2] = int64(start)
+			spanIdx[spanI*2+1] = int64(end)
+			spanMask[spanI] = end < numTextTokens
 		}
 	}
 
@@ -1328,29 +1254,32 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 
 // parseOutputs extracts entities from model outputs.
 func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
-	// Find the logits output
+	// Find the logits output: prefer named "logits"/"output", fall back to first float32.
 	var logits []float32
 	var logitsShape []int64
+	var fallbackLogits []float32
+	var fallbackShape []int64
 
 	for _, out := range outputs {
-		if strings.Contains(strings.ToLower(out.Name), "logits") || out.Name == "output" {
-			if data, ok := out.Data.([]float32); ok {
-				logits = data
-				logitsShape = out.Shape
-				break
-			}
+		data, ok := out.Data.([]float32)
+		if !ok {
+			continue
+		}
+		name := strings.ToLower(out.Name)
+		if strings.Contains(name, "logits") || out.Name == "output" {
+			logits = data
+			logitsShape = out.Shape
+			break
+		}
+		if fallbackLogits == nil {
+			fallbackLogits = data
+			fallbackShape = out.Shape
 		}
 	}
 
 	if logits == nil {
-		// Try first float32 output
-		for _, out := range outputs {
-			if data, ok := out.Data.([]float32); ok {
-				logits = data
-				logitsShape = out.Shape
-				break
-			}
-		}
+		logits = fallbackLogits
+		logitsShape = fallbackShape
 	}
 
 	if logits == nil {
@@ -1369,6 +1298,11 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		numLabels = int(logitsShape[3])
 	} else if len(logitsShape) == 3 {
 		numLabels = int(logitsShape[2])
+	}
+
+	// Clamp to actual label count to prevent out-of-bounds access
+	if numLabels > len(labels) {
+		numLabels = len(labels)
 	}
 
 	// Extract entities from spans with scores above threshold
@@ -1433,11 +1367,11 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	}
 
 	// Sort by position
-	sort.Slice(entities, func(i, j int) bool {
-		if entities[i].Start != entities[j].Start {
-			return entities[i].Start < entities[j].Start
+	slices.SortFunc(entities, func(a, b GLiNEREntity) int {
+		if c := cmp.Compare(a.Start, b.Start); c != 0 {
+			return c
 		}
-		return entities[i].End < entities[j].End
+		return cmp.Compare(a.End, b.End)
 	})
 
 	return entities, nil
@@ -1452,8 +1386,8 @@ func (p *GLiNERPipeline) removeOverlappingEntities(entities []GLiNEREntity) []GL
 	// Sort by score descending
 	sorted := make([]GLiNEREntity, len(entities))
 	copy(sorted, entities)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Score > sorted[j].Score
+	slices.SortFunc(sorted, func(a, b GLiNEREntity) int {
+		return cmp.Compare(b.Score, a.Score) // descending
 	})
 
 	var result []GLiNEREntity
