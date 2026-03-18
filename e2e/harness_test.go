@@ -129,6 +129,50 @@ func ensureRegistryModel(t *testing.T, modelName string, modelType ModelType) st
 	return modelPath
 }
 
+// ensureRegistryModelVariant downloads a specific variant of a model from the registry.
+// Unlike ensureRegistryModel which always pulls f32, this pulls the specified variants.
+// It always re-pulls to ensure the requested variants are present (variant files may
+// differ from what was previously downloaded).
+func ensureRegistryModelVariant(t *testing.T, modelName string, modelType ModelType, variants []string) string {
+	t.Helper()
+
+	modelDownloadMutex.Lock()
+	defer modelDownloadMutex.Unlock()
+
+	modelPath := filepath.Join(testModelsDir, string(modelType), modelName)
+
+	t.Logf("Downloading model variant from registry: %s (variants: %v)", modelName, variants)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	lastMilestone := make(map[string]int)
+	regClient := modelregistry.NewClient(
+		modelregistry.WithProgressHandler(func(downloaded, total int64, filename string) {
+			if total > 0 {
+				percent := float64(downloaded) / float64(total) * 100
+				milestone := int(percent / 25)
+				if milestone > lastMilestone[filename] || (downloaded == total && lastMilestone[filename] < 4) {
+					lastMilestone[filename] = milestone
+					t.Logf("  %s: %.0f%%", filename, percent)
+				}
+			}
+		}),
+	)
+
+	manifest, err := regClient.FetchManifest(ctx, modelName)
+	if err != nil {
+		t.Fatalf("Failed to fetch manifest for %s: %v", modelName, err)
+	}
+
+	if err := regClient.PullModel(ctx, manifest, testModelsDir, variants); err != nil {
+		t.Fatalf("Failed to pull model %s (variants %v): %v", modelName, variants, err)
+	}
+
+	t.Logf("Successfully downloaded model: %s (variants: %v)", modelName, variants)
+	return modelPath
+}
+
 // ensureHuggingFaceModel downloads a model directly from HuggingFace if not present.
 // modelName is the name used in the local directory (e.g., "gliner_small-v2.1")
 // repo is the HuggingFace repository (e.g., "onnx-community/gliner_small-v2.1")
