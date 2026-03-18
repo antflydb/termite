@@ -143,7 +143,7 @@ func TestSelectGeneratorFiles_FlatRepoDefaultVariant(t *testing.T) {
 	var onnxFiles []string
 	for _, f := range result {
 		base := filepath.Base(f)
-		if strings.HasSuffix(base, ".onnx") || strings.HasSuffix(base, ".onnx_data") || strings.HasSuffix(base, ".onnx.data") {
+		if isONNXFile(base) {
 			onnxFiles = append(onnxFiles, base)
 		}
 	}

@@ -248,6 +248,7 @@ func BenchmarkMemoryPerShape(b *testing.B) {
 		},
 		sm,
 		nil,
+		nil,
 	)
 	if err != nil {
 		b.Fatalf("Failed to create registry: %v", err)

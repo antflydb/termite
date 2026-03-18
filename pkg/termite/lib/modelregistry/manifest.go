@@ -230,6 +230,87 @@ var FilenameToVariant = map[string]string{
 	"model_i4.onnx":    VariantI4,
 }
 
+// isONNXFile reports whether name has an ONNX model or external-data suffix.
+func isONNXFile(name string) bool {
+	return strings.HasSuffix(name, ".onnx") ||
+		strings.HasSuffix(name, ".onnx.data") ||
+		strings.HasSuffix(name, ".onnx_data")
+}
+
+// onnxStem strips ONNX suffixes from a filename, returning the base stem.
+func onnxStem(name string) string {
+	for _, suffix := range []string{".onnx.data", ".onnx_data", ".onnx"} {
+		if s := strings.TrimSuffix(name, suffix); s != name {
+			return s
+		}
+	}
+	return name
+}
+
+// VariantBaseStems returns the set of ONNX base stems (e.g., "visual_model") that
+// have at least one non-f32 variant entry in the manifest. Files in manifest.Files
+// whose stems are in this set are the f32 encoder files; they should only be
+// downloaded/counted when f32 is explicitly requested.
+//
+// This assumes base model stems don't themselves end with a variant suffix
+// (e.g., no model named "foo_i8.onnx" as its f32 base). Our export scripts
+// and registry conventions guarantee this.
+func (m *ModelManifest) VariantBaseStems() map[string]bool {
+	stems := make(map[string]bool)
+	for _, entry := range m.Variants {
+		for _, vf := range entry.Files {
+			stem := onnxStem(vf.Name)
+			for _, suffix := range VariantSuffixes {
+				if strings.HasSuffix(stem, "_"+suffix) {
+					stems[strings.TrimSuffix(stem, "_"+suffix)] = true
+					break
+				}
+			}
+		}
+	}
+	return stems
+}
+
+// DownloadSize returns the total byte size of files that would be downloaded
+// for the given set of variant IDs. It accounts for auxiliary ONNX files
+// (always included), encoder ONNX files (only when f32 is requested), and
+// non-f32 variant files. If variants is empty, defaults to f32.
+func (m *ModelManifest) DownloadSize(variants []string) int64 {
+	if len(variants) == 0 {
+		variants = []string{VariantF32}
+	}
+
+	requested := make(map[string]bool, len(variants))
+	for _, v := range variants {
+		requested[v] = true
+	}
+
+	variantStems := m.VariantBaseStems()
+
+	var total int64
+	for _, f := range m.Files {
+		if isONNXFile(f.Name) && variantStems[onnxStem(f.Name)] {
+			if requested[VariantF32] {
+				total += f.Size
+			}
+			continue
+		}
+		total += f.Size
+	}
+
+	for _, variantID := range variants {
+		if variantID == VariantF32 {
+			continue
+		}
+		if entry, ok := m.Variants[variantID]; ok {
+			for _, vf := range entry.Files {
+				total += vf.Size
+			}
+		}
+	}
+	return total
+}
+
 // CurrentSchemaVersion is the current manifest schema version
 const CurrentSchemaVersion = 2
 

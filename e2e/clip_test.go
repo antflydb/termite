@@ -658,3 +658,96 @@ func testBatchImageEmbeddingCLIP(t *testing.T, ctx context.Context, serverURL st
 		}
 	}
 }
+
+// TestCLIPi8E2E tests that the i8 (INT8 quantized) variant of CLIP works end-to-end.
+// This specifically validates the fix for auxiliary ONNX files (projection models)
+// being correctly downloaded for non-f32 variant pulls.
+func TestCLIPi8E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	// Pull only the i8 variant — this exercises the fix where auxiliary ONNX files
+	// (visual_projection.onnx, text_projection.onnx) must be downloaded even though
+	// the f32 encoder files are skipped.
+	ensureRegistryModelVariant(t, clipModelName, ModelTypeEmbedder, []string{"i8"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	logger := zaptest.NewLogger(t)
+
+	modelsDir := getTestModelsDir()
+	port := findAvailablePort(t)
+	serverURL := fmt.Sprintf("http://localhost:%d", port)
+
+	config := termite.Config{
+		ApiUrl:    serverURL,
+		ModelsDir: modelsDir,
+	}
+
+	serverCtx, serverCancel := context.WithCancel(ctx)
+	defer serverCancel()
+
+	readyC := make(chan struct{})
+	serverDone := make(chan struct{})
+
+	go func() {
+		defer close(serverDone)
+		termite.RunAsTermite(serverCtx, logger, config, readyC)
+	}()
+
+	select {
+	case <-readyC:
+		t.Log("Server is ready")
+	case <-time.After(60 * time.Second):
+		t.Fatal("Timeout waiting for server to be ready")
+	}
+
+	termiteClient, err := client.NewTermiteClient(serverURL, nil)
+	if err != nil {
+		t.Fatalf("Failed to create client: %v", err)
+	}
+
+	// Test text embedding with the i8 model
+	t.Run("TextEmbedding", func(t *testing.T) {
+		embeddings, err := termiteClient.Embed(ctx, clipModelName, []string{"a photo of a cat"})
+		if err != nil {
+			t.Fatalf("Embed failed: %v", err)
+		}
+		if len(embeddings) != 1 {
+			t.Fatalf("Expected 1 embedding, got %d", len(embeddings))
+		}
+		if len(embeddings[0]) != clipEmbeddingDim {
+			t.Errorf("Expected dimension %d, got %d", clipEmbeddingDim, len(embeddings[0]))
+		}
+		t.Logf("i8 text embedding: dim=%d", len(embeddings[0]))
+	})
+
+	// Test image embedding with the i8 model
+	t.Run("ImageEmbedding", func(t *testing.T) {
+		imageData := createTestImage(t, 100, 100, color.RGBA{R: 255, A: 255})
+		embedding := embedImage(t, ctx, serverURL, clipModelName, imageData)
+		if len(embedding) != clipEmbeddingDim {
+			t.Errorf("Expected dimension %d, got %d", clipEmbeddingDim, len(embedding))
+		}
+		t.Logf("i8 image embedding: dim=%d", len(embedding))
+	})
+
+	// Verify cross-modal embeddings have same dimension
+	t.Run("CrossModalDimMatch", func(t *testing.T) {
+		textEmbs, err := termiteClient.Embed(ctx, clipModelName, []string{"a red square"})
+		if err != nil {
+			t.Fatalf("Text embed failed: %v", err)
+		}
+		imageData := createTestImage(t, 50, 50, color.RGBA{R: 255, A: 255})
+		imageEmb := embedImage(t, ctx, serverURL, clipModelName, imageData)
+
+		if len(textEmbs[0]) != len(imageEmb) {
+			t.Errorf("Dimension mismatch: text=%d, image=%d", len(textEmbs[0]), len(imageEmb))
+		}
+	})
+
+	serverCancel()
+	<-serverDone
+}
