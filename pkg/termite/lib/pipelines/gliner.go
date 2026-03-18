@@ -485,7 +485,7 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 	prompt := p.buildPrompt(labels)
 	promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
-	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
+	inputs, err := p.buildInputs(promptTokens, textTokens)
 	if err != nil {
 		return nil, fmt.Errorf("building inputs: %w", err)
 	}
@@ -861,7 +861,7 @@ func (p *GLiNERPipeline) classifySingleText(
 		prompt := p.buildPromptForTask(singleLabel, GLiNER2TaskClassification)
 		promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
-		inputs, err := p.buildInputs(promptTokens, textTokens, words, singleLabel)
+		inputs, err := p.buildInputs(promptTokens, textTokens)
 		if err != nil {
 			return nil, fmt.Errorf("building inputs for label %s: %w", label, err)
 		}
@@ -1043,12 +1043,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 		}
 		numWords = i + 1
 	}
-
-	// Pad remaining
-	for ; idx < seqLen; idx++ {
-		inputIDs[idx] = 0
-		attentionMask[idx] = 0
-	}
+	// Remaining positions are already zero from make().
 
 	// Build word-level span indices
 	maxWidth := p.PipelineConfig.MaxWidth
@@ -1094,7 +1089,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 }
 
 // buildInputs constructs the model inputs for GLiNER v1 inference.
-func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, words []string, labels []string) ([]backends.NamedTensor, error) {
+func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int) ([]backends.NamedTensor, error) {
 	// Count total text tokens (excluding special tokens added by tokenizer)
 	totalTextTokens := 0
 	for _, wt := range textTokens {
@@ -1559,24 +1554,25 @@ func (p *GLiNERPipeline) computeLabelEmbeddings(labels []string) ([][]float32, e
 }
 
 // extractLabelEmbedding extracts the label embedding from model outputs.
+// Prefers named embedding/pooler/label outputs, falls back to first float32.
 func extractLabelEmbedding(outputs []backends.NamedTensor) ([]float32, error) {
-	// Look for the embedding output
+	var fallback []float32
 	for _, out := range outputs {
+		data, ok := out.Data.([]float32)
+		if !ok {
+			continue
+		}
 		name := strings.ToLower(out.Name)
 		if strings.Contains(name, "embedding") || strings.Contains(name, "pooler") || strings.Contains(name, "label") {
-			if data, ok := out.Data.([]float32); ok {
-				return data, nil
-			}
-		}
-	}
-
-	// Fall back to first float32 output
-	for _, out := range outputs {
-		if data, ok := out.Data.([]float32); ok {
 			return data, nil
 		}
+		if fallback == nil {
+			fallback = data
+		}
 	}
-
+	if fallback != nil {
+		return fallback, nil
+	}
 	return nil, fmt.Errorf("no float32 embedding found in outputs")
 }
 
@@ -1634,13 +1630,8 @@ func (p *GLiNERPipeline) ClearLabelEmbeddingCache() {
 
 // SupportsRelationExtraction returns true if the model supports relation extraction.
 func (p *GLiNERPipeline) SupportsRelationExtraction() bool {
-	if p.Config == nil {
-		return false
-	}
-	// GLiNER2 and MultiTask models support relation extraction
-	isRelationCapable := p.Config.ModelType == GLiNERModelMultiTask ||
-		p.Config.ModelType == GLiNERModelGLiNER2
-	return isRelationCapable
+	return p.Config != nil &&
+		(p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2)
 }
 
 // SupportsClassification returns true if the model supports text classification.
