@@ -436,3 +436,124 @@ func TestManifestValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestOnnxStem(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"model.onnx", "model"},
+		{"visual_model.onnx.data", "visual_model"},
+		{"visual_model.onnx_data", "visual_model"},
+		{"tokenizer.json", "tokenizer.json"},
+		{"model_i8.onnx", "model_i8"},
+	}
+	for _, tt := range tests {
+		if got := onnxStem(tt.input); got != tt.want {
+			t.Errorf("onnxStem(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestIsONNXFile(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"model.onnx", true},
+		{"model.onnx.data", true},
+		{"model.onnx_data", true},
+		{"tokenizer.json", false},
+		{"config.json", false},
+	}
+	for _, tt := range tests {
+		if got := isONNXFile(tt.input); got != tt.want {
+			t.Errorf("isONNXFile(%q) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+// clipManifest returns a CLIP-style manifest for testing variant stem logic.
+func clipManifest() *ModelManifest {
+	return &ModelManifest{
+		SchemaVersion: 2,
+		Name:          "clip-vit-base-patch32",
+		Owner:         "openai",
+		Type:          ModelTypeEmbedder,
+		Files: []ModelFile{
+			{Name: "visual_model.onnx", Size: 100},
+			{Name: "visual_model.onnx.data", Size: 200},
+			{Name: "text_model.onnx", Size: 80},
+			{Name: "visual_projection.onnx", Size: 10},
+			{Name: "text_projection.onnx", Size: 10},
+			{Name: "tokenizer.json", Size: 5},
+		},
+		Variants: map[string]VariantEntry{
+			"i8": {Files: []ModelFile{
+				{Name: "visual_model_i8.onnx", Size: 50},
+				{Name: "text_model_i8.onnx", Size: 40},
+			}},
+		},
+	}
+}
+
+func TestVariantBaseStems(t *testing.T) {
+	m := clipManifest()
+	stems := m.VariantBaseStems()
+
+	if !stems["visual_model"] {
+		t.Error("expected visual_model in stems")
+	}
+	if !stems["text_model"] {
+		t.Error("expected text_model in stems")
+	}
+	if stems["visual_projection"] {
+		t.Error("visual_projection should not be in stems (no variant replacement)")
+	}
+	if stems["tokenizer"] {
+		t.Error("tokenizer should not be in stems")
+	}
+}
+
+func TestDownloadSize(t *testing.T) {
+	m := clipManifest()
+
+	tests := []struct {
+		name     string
+		variants []string
+		want     int64
+	}{
+		{
+			name:     "nil defaults to f32",
+			variants: nil,
+			// all base files: 100+200+80+10+10+5 = 405
+			want: 405,
+		},
+		{
+			name:     "f32 explicit",
+			variants: []string{VariantF32},
+			want:     405,
+		},
+		{
+			name:     "i8 only",
+			variants: []string{VariantI8},
+			// supporting+auxiliary: 10+10+5 = 25, plus i8 variant: 50+40 = 90
+			// encoder files (visual_model, text_model) excluded
+			want: 115,
+		},
+		{
+			name:     "f32 and i8",
+			variants: []string{VariantF32, VariantI8},
+			// all base files: 405 + i8 variant: 90 = 495
+			want: 495,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := m.DownloadSize(tt.variants)
+			if got != tt.want {
+				t.Errorf("DownloadSize(%v) = %d, want %d", tt.variants, got, tt.want)
+			}
+		})
+	}
+}

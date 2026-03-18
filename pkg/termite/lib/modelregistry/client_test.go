@@ -27,6 +27,33 @@ import (
 	"go.uber.org/zap"
 )
 
+// testContent creates deterministic test content and its sha256 digest for a given name.
+func testContent(name string) ([]byte, string) {
+	content := []byte("content-of-" + name)
+	h := sha256.New()
+	h.Write(content)
+	return content, "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// setupBlobServer creates an httptest server that serves blobs by digest and
+// tracks which digests were downloaded. Returns the client and downloaded set.
+func setupBlobServer(t *testing.T, blobs map[string][]byte) (*Client, map[string]bool) {
+	t.Helper()
+	downloaded := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		digest := r.URL.Path[len("/v1/blobs/"):]
+		if content, ok := blobs[digest]; ok {
+			downloaded[digest] = true
+			_, _ = w.Write(content)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	client := NewClient(WithBaseURL(server.URL+"/v1"), WithLogger(zap.NewNop()))
+	return client, downloaded
+}
+
 func TestClientFetchIndex(t *testing.T) {
 	t.Run("schema v1", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -268,47 +295,40 @@ func TestClientHashMismatch(t *testing.T) {
 }
 
 func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
-	// Simulate a CLIP-style multimodal model with .onnx.data external data files.
-	// When pulling only "i8", the f32 .onnx and .onnx.data files should NOT be downloaded.
-	makeContent := func(name string) ([]byte, string) {
-		content := []byte("content-of-" + name)
-		h := sha256.New()
-		h.Write(content)
-		return content, "sha256:" + hex.EncodeToString(h.Sum(nil))
-	}
-
-	tokContent, tokDigest := makeContent("tokenizer.json")
-	visualOnnx, visualOnnxDigest := makeContent("visual_model.onnx")
-	visualData, visualDataDigest := makeContent("visual_model.onnx.data")
-	textOnnx, textOnnxDigest := makeContent("text_model.onnx")
-	textData, textDataDigest := makeContent("text_model.onnx.data")
-	visualI8, visualI8Digest := makeContent("visual_model_i8.onnx")
-	textI8, textI8Digest := makeContent("text_model_i8.onnx")
+	// Simulate a CLIP-style multimodal model with .onnx.data external data files
+	// and auxiliary projection models (visual_projection.onnx, text_projection.onnx).
+	// When pulling only "i8":
+	//   - f32 encoder .onnx and .onnx.data files should NOT be downloaded
+	//   - auxiliary ONNX files with no variant replacement SHOULD be downloaded
+	//   - variant files (visual_model_i8.onnx, text_model_i8.onnx) SHOULD be downloaded
+	tokContent, tokDigest := testContent("tokenizer.json")
+	visualOnnx, visualOnnxDigest := testContent("visual_model.onnx")
+	visualData, visualDataDigest := testContent("visual_model.onnx.data")
+	textOnnx, textOnnxDigest := testContent("text_model.onnx")
+	textData, textDataDigest := testContent("text_model.onnx.data")
+	// Auxiliary projection models — shared across all variants
+	visualProj, visualProjDigest := testContent("visual_projection.onnx")
+	visualProjData, visualProjDataDigest := testContent("visual_projection.onnx.data")
+	textProj, textProjDigest := testContent("text_projection.onnx")
+	textProjData, textProjDataDigest := testContent("text_projection.onnx.data")
+	visualI8, visualI8Digest := testContent("visual_model_i8.onnx")
+	textI8, textI8Digest := testContent("text_model_i8.onnx")
 
 	blobs := map[string][]byte{
-		tokDigest:        tokContent,
-		visualOnnxDigest: visualOnnx,
-		visualDataDigest: visualData,
-		textOnnxDigest:   textOnnx,
-		textDataDigest:   textData,
-		visualI8Digest:   visualI8,
-		textI8Digest:     textI8,
+		tokDigest:            tokContent,
+		visualOnnxDigest:     visualOnnx,
+		visualDataDigest:     visualData,
+		textOnnxDigest:       textOnnx,
+		textDataDigest:       textData,
+		visualProjDigest:     visualProj,
+		visualProjDataDigest: visualProjData,
+		textProjDigest:       textProj,
+		textProjDataDigest:   textProjData,
+		visualI8Digest:       visualI8,
+		textI8Digest:         textI8,
 	}
 
-	downloaded := map[string]bool{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Path: /v1/blobs/sha256:...
-		digest := r.URL.Path[len("/v1/blobs/"):]
-		if content, ok := blobs[digest]; ok {
-			downloaded[digest] = true
-			_, _ = w.Write(content)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	client := NewClient(WithBaseURL(server.URL+"/v1"), WithLogger(zap.NewNop()))
+	client, downloaded := setupBlobServer(t, blobs)
 
 	manifest := &ModelManifest{
 		SchemaVersion: 2,
@@ -321,6 +341,10 @@ func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
 			{Name: "visual_model.onnx.data", Digest: visualDataDigest, Size: int64(len(visualData))},
 			{Name: "text_model.onnx", Digest: textOnnxDigest, Size: int64(len(textOnnx))},
 			{Name: "text_model.onnx.data", Digest: textDataDigest, Size: int64(len(textData))},
+			{Name: "visual_projection.onnx", Digest: visualProjDigest, Size: int64(len(visualProj))},
+			{Name: "visual_projection.onnx.data", Digest: visualProjDataDigest, Size: int64(len(visualProjData))},
+			{Name: "text_projection.onnx", Digest: textProjDigest, Size: int64(len(textProj))},
+			{Name: "text_projection.onnx.data", Digest: textProjDataDigest, Size: int64(len(textProjData))},
 			{Name: "tokenizer.json", Digest: tokDigest, Size: int64(len(tokContent))},
 		},
 		Variants: map[string]VariantEntry{
@@ -333,7 +357,8 @@ func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Pull only i8 variant — f32 .onnx and .onnx.data should be skipped
+	// Pull only i8 variant — f32 encoder files should be skipped,
+	// but projection (auxiliary) ONNX files must still be downloaded.
 	if err := client.PullModel(context.Background(), manifest, tmpDir, []string{"i8"}); err != nil {
 		t.Fatalf("PullModel() error = %v", err)
 	}
@@ -351,7 +376,21 @@ func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
 		t.Error("text_model_i8.onnx should have been downloaded")
 	}
 
-	// f32 ONNX files and their .onnx.data should NOT be downloaded
+	// Auxiliary projection ONNX files should be downloaded (they have no variant replacement)
+	if !downloaded[visualProjDigest] {
+		t.Error("visual_projection.onnx should have been downloaded (no i8 variant exists for it)")
+	}
+	if !downloaded[visualProjDataDigest] {
+		t.Error("visual_projection.onnx.data should have been downloaded (no i8 variant exists for it)")
+	}
+	if !downloaded[textProjDigest] {
+		t.Error("text_projection.onnx should have been downloaded (no i8 variant exists for it)")
+	}
+	if !downloaded[textProjDataDigest] {
+		t.Error("text_projection.onnx.data should have been downloaded (no i8 variant exists for it)")
+	}
+
+	// f32 encoder ONNX files and their .onnx.data should NOT be downloaded
 	if downloaded[visualOnnxDigest] {
 		t.Error("visual_model.onnx should NOT have been downloaded when only i8 requested")
 	}
@@ -363,6 +402,135 @@ func TestClientPullModelVariantSkipsF32OnnxData(t *testing.T) {
 	}
 	if downloaded[textDataDigest] {
 		t.Error("text_model.onnx.data should NOT have been downloaded when only i8 requested")
+	}
+}
+
+func TestClientPullModelF32DownloadsAuxiliaryOnnx(t *testing.T) {
+	// When pulling f32, ALL base manifest files should be downloaded — including
+	// both large encoder files (visual_model.onnx) and auxiliary projection files
+	// (visual_projection.onnx). This guards against regressions in the variantStems path.
+	tokContent, tokDigest := testContent("tokenizer.json")
+	visualOnnx, visualOnnxDigest := testContent("visual_model.onnx")
+	visualData, visualDataDigest := testContent("visual_model.onnx.data")
+	visualProj, visualProjDigest := testContent("visual_projection.onnx")
+	visualProjData, visualProjDataDigest := testContent("visual_projection.onnx.data")
+	visualI8, visualI8Digest := testContent("visual_model_i8.onnx")
+
+	blobs := map[string][]byte{
+		tokDigest:            tokContent,
+		visualOnnxDigest:     visualOnnx,
+		visualDataDigest:     visualData,
+		visualProjDigest:     visualProj,
+		visualProjDataDigest: visualProjData,
+		visualI8Digest:       visualI8,
+	}
+
+	client, downloaded := setupBlobServer(t, blobs)
+
+	manifest := &ModelManifest{
+		SchemaVersion: 2,
+		Name:          "clip-vit-base-patch32",
+		Owner:         "openai",
+		Type:          ModelTypeEmbedder,
+		Capabilities:  []string{"image"},
+		Files: []ModelFile{
+			{Name: "visual_model.onnx", Digest: visualOnnxDigest, Size: int64(len(visualOnnx))},
+			{Name: "visual_model.onnx.data", Digest: visualDataDigest, Size: int64(len(visualData))},
+			{Name: "visual_projection.onnx", Digest: visualProjDigest, Size: int64(len(visualProj))},
+			{Name: "visual_projection.onnx.data", Digest: visualProjDataDigest, Size: int64(len(visualProjData))},
+			{Name: "tokenizer.json", Digest: tokDigest, Size: int64(len(tokContent))},
+		},
+		Variants: map[string]VariantEntry{
+			"i8": {Files: []ModelFile{
+				{Name: "visual_model_i8.onnx", Digest: visualI8Digest, Size: int64(len(visualI8))},
+			}},
+		},
+	}
+
+	tmpDir := t.TempDir()
+
+	// Pull f32 — everything should be downloaded
+	if err := client.PullModel(context.Background(), manifest, tmpDir, []string{"f32"}); err != nil {
+		t.Fatalf("PullModel() error = %v", err)
+	}
+
+	if !downloaded[visualOnnxDigest] {
+		t.Error("visual_model.onnx should have been downloaded for f32")
+	}
+	if !downloaded[visualDataDigest] {
+		t.Error("visual_model.onnx.data should have been downloaded for f32")
+	}
+	if !downloaded[visualProjDigest] {
+		t.Error("visual_projection.onnx should have been downloaded for f32")
+	}
+	if !downloaded[visualProjDataDigest] {
+		t.Error("visual_projection.onnx.data should have been downloaded for f32")
+	}
+	if !downloaded[tokDigest] {
+		t.Error("tokenizer.json should have been downloaded for f32")
+	}
+}
+
+func TestClientPullModelMultiVariantDownloadsBoth(t *testing.T) {
+	// When pulling both f32 and i8, all encoder files plus projection files should download.
+	visualOnnx, visualOnnxDigest := testContent("visual_model.onnx")
+	visualData, visualDataDigest := testContent("visual_model.onnx.data")
+	visualProj, visualProjDigest := testContent("visual_projection.onnx")
+	visualProjData, visualProjDataDigest := testContent("visual_projection.onnx.data")
+	visualI8, visualI8Digest := testContent("visual_model_i8.onnx")
+	tok, tokDigest := testContent("tokenizer.json")
+
+	blobs := map[string][]byte{
+		visualOnnxDigest:     visualOnnx,
+		visualDataDigest:     visualData,
+		visualProjDigest:     visualProj,
+		visualProjDataDigest: visualProjData,
+		visualI8Digest:       visualI8,
+		tokDigest:            tok,
+	}
+
+	client, downloaded := setupBlobServer(t, blobs)
+
+	manifest := &ModelManifest{
+		SchemaVersion: 2,
+		Name:          "clip-vit-base-patch32",
+		Owner:         "openai",
+		Type:          ModelTypeEmbedder,
+		Capabilities:  []string{"image"},
+		Files: []ModelFile{
+			{Name: "visual_model.onnx", Digest: visualOnnxDigest, Size: int64(len(visualOnnx))},
+			{Name: "visual_model.onnx.data", Digest: visualDataDigest, Size: int64(len(visualData))},
+			{Name: "visual_projection.onnx", Digest: visualProjDigest, Size: int64(len(visualProj))},
+			{Name: "visual_projection.onnx.data", Digest: visualProjDataDigest, Size: int64(len(visualProjData))},
+			{Name: "tokenizer.json", Digest: tokDigest, Size: int64(len(tok))},
+		},
+		Variants: map[string]VariantEntry{
+			"i8": {Files: []ModelFile{
+				{Name: "visual_model_i8.onnx", Digest: visualI8Digest, Size: int64(len(visualI8))},
+			}},
+		},
+	}
+
+	tmpDir := t.TempDir()
+
+	if err := client.PullModel(context.Background(), manifest, tmpDir, []string{"f32", "i8"}); err != nil {
+		t.Fatalf("PullModel() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		digest string
+		name   string
+	}{
+		{visualOnnxDigest, "visual_model.onnx"},
+		{visualDataDigest, "visual_model.onnx.data"},
+		{visualProjDigest, "visual_projection.onnx"},
+		{visualProjDataDigest, "visual_projection.onnx.data"},
+		{visualI8Digest, "visual_model_i8.onnx"},
+		{tokDigest, "tokenizer.json"},
+	} {
+		if !downloaded[tc.digest] {
+			t.Errorf("%s should have been downloaded for f32+i8 pull", tc.name)
+		}
 	}
 }
 

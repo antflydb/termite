@@ -171,46 +171,14 @@ func PullFromRegistry(modelRef string, opts PullOptions) error {
 		effectiveVariants = []string{modelregistry.VariantF32}
 	}
 
-	// Calculate size of what will actually be downloaded
-	var totalSize int64
-	requestedVariants := make(map[string]bool)
-	for _, v := range effectiveVariants {
-		requestedVariants[v] = true
-	}
-
-	// Count supporting files (non-ONNX) and f32 ONNX files if requested
-	for _, f := range manifest.Files {
-		if strings.HasSuffix(f.Name, ".onnx") || strings.HasSuffix(f.Name, ".onnx.data") {
-			// Count all ONNX files in base manifest if f32 is requested
-			// This supports both single-model (model.onnx) and multi-model (visual_model.onnx, text_model.onnx)
-			if requestedVariants[modelregistry.VariantF32] {
-				totalSize += f.Size
-			}
-		} else {
-			// Always count supporting files
-			totalSize += f.Size
-		}
-	}
-
-	// Count requested variant files (non-f32)
-	for _, variantID := range effectiveVariants {
-		if variantID == modelregistry.VariantF32 {
-			continue // Already counted above
-		}
-		if variantEntry, ok := manifest.Variants[variantID]; ok {
-			// Sum sizes of all files in the variant (supports both single and multi-model variants)
-			for _, variantFile := range variantEntry.Files {
-				totalSize += variantFile.Size
-			}
-		}
-	}
+	totalSize := manifest.DownloadSize(effectiveVariants)
 
 	fmt.Printf("Variants: %v\n", effectiveVariants)
 	fmt.Printf("Total size: %s\n", FormatBytes(totalSize))
 	fmt.Println()
 
 	fmt.Println("Downloading files...")
-	if err := client.PullModel(ctx, manifest, opts.ModelsDir, variants); err != nil {
+	if err := client.PullModel(ctx, manifest, opts.ModelsDir, effectiveVariants); err != nil {
 		return fmt.Errorf("failed to pull model: %w", err)
 	}
 

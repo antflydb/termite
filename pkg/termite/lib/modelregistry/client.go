@@ -194,12 +194,14 @@ func (c *Client) PullModel(ctx context.Context, manifest *ModelManifest, modelsD
 		requestedVariants[v] = true
 	}
 
-	// Download supporting files (non-ONNX) and f32 model files if requested
+	// Determine which ONNX stems have variant replacements. Encoder files
+	// (those with a variant) are only downloaded for f32; auxiliary ONNX files
+	// (e.g., visual_projection.onnx) are always downloaded.
+	variantStems := manifest.VariantBaseStems()
+
 	for _, file := range manifest.Files {
-		isONNX := strings.HasSuffix(file.Name, ".onnx") || strings.HasSuffix(file.Name, ".onnx.data")
-		if isONNX {
-			// Download all ONNX files in base manifest if f32 variant is requested
-			// This supports both single-model (model.onnx) and multi-model (visual_model.onnx, text_model.onnx) cases
+		if isONNXFile(file.Name) && variantStems[onnxStem(file.Name)] {
+			// Encoder file with variant replacements — only download for f32
 			if requestedVariants[VariantF32] {
 				if err := c.downloadFile(ctx, file, modelDir); err != nil {
 					return fmt.Errorf("downloading %s: %w", file.Name, err)
@@ -207,7 +209,7 @@ func (c *Client) PullModel(ctx context.Context, manifest *ModelManifest, modelsD
 			}
 			continue
 		}
-		// Always download supporting files (tokenizer, config, etc.)
+		// Supporting files (tokenizer, config) and auxiliary ONNX files — always download
 		if err := c.downloadFile(ctx, file, modelDir); err != nil {
 			return fmt.Errorf("downloading %s: %w", file.Name, err)
 		}

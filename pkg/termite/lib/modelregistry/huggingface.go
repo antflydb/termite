@@ -246,17 +246,10 @@ var knownONNXVariantSuffixes = []struct {
 //   - "encoder_model_fp16.onnx_data" → "_fp16"
 func onnxVariantSuffix(filename string) string {
 	base := filepath.Base(filename)
-	stem := base
-	switch {
-	case strings.HasSuffix(stem, ".onnx.data"):
-		stem = strings.TrimSuffix(stem, ".onnx.data")
-	case strings.HasSuffix(stem, ".onnx_data"):
-		stem = strings.TrimSuffix(stem, ".onnx_data")
-	case strings.HasSuffix(stem, ".onnx"):
-		stem = strings.TrimSuffix(stem, ".onnx")
-	default:
+	if !isONNXFile(base) {
 		return ""
 	}
+	stem := onnxStem(base)
 
 	for _, v := range knownONNXVariantSuffixes {
 		if strings.HasSuffix(stem, v.suffix) {
@@ -272,10 +265,7 @@ func onnxVariantSuffix(filename string) string {
 // Non-ONNX files always match (they are supporting files like tokenizer.json).
 func matchesVariantSuffix(filename string, variant string) bool {
 	base := filepath.Base(filename)
-	isONNX := strings.HasSuffix(base, ".onnx") ||
-		strings.HasSuffix(base, ".onnx_data") ||
-		strings.HasSuffix(base, ".onnx.data")
-	if !isONNX {
+	if !isONNXFile(base) {
 		return true
 	}
 
