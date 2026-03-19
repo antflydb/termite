@@ -200,19 +200,8 @@ func detectNERModelType(modelPath string) string {
 // Ensure NERPipeline implements backends.TokenClassificationModel
 var _ backends.TokenClassificationModel = (*NERPipeline)(nil)
 
-// Entity represents a named entity extracted from text.
-type Entity struct {
-	// Text is the entity text (e.g., "John Smith")
-	Text string `json:"text"`
-	// Label is the entity type (e.g., "PER", "ORG", "LOC", "MISC")
-	Label string `json:"label"`
-	// Start is the character offset where the entity begins
-	Start int `json:"start"`
-	// End is the character offset where the entity ends (exclusive)
-	End int `json:"end"`
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32 `json:"score"`
-}
+// Entity is an alias for NEREntity so both pipeline types share a single entity representation.
+type Entity = NEREntity
 
 // AggregationStrategy defines how to aggregate tokens into entities.
 type AggregationStrategy string

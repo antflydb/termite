@@ -16,144 +16,24 @@ package ner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"slices"
-	"strings"
 
+	"github.com/antflydb/termite/lib/utils"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/pool"
 	"go.uber.org/zap"
 )
 
-// Ensure PooledGLiNER implements Model, Recognizer, Classifier, and Extractor interfaces.
+// Ensure PooledGLiNER implements the core NER interfaces.
+// Classifier and Extractor are conditionally supported based on model capabilities;
+// callers should type-assert to check support rather than relying on compile-time guarantees.
 var (
-	_ Model      = (*PooledGLiNER)(nil)
-	_ Recognizer = (*PooledGLiNER)(nil)
-	_ Classifier = (*PooledGLiNER)(nil)
-	_ Extractor  = (*PooledGLiNER)(nil)
+	_ Model             = (*PooledGLiNER)(nil)
+	_ Recognizer        = (*PooledGLiNER)(nil)
+	_ RelationExtractor = (*PooledGLiNER)(nil)
+	_ AnswerExtractor   = (*PooledGLiNER)(nil)
 )
-
-// =============================================================================
-// GLiNER Config Types
-// =============================================================================
-
-// GLiNERModelType represents the type of GLiNER model architecture.
-type GLiNERModelType string
-
-const (
-	// GLiNERModelUniEncoder is the standard GLiNER model, best for <30 entity types.
-	GLiNERModelUniEncoder GLiNERModelType = "uniencoder"
-	// GLiNERModelBiEncoder is optimized for 50-200+ entity types with pre-computed embeddings.
-	GLiNERModelBiEncoder GLiNERModelType = "biencoder"
-	// GLiNERModelTokenLevel is optimized for extracting long entity spans (multi-sentence).
-	GLiNERModelTokenLevel GLiNERModelType = "token_level"
-	// GLiNERModelMultiTask supports multiple tasks: NER, classification, QA, relation extraction.
-	GLiNERModelMultiTask GLiNERModelType = "multitask"
-	// GLiNERModelGLiNER2 is the unified GLiNER2 multi-task model from Fastino.
-	// Supports NER, classification, structured extraction, and relation extraction.
-	GLiNERModelGLiNER2 GLiNERModelType = "gliner2"
-)
-
-// GLiNERConfig holds configuration for GLiNER models.
-type GLiNERConfig struct {
-	// MaxWidth is the maximum entity span width in tokens.
-	MaxWidth int `json:"max_width"`
-	// DefaultLabels are the entity labels to use if none specified.
-	DefaultLabels []string `json:"default_labels"`
-	// Threshold is the score threshold for entity detection (0.0-1.0).
-	Threshold float32 `json:"threshold"`
-	// FlatNER if true, don't allow nested/overlapping entities (default: true).
-	FlatNER bool `json:"flat_ner"`
-	// MultiLabel if true, allow entities to have multiple labels (default: false).
-	MultiLabel bool `json:"multi_label"`
-	// ModelType indicates the GLiNER architecture variant.
-	ModelType GLiNERModelType `json:"model_type,omitempty"`
-	// RelationLabels are default relation types for relationship extraction.
-	RelationLabels []string `json:"relation_labels,omitempty"`
-	// RelationThreshold is the score threshold for relationship detection (0.0-1.0).
-	RelationThreshold float32 `json:"relation_threshold,omitempty"`
-	// Capabilities lists the model's capabilities (e.g., "ner", "zeroshot", "classification", "relations").
-	Capabilities []string `json:"capabilities,omitempty"`
-}
-
-// DefaultGLiNERConfig returns a GLiNERConfig with sensible defaults.
-func DefaultGLiNERConfig() GLiNERConfig {
-	return GLiNERConfig{
-		MaxWidth:          12, // default max entity span width
-		DefaultLabels:     []string{"person", "organization", "location", "date", "product"},
-		Threshold:         0.5,
-		FlatNER:           true,  // default to flat NER (no overlapping entities)
-		MultiLabel:        false, // default to single label per entity
-		ModelType:         GLiNERModelUniEncoder,
-		RelationThreshold: 0.5,
-	}
-}
-
-// LoadGLiNERConfig loads GLiNER configuration from the model directory.
-// Returns the default config if gliner_config.json is not found.
-func LoadGLiNERConfig(modelPath string) GLiNERConfig {
-	config := DefaultGLiNERConfig()
-
-	configPath := filepath.Join(modelPath, "gliner_config.json")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return config
-	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return DefaultGLiNERConfig()
-	}
-
-	// Detect model type from model name if not specified in config
-	if config.ModelType == "" {
-		config.ModelType = detectGLiNERModelType(modelPath)
-	}
-
-	return config
-}
-
-// detectGLiNERModelType attempts to detect the model type from the model name.
-func detectGLiNERModelType(modelPath string) GLiNERModelType {
-	modelName := strings.ToLower(filepath.Base(modelPath))
-	parentDir := strings.ToLower(filepath.Base(filepath.Dir(modelPath)))
-
-	// Check for GLiNER2 models (from Fastino)
-	// GLiNER2 models have "gliner2" in name or are from "fastino" organization
-	if strings.Contains(modelName, "gliner2") ||
-		(strings.Contains(parentDir, "fastino") && strings.Contains(modelName, "gliner")) {
-		return GLiNERModelGLiNER2
-	}
-
-	switch {
-	case strings.Contains(modelName, "multitask"):
-		return GLiNERModelMultiTask
-	case strings.Contains(modelName, "biencoder") || strings.Contains(modelName, "bi-"):
-		return GLiNERModelBiEncoder
-	case strings.Contains(modelName, "token") || strings.Contains(modelName, "large"):
-		// Token-level models are often the larger variants
-		return GLiNERModelTokenLevel
-	default:
-		return GLiNERModelUniEncoder
-	}
-}
-
-// IsGLiNERModel checks if the model path contains a GLiNER model
-// by looking for gliner_config.json or gliner in the model name.
-func IsGLiNERModel(modelPath string) bool {
-	// Check for gliner_config.json
-	configPath := filepath.Join(modelPath, "gliner_config.json")
-	if _, err := os.Stat(configPath); err == nil {
-		return true
-	}
-
-	// Check if model name contains "gliner"
-	modelName := strings.ToLower(filepath.Base(modelPath))
-	return strings.Contains(modelName, "gliner")
-}
 
 // =============================================================================
 // Pooled GLiNER Implementation
@@ -183,9 +63,9 @@ type PooledGLiNER struct {
 	pool           *pool.LazyPool[*pipelines.GLiNERPipeline]
 	logger         *zap.Logger
 	backendType    backends.BackendType
-	config         GLiNERConfig
 	labels         []string // Default labels from config
 	relationLabels []string // Default relation labels (if multitask model)
+	capabilities   []string // Capabilities from gliner_config.json
 }
 
 // NewPooledGLiNER creates a new pooled GLiNER model with session management.
@@ -202,42 +82,29 @@ func NewPooledGLiNER(
 		logger = zap.NewNop()
 	}
 
-	// Default pool size to 1 if not specified
 	poolSize := cfg.PoolSize
 	if poolSize <= 0 {
 		poolSize = 1
 	}
-
-	// Load GLiNER config
-	config := LoadGLiNERConfig(cfg.ModelPath)
 
 	logger.Info("Initializing pooled GLiNER",
 		zap.String("modelPath", cfg.ModelPath),
 		zap.Int("poolSize", poolSize),
 		zap.Bool("quantized", cfg.Quantized))
 
-	logger.Info("Loaded GLiNER config",
-		zap.Int("max_width", config.MaxWidth),
-		zap.Strings("default_labels", config.DefaultLabels),
-		zap.Float32("threshold", config.Threshold),
-		zap.Bool("flat_ner", config.FlatNER),
-		zap.Bool("multi_label", config.MultiLabel),
-		zap.String("model_type", string(config.ModelType)))
-
-	// Build loader options
+	// Build loader options — LoadGLiNERPipeline reads gliner_config.json
+	// internally, so we only need to forward the quantized preference.
 	loaderOpts := []pipelines.GLiNERLoaderOption{
-		pipelines.WithGLiNERThreshold(config.Threshold),
-		pipelines.WithGLiNERMaxWidth(config.MaxWidth),
-		pipelines.WithGLiNERFlatNER(config.FlatNER),
-		pipelines.WithGLiNERMultiLabel(config.MultiLabel),
-		pipelines.WithGLiNERLabels(config.DefaultLabels),
 		pipelines.WithGLiNERQuantized(cfg.Quantized),
 	}
 
-	// Capture backendType from the first pipeline creation
-	var backendType backends.BackendType
+	// Capture backendType and model config from the first pipeline creation
+	var (
+		backendType backends.BackendType
+		modelConfig *pipelines.GLiNERModelConfig
+	)
 
-	lazyPool, _, err := pool.New(pool.Config[*pipelines.GLiNERPipeline]{
+	lazyPool, first, err := pool.New(pool.Config[*pipelines.GLiNERPipeline]{
 		Size: poolSize,
 		Factory: func() (*pipelines.GLiNERPipeline, error) {
 			pipeline, bt, err := pipelines.LoadGLiNERPipeline(
@@ -250,6 +117,9 @@ func NewPooledGLiNER(
 				return nil, err
 			}
 			backendType = bt
+			if pipeline.Config != nil {
+				modelConfig = pipeline.Config
+			}
 			return pipeline, nil
 		},
 		Close: func(p *pipelines.GLiNERPipeline) error {
@@ -265,18 +135,33 @@ func NewPooledGLiNER(
 		return nil, "", fmt.Errorf("creating GLiNER pipeline pool: %w", err)
 	}
 
+	// Extract config values from the pipeline's parsed model config.
+	var (
+		labels         []string
+		relationLabels []string
+	)
+	if modelConfig != nil {
+		labels = modelConfig.DefaultLabels
+		relationLabels = modelConfig.RelationLabels
+	}
+	// Also read capabilities from the pipeline's config.
+	var caps []string
+	if first.Config != nil {
+		caps = first.Config.Capabilities
+	}
+
 	logger.Info("Successfully created pooled GLiNER pipelines",
 		zap.Int("count", poolSize),
 		zap.String("backend", string(backendType)),
-		zap.Strings("default_labels", config.DefaultLabels))
+		zap.Strings("default_labels", labels))
 
 	return &PooledGLiNER{
 		pool:           lazyPool,
 		logger:         logger,
 		backendType:    backendType,
-		config:         config,
-		labels:         config.DefaultLabels,
-		relationLabels: config.RelationLabels,
+		labels:         labels,
+		relationLabels: relationLabels,
+		capabilities:   caps,
 	}, backendType, nil
 }
 
@@ -285,23 +170,16 @@ func (p *PooledGLiNER) BackendType() backends.BackendType {
 	return p.backendType
 }
 
-// Config returns the GLiNER configuration.
-func (p *PooledGLiNER) Config() GLiNERConfig {
-	return p.config
-}
-
 // =============================================================================
 // Model Interface Implementation
 // =============================================================================
 
 // Recognize extracts named entities using default labels.
-// Implements ner.Model interface.
 func (p *PooledGLiNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
 	return p.RecognizeWithLabels(ctx, texts, p.labels)
 }
 
 // Close releases resources.
-// Implements ner.Model interface.
 func (p *PooledGLiNER) Close() error {
 	p.logger.Info("Closing PooledGLiNER")
 	return p.pool.Close()
@@ -312,8 +190,6 @@ func (p *PooledGLiNER) Close() error {
 // =============================================================================
 
 // RecognizeWithLabels extracts entities of the specified types (zero-shot NER).
-// This is the key feature of GLiNER - it can extract any entity type without retraining.
-// Implements ner.Recognizer interface.
 func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, labels []string) ([][]Entity, error) {
 	if len(texts) == 0 {
 		return [][]Entity{}, nil
@@ -323,7 +199,6 @@ func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, 
 		labels = p.labels
 	}
 
-	// Acquire pool slot (blocks if all pipelines busy)
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -335,7 +210,6 @@ func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, 
 		zap.Int("num_texts", len(texts)),
 		zap.Strings("labels", labels))
 
-	// Run the GLiNER pipeline with the specified labels
 	output, err := pipeline.RecognizeWithLabels(ctx, texts, labels)
 	if err != nil {
 		p.logger.Error("GLiNER recognition failed",
@@ -344,30 +218,24 @@ func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, 
 		return nil, fmt.Errorf("running GLiNER pipeline: %w", err)
 	}
 
-	// Convert pipeline output to our Entity type
-	results := make([][]Entity, len(texts))
-	for i, entities := range output.Entities {
-		results[i] = convertGLiNEREntities(entities)
-	}
+	// Entity is a type alias for NEREntity, so no conversion needed.
+	results := output.Entities
 
 	p.logger.Debug("GLiNER recognition completed",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
-		zap.Int("total_entities", countGLiNEREntities(results)))
+		zap.Int("total_entities", utils.CountNested(results)))
 
 	return results, nil
 }
 
 // Labels returns the default entity labels this model uses.
-// Implements ner.Recognizer interface.
 func (p *PooledGLiNER) Labels() []string {
 	return p.labels
 }
 
 // ExtractRelations extracts both entities and relationships between them.
-// This requires a GLiNER2 or multitask GLiNER model that supports relation extraction.
-// Returns ErrNotSupported if the model doesn't have the "relations" capability.
-// Implements ner.Recognizer interface.
+// Returns ErrNotSupported if the model doesn't support relation extraction.
 func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]Entity, [][]Relation, error) {
 	if len(texts) == 0 {
 		return [][]Entity{}, [][]Relation{}, nil
@@ -384,7 +252,6 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 		relationLabels = p.relationLabels
 	}
 
-	// Acquire pool slot
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -397,7 +264,6 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 		zap.Strings("entity_labels", entityLabels),
 		zap.Strings("relation_labels", relationLabels))
 
-	// Use the pipeline's ExtractRelations method for GLiNER2
 	output, err := pipeline.ExtractRelations(ctx, texts, entityLabels, relationLabels)
 	if err != nil {
 		p.logger.Error("GLiNER relation extraction failed",
@@ -406,31 +272,21 @@ func (p *PooledGLiNER) ExtractRelations(ctx context.Context, texts []string, ent
 		return nil, nil, fmt.Errorf("extracting relations: %w", err)
 	}
 
-	// Convert entities
-	entities := make([][]Entity, len(texts))
-	for i, ents := range output.Entities {
-		entities[i] = convertGLiNEREntities(ents)
-	}
-
-	// Convert relations
-	relations := make([][]Relation, len(texts))
-	for i, rels := range output.Relations {
-		relations[i] = convertGLiNERRelations(rels)
-	}
+	// Entity and Relation are type aliases, so no conversion needed.
+	entities := output.Entities
+	relations := output.Relations
 
 	p.logger.Debug("GLiNER relation extraction completed",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
-		zap.Int("total_entities", countGLiNEREntities(entities)),
-		zap.Int("total_relations", countGLiNERRelations(relations)))
+		zap.Int("total_entities", utils.CountNested(entities)),
+		zap.Int("total_relations", utils.CountNested(relations)))
 
 	return entities, relations, nil
 }
 
 // ExtractAnswers performs extractive question answering.
-// Given questions and contexts, extracts answer spans from the contexts.
-// Returns ErrNotSupported if the model doesn't have the "answers" capability.
-// Implements ner.Recognizer interface.
+// Returns ErrNotSupported if the model doesn't support QA.
 func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, contexts []string) ([]Answer, error) {
 	if len(questions) == 0 || len(contexts) == 0 {
 		return []Answer{}, nil
@@ -444,7 +300,6 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 		return nil, ErrNotSupported
 	}
 
-	// Acquire pool slot
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -455,14 +310,10 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_questions", len(questions)))
 
-	// Process each question-context pair
-	// GLiNER multitask models treat QA as finding spans that answer the question
 	answers := make([]Answer, len(questions))
 	for i, question := range questions {
 		context := contexts[i]
 
-		// Use the question as the "label" to extract from the context
-		// This leverages GLiNER's zero-shot capability to find answer spans
 		output, err := pipeline.RecognizeWithLabels(ctx, []string{context}, []string{question})
 		if err != nil {
 			p.logger.Error("GLiNER QA failed",
@@ -472,9 +323,7 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 			return nil, fmt.Errorf("running GLiNER QA for question %d: %w", i, err)
 		}
 
-		// Take the highest-scoring entity as the answer
 		if len(output.Entities) > 0 && len(output.Entities[0]) > 0 {
-			// Find best entity by score
 			best := output.Entities[0][0]
 			for _, e := range output.Entities[0][1:] {
 				if e.Score > best.Score {
@@ -487,14 +336,6 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 				End:   best.End,
 				Score: best.Score,
 			}
-		} else {
-			// No answer found
-			answers[i] = Answer{
-				Text:  "",
-				Start: 0,
-				End:   0,
-				Score: 0,
-			}
 		}
 	}
 
@@ -506,14 +347,12 @@ func (p *PooledGLiNER) ExtractAnswers(ctx context.Context, questions []string, c
 }
 
 // RelationLabels returns the default relation labels this model uses.
-// Returns nil if the model doesn't support relation extraction.
-// Implements ner.Recognizer interface.
 func (p *PooledGLiNER) RelationLabels() []string {
 	return p.relationLabels
 }
 
 // =============================================================================
-// Capability Methods
+// Capability Methods — all delegate to pipeline for consistency
 // =============================================================================
 
 // SupportsRelationExtraction returns true if the model supports relation extraction.
@@ -523,29 +362,22 @@ func (p *PooledGLiNER) SupportsRelationExtraction() bool {
 
 // SupportsQA returns true if the model supports question answering.
 func (p *PooledGLiNER) SupportsQA() bool {
-	return p.config.ModelType == GLiNERModelMultiTask ||
-		p.config.ModelType == GLiNERModelGLiNER2
+	return p.pool.First().SupportsQA()
 }
 
 // SupportsClassification returns true if the model supports text classification.
 func (p *PooledGLiNER) SupportsClassification() bool {
-	// Check config capabilities first
-	if slices.Contains(p.config.Capabilities, "classification") {
-		return true
-	}
-	// Fall back to model type check
-	return p.config.ModelType == GLiNERModelGLiNER2
+	return p.pool.First().SupportsClassification()
 }
 
 // IsGLiNER2 returns true if this is a GLiNER2 model.
 func (p *PooledGLiNER) IsGLiNER2() bool {
-	return p.config.ModelType == GLiNERModelGLiNER2
+	return p.pool.First().IsGLiNER2()
 }
 
 // Capabilities returns the capabilities from the GLiNER config.
-// Returns nil if no capabilities are specified.
 func (p *PooledGLiNER) Capabilities() []string {
-	return p.config.Capabilities
+	return p.capabilities
 }
 
 // =============================================================================
@@ -553,8 +385,6 @@ func (p *PooledGLiNER) Capabilities() []string {
 // =============================================================================
 
 // ClassifyText performs zero-shot text classification using GLiNER2.
-// This treats the entire text as a single span and scores it against each label.
-// Returns ErrNotSupported if the model doesn't support classification.
 func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels []string, config *ClassificationConfig) ([][]Classification, error) {
 	if len(texts) == 0 {
 		return [][]Classification{}, nil
@@ -573,7 +403,6 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		config = &defaultConfig
 	}
 
-	// Acquire pool slot
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, err
@@ -586,15 +415,9 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		zap.Strings("labels", labels),
 		zap.Bool("multi_label", config.MultiLabel))
 
-	// Convert config to pipeline format
-	pipelineConfig := &pipelines.GLiNER2ClassificationConfig{
-		Threshold:  config.Threshold,
-		MultiLabel: config.MultiLabel,
-		TopK:       config.TopK,
-	}
-
-	// Use the pipeline's ClassifyText method
-	output, err := pipeline.ClassifyText(ctx, texts, labels, pipelineConfig)
+	// ClassificationConfig is a type alias for NERClassificationConfig,
+	// so we can pass it directly.
+	output, err := pipeline.ClassifyText(ctx, texts, labels, config)
 	if err != nil {
 		p.logger.Error("GLiNER2 classification failed",
 			zap.Int("pipelineIndex", idx),
@@ -602,33 +425,15 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		return nil, fmt.Errorf("classifying text: %w", err)
 	}
 
-	// Convert pipeline output to our Classification type
-	results := make([][]Classification, len(texts))
-	for i, classifications := range output {
-		results[i] = make([]Classification, len(classifications))
-		for j, c := range classifications {
-			results[i][j] = Classification{
-				Label: c.Label,
-				Score: c.Score,
-			}
-		}
-	}
+	// Classification is a type alias for NERClassification, so no conversion needed.
+	results := output
 
 	p.logger.Debug("GLiNER2 classification completed",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
-		zap.Int("total_classifications", countClassifications(results)))
+		zap.Int("total_classifications", utils.CountNested(results)))
 
 	return results, nil
-}
-
-// countClassifications counts the total number of classifications.
-func countClassifications(results [][]Classification) int {
-	count := 0
-	for _, classifications := range results {
-		count += len(classifications)
-	}
-	return count
 }
 
 // =============================================================================
@@ -637,16 +442,10 @@ func countClassifications(results [][]Classification) int {
 
 // SupportsExtraction returns true if the model supports structured schema-based extraction.
 func (p *PooledGLiNER) SupportsExtraction() bool {
-	// Check config capabilities first
-	if slices.Contains(p.config.Capabilities, "extraction") {
-		return true
-	}
-	// Fall back to model type check: any GLiNER2 model can do extraction
-	return p.config.ModelType == GLiNERModelGLiNER2
+	return p.pool.First().SupportsExtraction()
 }
 
 // Extract extracts structured data from texts based on the given schemas.
-// Returns extraction results for each input text.
 func (p *PooledGLiNER) Extract(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error) {
 	if len(texts) == 0 {
 		return []ExtractionResult{}, nil
@@ -656,21 +455,20 @@ func (p *PooledGLiNER) Extract(ctx context.Context, texts []string, schemas []Ex
 		return nil, ErrNotSupported
 	}
 
+	pipeline, idx, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer p.pool.Release()
+
 	p.logger.Debug("Starting GLiNER2 extraction",
+		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
 		zap.Int("num_schemas", len(schemas)))
 
-	// Process each text, acquiring a pipeline slot per-text so concurrent
-	// requests can interleave rather than one batch hogging a slot.
 	results := make([]ExtractionResult, len(texts))
 	for i, text := range texts {
-		pipeline, idx, err := p.pool.Acquire(ctx)
-		if err != nil {
-			return nil, err
-		}
-
 		result, err := extractFromText(ctx, pipeline, text, schemas, config, p.logger)
-		p.pool.Release()
 		if err != nil {
 			p.logger.Error("GLiNER2 extraction failed",
 				zap.Int("pipelineIndex", idx),
@@ -697,14 +495,7 @@ func (p *PooledGLiNER) IsBiEncoder() bool {
 }
 
 // PrecomputeLabelEmbeddings precomputes and caches embeddings for the given labels.
-// This is useful for BiEncoder models where label embeddings can be computed once
-// and reused across many inference calls with the same labels.
-//
-// For BiEncoder models, this runs the labels through the label encoder to get
-// embeddings that can be reused. For UniEncoder models, this is a no-op since
-// labels are encoded together with the text.
 func (p *PooledGLiNER) PrecomputeLabelEmbeddings(labels []string) error {
-	// Initialize all pipelines so we can precompute for each one
 	if err := p.pool.InitAll(); err != nil {
 		return fmt.Errorf("initializing all pipelines for label precomputation: %w", err)
 	}
@@ -749,65 +540,3 @@ func (p *PooledGLiNER) ClearLabelEmbeddingCache() {
 	p.logger.Debug("Cleared label embedding cache")
 }
 
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-// convertGLiNEREntities converts pipeline entities to our Entity type.
-func convertGLiNEREntities(pipelineEntities []pipelines.GLiNEREntity) []Entity {
-	entities := make([]Entity, len(pipelineEntities))
-	for i, e := range pipelineEntities {
-		entities[i] = Entity{
-			Text:  e.Text,
-			Label: e.Label,
-			Start: e.Start,
-			End:   e.End,
-			Score: e.Score,
-		}
-	}
-	return entities
-}
-
-// convertGLiNERRelations converts pipeline relations to our Relation type.
-func convertGLiNERRelations(pipelineRelations []pipelines.GLiNERRelation) []Relation {
-	relations := make([]Relation, len(pipelineRelations))
-	for i, r := range pipelineRelations {
-		relations[i] = Relation{
-			HeadEntity: Entity{
-				Text:  r.HeadEntity.Text,
-				Label: r.HeadEntity.Label,
-				Start: r.HeadEntity.Start,
-				End:   r.HeadEntity.End,
-				Score: r.HeadEntity.Score,
-			},
-			TailEntity: Entity{
-				Text:  r.TailEntity.Text,
-				Label: r.TailEntity.Label,
-				Start: r.TailEntity.Start,
-				End:   r.TailEntity.End,
-				Score: r.TailEntity.Score,
-			},
-			Label: r.Label,
-			Score: r.Score,
-		}
-	}
-	return relations
-}
-
-// countGLiNEREntities counts the total number of entities across all texts.
-func countGLiNEREntities(results [][]Entity) int {
-	count := 0
-	for _, entities := range results {
-		count += len(entities)
-	}
-	return count
-}
-
-// countGLiNERRelations counts the total number of relations across all texts.
-func countGLiNERRelations(relations [][]Relation) int {
-	count := 0
-	for _, rels := range relations {
-		count += len(rels)
-	}
-	return count
-}

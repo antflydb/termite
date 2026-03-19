@@ -15,13 +15,14 @@
 package pipelines
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -88,6 +89,10 @@ type GLiNERModelConfig struct {
 
 	// WordsJoiner is the character used to join words (typically space)
 	WordsJoiner string
+
+	// Capabilities lists the model's capabilities from gliner_config.json
+	// (e.g., "ner", "zeroshot", "classification", "relations", "extraction").
+	Capabilities []string
 }
 
 // LoadGLiNERModelConfig loads and parses configuration for a GLiNER model.
@@ -133,11 +138,11 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 			if rawConfig.Threshold > 0 {
 				config.Threshold = rawConfig.Threshold
 			}
-			if rawConfig.FlatNER {
-				config.FlatNER = rawConfig.FlatNER
+			if rawConfig.FlatNER != nil {
+				config.FlatNER = *rawConfig.FlatNER
 			}
-			if rawConfig.MultiLabel {
-				config.MultiLabel = rawConfig.MultiLabel
+			if rawConfig.MultiLabel != nil {
+				config.MultiLabel = *rawConfig.MultiLabel
 			}
 			if rawConfig.ModelType != "" {
 				config.ModelType = GLiNERModelType(rawConfig.ModelType)
@@ -151,11 +156,14 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 			if rawConfig.WordsJoiner != "" {
 				config.WordsJoiner = rawConfig.WordsJoiner
 			}
+			if len(rawConfig.Capabilities) > 0 {
+				config.Capabilities = rawConfig.Capabilities
+			}
 		}
 	}
 
-	// Detect model type from model name if not specified in config
-	if config.ModelType == "" || config.ModelType == GLiNERModelUniEncoder {
+	// Detect model type from model name if not explicitly set in config
+	if config.ModelType == GLiNERModelUniEncoder {
 		config.ModelType = detectGLiNERModelType(modelPath)
 	}
 
@@ -163,17 +171,19 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 }
 
 // rawGLiNERConfig represents gliner_config.json structure.
+// Pointer fields distinguish "not set" from "set to zero/false".
 type rawGLiNERConfig struct {
 	MaxWidth          int      `json:"max_width"`
 	MaxLength         int      `json:"max_len"`
 	Labels            []string `json:"labels"`
 	Threshold         float32  `json:"threshold"`
-	FlatNER           bool     `json:"flat_ner"`
-	MultiLabel        bool     `json:"multi_label"`
+	FlatNER           *bool    `json:"flat_ner"`
+	MultiLabel        *bool    `json:"multi_label"`
 	ModelType         string   `json:"model_type"`
 	RelationLabels    []string `json:"relation_labels"`
 	RelationThreshold float32  `json:"relation_threshold"`
 	WordsJoiner       string   `json:"words_joiner"`
+	Capabilities      []string `json:"capabilities"`
 }
 
 // detectGLiNERModelType attempts to detect the model type from the model name.
@@ -214,11 +224,12 @@ func IsGLiNERModel(modelPath string) bool {
 }
 
 // ============================================================================
-// GLiNER Entity Types
+// NER Entity Types (shared by NERPipeline and GLiNERPipeline)
 // ============================================================================
 
-// GLiNEREntity represents a named entity extracted by GLiNER.
-type GLiNEREntity struct {
+// NEREntity represents a named entity extracted from text.
+// Used by both NERPipeline (token classification) and GLiNERPipeline (zero-shot).
+type NEREntity struct {
 	// Text is the entity text
 	Text string `json:"text"`
 	// Label is the entity type
@@ -231,48 +242,45 @@ type GLiNEREntity struct {
 	Score float32 `json:"score"`
 }
 
-// GLiNERRelation represents a relationship between two entities.
-type GLiNERRelation struct {
+// NERRelation represents a relationship between two entities.
+type NERRelation struct {
 	// HeadEntity is the source entity
-	HeadEntity GLiNEREntity `json:"head"`
+	HeadEntity NEREntity `json:"head"`
 	// TailEntity is the target entity
-	TailEntity GLiNEREntity `json:"tail"`
+	TailEntity NEREntity `json:"tail"`
 	// Label is the relationship type
 	Label string `json:"label"`
 	// Score is the confidence score
 	Score float32 `json:"score"`
 }
 
-// GLiNEROutput holds the output from GLiNER inference.
-type GLiNEROutput struct {
+// NEROutput holds the output from GLiNER inference.
+type NEROutput struct {
 	// Entities holds entities for each input text
-	Entities [][]GLiNEREntity
+	Entities [][]NEREntity
 	// Relations holds relations for each input text (if supported)
-	Relations [][]GLiNERRelation
+	Relations [][]NERRelation
 }
 
-// GLiNER2TaskType represents different task types for GLiNER2.
-type GLiNER2TaskType int
+// glinerTaskType represents different task types for GLiNER2 prompt construction.
+type glinerTaskType int
 
 const (
-	// GLiNER2TaskNER is standard named entity recognition
-	GLiNER2TaskNER GLiNER2TaskType = iota
-	// GLiNER2TaskRelations extracts relationships between entities
-	GLiNER2TaskRelations
-	// GLiNER2TaskClassification performs text classification
-	GLiNER2TaskClassification
+	glinerTaskNER glinerTaskType = iota
+	glinerTaskRelations
+	glinerTaskClassification
 )
 
-// GLiNER2Classification represents a text classification result.
-type GLiNER2Classification struct {
+// NERClassification represents a text classification result.
+type NERClassification struct {
 	// Label is the classification label
 	Label string `json:"label"`
 	// Score is the confidence score (0.0 to 1.0)
 	Score float32 `json:"score"`
 }
 
-// GLiNER2ClassificationConfig holds configuration for classification.
-type GLiNER2ClassificationConfig struct {
+// NERClassificationConfig holds configuration for classification.
+type NERClassificationConfig struct {
 	// Threshold is the score threshold for positive classification
 	Threshold float32
 	// MultiLabel if true, allow multiple labels per text
@@ -281,22 +289,15 @@ type GLiNER2ClassificationConfig struct {
 	TopK int
 }
 
-// DefaultGLiNER2ClassificationConfig returns sensible defaults.
-func DefaultGLiNER2ClassificationConfig() *GLiNER2ClassificationConfig {
-	return &GLiNER2ClassificationConfig{
+// DefaultNERClassificationConfig returns sensible defaults.
+func DefaultNERClassificationConfig() *NERClassificationConfig {
+	return &NERClassificationConfig{
 		Threshold:  0.5,
 		MultiLabel: false,
 		TopK:       1,
 	}
 }
 
-// GLiNER2RelationOutput holds the output from relation extraction.
-type GLiNER2RelationOutput struct {
-	// Entities holds all extracted entities
-	Entities [][]GLiNEREntity
-	// Relations holds extracted relations
-	Relations [][]GLiNERRelation
-}
 
 // ============================================================================
 // GLiNER Pipeline
@@ -409,15 +410,15 @@ func NewGLiNERPipeline(
 }
 
 // Recognize extracts entities from texts using the default labels.
-func (p *GLiNERPipeline) Recognize(ctx context.Context, texts []string) (*GLiNEROutput, error) {
+func (p *GLiNERPipeline) Recognize(ctx context.Context, texts []string) (*NEROutput, error) {
 	return p.RecognizeWithLabels(ctx, texts, p.PipelineConfig.DefaultLabels)
 }
 
 // RecognizeWithLabels extracts entities of the specified types (zero-shot NER).
 // This is the key feature of GLiNER - it can extract any entity type without retraining.
-func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string, labels []string) (*GLiNEROutput, error) {
+func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string, labels []string) (*NEROutput, error) {
 	if len(texts) == 0 {
-		return &GLiNEROutput{Entities: [][]GLiNEREntity{}}, nil
+		return &NEROutput{Entities: [][]NEREntity{}}, nil
 	}
 
 	if len(labels) == 0 {
@@ -425,7 +426,7 @@ func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string
 	}
 
 	// Process each text
-	allEntities := make([][]GLiNEREntity, len(texts))
+	allEntities := make([][]NEREntity, len(texts))
 	for i, text := range texts {
 		entities, err := p.processText(ctx, text, labels)
 		if err != nil {
@@ -434,17 +435,17 @@ func (p *GLiNERPipeline) RecognizeWithLabels(ctx context.Context, texts []string
 		allEntities[i] = entities
 	}
 
-	return &GLiNEROutput{Entities: allEntities}, nil
+	return &NEROutput{Entities: allEntities}, nil
 }
 
 // processText processes a single text with the given labels.
-func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []string) ([]GLiNEREntity, error) {
+func (p *GLiNERPipeline) processText(ctx context.Context, text string, labels []string) ([]NEREntity, error) {
 	return p.processTextWithConfig(ctx, text, labels, p.PipelineConfig.Threshold, p.PipelineConfig.FlatNER)
 }
 
 // processTextWithConfig runs NER extraction with explicit threshold and flatNER parameters,
 // avoiding mutation of shared PipelineConfig state for thread safety.
-func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string, labels []string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
+func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string, labels []string, threshold float32, flatNER bool) ([]NEREntity, error) {
 	if text == "" {
 		return nil, nil
 	}
@@ -474,13 +475,6 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 			return nil, fmt.Errorf("parsing GLiNER2 outputs: %w", err)
 		}
 
-		sort.Slice(entities, func(i, j int) bool {
-			if entities[i].Start != entities[j].Start {
-				return entities[i].Start < entities[j].Start
-			}
-			return entities[i].End < entities[j].End
-		})
-
 		return entities, nil
 	}
 
@@ -490,7 +484,7 @@ func (p *GLiNERPipeline) processTextWithConfig(ctx context.Context, text string,
 	prompt := p.buildPrompt(labels)
 	promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
-	inputs, err := p.buildInputs(promptTokens, textTokens, words, labels)
+	inputs, err := p.buildInputs(promptTokens, textTokens)
 	if err != nil {
 		return nil, fmt.Errorf("building inputs: %w", err)
 	}
@@ -549,7 +543,7 @@ func isWordChar(r rune) bool {
 // GLiNER v1 uses: <<ENT>>label<<SEP>> (special tokens 128002/128003)
 // GLiNER2 uses:   [E]label[SEP_TEXT]  (special tokens 128005/128002)
 func (p *GLiNERPipeline) buildPrompt(labels []string) string {
-	return p.buildPromptForTask(labels, GLiNER2TaskNER)
+	return p.buildPromptForTask(labels, glinerTaskNER)
 }
 
 // buildPromptForTask constructs the label prompt for different GLiNER tasks.
@@ -560,17 +554,17 @@ func (p *GLiNERPipeline) buildPrompt(labels []string) string {
 //   - NER:            [E]label[SEP_TEXT]
 //   - Relations:      [R]entity::relation[SEP_TEXT]
 //   - Classification: [C]label[SEP_TEXT]
-func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType GLiNER2TaskType) string {
+func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType glinerTaskType) string {
 	var sb strings.Builder
 
 	if p.IsGLiNER2() {
 		var prefix string
 		switch taskType {
-		case GLiNER2TaskNER:
+		case glinerTaskNER:
 			prefix = "[E]"
-		case GLiNER2TaskRelations:
+		case glinerTaskRelations:
 			prefix = "[R]"
-		case GLiNER2TaskClassification:
+		case glinerTaskClassification:
 			prefix = "[C]"
 		default:
 			prefix = "[E]"
@@ -618,15 +612,15 @@ func (p *GLiNERPipeline) ExtractRelations(
 	texts []string,
 	entityLabels []string,
 	relationLabels []string,
-) (*GLiNER2RelationOutput, error) {
+) (*NEROutput, error) {
 	if !p.IsGLiNER2() {
 		return nil, fmt.Errorf("relation extraction requires GLiNER2 model")
 	}
 
 	if len(texts) == 0 {
-		return &GLiNER2RelationOutput{
-			Entities:  [][]GLiNEREntity{},
-			Relations: [][]GLiNERRelation{},
+		return &NEROutput{
+			Entities:  [][]NEREntity{},
+			Relations: [][]NERRelation{},
 		}, nil
 	}
 
@@ -639,8 +633,8 @@ func (p *GLiNERPipeline) ExtractRelations(
 	}
 
 	// Process each text
-	allEntities := make([][]GLiNEREntity, len(texts))
-	allRelations := make([][]GLiNERRelation, len(texts))
+	allEntities := make([][]NEREntity, len(texts))
+	allRelations := make([][]NERRelation, len(texts))
 
 	for i, text := range texts {
 		entities, relations, err := p.processTextForRelations(ctx, text, entityLabels, relationLabels)
@@ -651,7 +645,7 @@ func (p *GLiNERPipeline) ExtractRelations(
 		allRelations[i] = relations
 	}
 
-	return &GLiNER2RelationOutput{
+	return &NEROutput{
 		Entities:  allEntities,
 		Relations: allRelations,
 	}, nil
@@ -663,7 +657,7 @@ func (p *GLiNERPipeline) processTextForRelations(
 	text string,
 	entityLabels []string,
 	relationLabels []string,
-) ([]GLiNEREntity, []GLiNERRelation, error) {
+) ([]NEREntity, []NERRelation, error) {
 	if text == "" {
 		return nil, nil, nil
 	}
@@ -689,27 +683,39 @@ func (p *GLiNERPipeline) processTextForRelations(
 	}
 
 	// Step 4: Match relation heads to entities and find tail entities
-	relations := p.matchRelations(entities, relationHeadSpans, entityLabels)
+	relations := p.matchRelations(entities, relationHeadSpans)
 
 	return entities, relations, nil
 }
 
-// matchRelations matches extracted relation head spans to entities and finds relations.
+// matchRelations matches extracted relation head spans to entities to form relations.
+//
+// GLiNER2 encodes relations as composite labels "entity_type::relation". The model
+// produces a head span for each relation; the span's position and score carry the
+// relation-specific evidence. We match each head span to its closest non-overlapping
+// entity (the tail) by positional proximity, rather than forming a cartesian product.
 func (p *GLiNERPipeline) matchRelations(
-	entities []GLiNEREntity,
-	relationHeadSpans []GLiNEREntity,
-	entityLabels []string,
-) []GLiNERRelation {
-	var relations []GLiNERRelation
+	entities []NEREntity,
+	relationHeadSpans []NEREntity,
+) []NERRelation {
+	if len(entities) == 0 || len(relationHeadSpans) == 0 {
+		return nil
+	}
 
 	// Build a map of entity positions for quick lookup
-	entityByPos := make(map[string]*GLiNEREntity)
+	entityByPos := make(map[string]*NEREntity)
 	for i := range entities {
 		key := fmt.Sprintf("%d-%d", entities[i].Start, entities[i].End)
 		entityByPos[key] = &entities[i]
 	}
 
-	// Process each relation head span
+	threshold := float32(0)
+	if p.Config != nil {
+		threshold = p.Config.RelationThreshold
+	}
+
+	var relations []NERRelation
+
 	for _, headSpan := range relationHeadSpans {
 		// Parse the composite label: "entity_type::relation"
 		parts := strings.SplitN(headSpan.Label, "::", 2)
@@ -719,12 +725,11 @@ func (p *GLiNERPipeline) matchRelations(
 		headEntityType := parts[0]
 		relationLabel := parts[1]
 
-		// Find the matching entity for this head span
+		// Find the matching entity for this head span by position
 		headKey := fmt.Sprintf("%d-%d", headSpan.Start, headSpan.End)
 		headEntity := entityByPos[headKey]
 		if headEntity == nil {
-			// Create a head entity from the span
-			headEntity = &GLiNEREntity{
+			headEntity = &NEREntity{
 				Text:  headSpan.Text,
 				Label: headEntityType,
 				Start: headSpan.Start,
@@ -733,37 +738,48 @@ func (p *GLiNERPipeline) matchRelations(
 			}
 		}
 
-		// Find potential tail entities (non-overlapping entities)
+		// Find the closest non-overlapping entity as the tail.
+		// The head span's score is the relation-specific evidence from the model.
+		var bestTail *NEREntity
+		bestDist := math.MaxInt
 		for i := range entities {
 			tail := &entities[i]
-
-			// Skip if same span or overlapping
 			if overlapsSpan(headSpan.Start, headSpan.End, tail.Start, tail.End) {
 				continue
 			}
-
-			// Create relation
-			relations = append(relations, GLiNERRelation{
-				HeadEntity: *headEntity,
-				TailEntity: *tail,
-				Label:      relationLabel,
-				Score:      (headSpan.Score + tail.Score) / 2, // Average confidence
-			})
-		}
-	}
-
-	// Apply threshold filtering if configured
-	if p.Config != nil && p.Config.RelationThreshold > 0 {
-		filtered := make([]GLiNERRelation, 0, len(relations))
-		for _, rel := range relations {
-			if rel.Score >= p.Config.RelationThreshold {
-				filtered = append(filtered, rel)
+			dist := charDistance(headSpan.Start, headSpan.End, tail.Start, tail.End)
+			if dist < bestDist {
+				bestDist = dist
+				bestTail = tail
 			}
 		}
-		relations = filtered
+
+		if bestTail == nil {
+			continue
+		}
+
+		score := headSpan.Score
+		if threshold > 0 && score < threshold {
+			continue
+		}
+
+		relations = append(relations, NERRelation{
+			HeadEntity: *headEntity,
+			TailEntity: *bestTail,
+			Label:      relationLabel,
+			Score:      score,
+		})
 	}
 
 	return relations
+}
+
+// charDistance returns the character distance between two non-overlapping spans.
+func charDistance(start1, end1, start2, end2 int) int {
+	if end1 <= start2 {
+		return start2 - end1
+	}
+	return start1 - end2
 }
 
 // overlapsSpan checks if two spans overlap.
@@ -778,14 +794,14 @@ func (p *GLiNERPipeline) ClassifyText(
 	ctx context.Context,
 	texts []string,
 	labels []string,
-	config *GLiNER2ClassificationConfig,
-) ([][]GLiNER2Classification, error) {
+	config *NERClassificationConfig,
+) ([][]NERClassification, error) {
 	if !p.IsGLiNER2() {
 		return nil, fmt.Errorf("classification requires GLiNER2 model")
 	}
 
 	if len(texts) == 0 {
-		return [][]GLiNER2Classification{}, nil
+		return [][]NERClassification{}, nil
 	}
 
 	if len(labels) == 0 {
@@ -793,10 +809,10 @@ func (p *GLiNERPipeline) ClassifyText(
 	}
 
 	if config == nil {
-		config = DefaultGLiNER2ClassificationConfig()
+		config = DefaultNERClassificationConfig()
 	}
 
-	results := make([][]GLiNER2Classification, len(texts))
+	results := make([][]NERClassification, len(texts))
 
 	for i, text := range texts {
 		classifications, err := p.classifySingleText(ctx, text, labels, config)
@@ -817,8 +833,8 @@ func (p *GLiNERPipeline) classifySingleText(
 	ctx context.Context,
 	text string,
 	labels []string,
-	config *GLiNER2ClassificationConfig,
-) ([]GLiNER2Classification, error) {
+	config *NERClassificationConfig,
+) ([]NERClassification, error) {
 	if text == "" {
 		return nil, nil
 	}
@@ -843,47 +859,31 @@ func (p *GLiNERPipeline) classifySingleText(
 		}
 
 		// Extract per-label max scores from [1, num_words, max_width, num_labels]
-		results := make([]GLiNER2Classification, 0, len(labels))
+		results := make([]NERClassification, 0, len(labels))
 		for li, label := range labels {
 			score := p.maxLabelScore(outputs, li, len(labels))
-			if config.MultiLabel && score < config.Threshold {
+			if score < config.Threshold {
 				continue
 			}
-			results = append(results, GLiNER2Classification{
+			results = append(results, NERClassification{
 				Label: label,
 				Score: score,
 			})
 		}
 
-		sort.Slice(results, func(i, j int) bool {
-			return results[i].Score > results[j].Score
-		})
-
-		if !config.MultiLabel && len(results) > 0 {
-			k := 1
-			if config.TopK > 0 {
-				k = config.TopK
-			}
-			if len(results) > k {
-				results = results[:k]
-			}
-		} else if config.TopK > 0 && len(results) > config.TopK {
-			results = results[:config.TopK]
-		}
-
-		return results, nil
+		return sortAndTruncateClassifications(results, config), nil
 	}
 
 	// GLiNER v1: per-label inference with old prompt format.
 	textTokens := p.tokenizeWords(words)
 
-	results := make([]GLiNER2Classification, 0, len(labels))
+	results := make([]NERClassification, 0, len(labels))
 	for _, label := range labels {
 		singleLabel := []string{label}
-		prompt := p.buildPromptForTask(singleLabel, GLiNER2TaskClassification)
+		prompt := p.buildPromptForTask(singleLabel, glinerTaskClassification)
 		promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
-		inputs, err := p.buildInputs(promptTokens, textTokens, words, singleLabel)
+		inputs, err := p.buildInputs(promptTokens, textTokens)
 		if err != nil {
 			return nil, fmt.Errorf("building inputs for label %s: %w", label, err)
 		}
@@ -894,22 +894,25 @@ func (p *GLiNERPipeline) classifySingleText(
 		}
 
 		score := p.maxSpanScore(outputs)
-		if config.MultiLabel && score < config.Threshold {
+		if score < config.Threshold {
 			continue
 		}
 
-		results = append(results, GLiNER2Classification{
+		results = append(results, NERClassification{
 			Label: label,
 			Score: score,
 		})
 	}
 
-	// Sort by score descending
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Score > results[j].Score
+	return sortAndTruncateClassifications(results, config), nil
+}
+
+// sortAndTruncateClassifications sorts results by score descending and applies TopK/MultiLabel filtering.
+func sortAndTruncateClassifications(results []NERClassification, config *NERClassificationConfig) []NERClassification {
+	slices.SortFunc(results, func(a, b NERClassification) int {
+		return cmp.Compare(b.Score, a.Score) // descending
 	})
 
-	// Apply single-label / TopK filtering
 	if !config.MultiLabel && len(results) > 0 {
 		k := 1
 		if config.TopK > 0 {
@@ -922,7 +925,7 @@ func (p *GLiNERPipeline) classifySingleText(
 		results = results[:config.TopK]
 	}
 
-	return results, nil
+	return results
 }
 
 // maxLabelScore extracts the maximum sigmoid-activated score for a specific label
@@ -1012,20 +1015,15 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 	}
 
 	// Tokenize text words (lowercased, each word individually)
-	type wordTokenInfo struct {
-		tokens   []int
-		firstIdx int // index of first sub-token in final sequence
-	}
-	wordInfos := make([]wordTokenInfo, len(words))
+	wordTokens := make([][]int, len(words))
 	for i, word := range words {
-		tokens := p.Tokenizer.EncodeWithOptions(strings.ToLower(word), false)
-		wordInfos[i] = wordTokenInfo{tokens: tokens}
+		wordTokens[i] = p.Tokenizer.EncodeWithOptions(strings.ToLower(word), false)
 	}
 
 	// Count total text sub-tokens
 	totalTextSubTokens := 0
-	for _, wi := range wordInfos {
-		totalTextSubTokens += len(wi.tokens)
+	for _, wt := range wordTokens {
+		totalTextSubTokens += len(wt)
 	}
 
 	// Build full sequence
@@ -1052,29 +1050,22 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 
 	// Fill text tokens with word tracking
 	numWords := 0
-	for i := range wordInfos {
+	for i, wt := range wordTokens {
 		if idx >= seqLen {
 			break
 		}
-		wordInfos[i].firstIdx = idx
-		for j, tok := range wordInfos[i].tokens {
+		for _, tok := range wt {
 			if idx >= seqLen {
 				break
 			}
 			inputIDs[idx] = int64(tok)
 			attentionMask[idx] = 1
 			wordsMask[idx] = int64(i + 1) // 1-indexed word ID
-			_ = j
 			idx++
 		}
 		numWords = i + 1
 	}
-
-	// Pad remaining
-	for ; idx < seqLen; idx++ {
-		inputIDs[idx] = 0
-		attentionMask[idx] = 0
-	}
+	// Remaining positions are already zero from make().
 
 	// Build word-level span indices
 	maxWidth := p.PipelineConfig.MaxWidth
@@ -1083,6 +1074,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 		numSpans = maxWidth
 	}
 	spanIdx := make([]int64, numSpans*2)
+	spanMask := make([]bool, numSpans)
 
 	for w := 0; w < numWords; w++ {
 		for wi := range maxWidth {
@@ -1091,6 +1083,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 			if endWord < numWords {
 				spanIdx[si*2] = int64(w)
 				spanIdx[si*2+1] = int64(endWord)
+				spanMask[si] = true
 			}
 		}
 	}
@@ -1116,11 +1109,16 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 			Shape: []int64{1, int64(numSpans), 2},
 			Data:  spanIdx,
 		},
+		{
+			Name:  "span_mask",
+			Shape: []int64{1, int64(numSpans)},
+			Data:  spanMask,
+		},
 	}, nil
 }
 
 // buildInputs constructs the model inputs for GLiNER v1 inference.
-func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, words []string, labels []string) ([]backends.NamedTensor, error) {
+func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int) ([]backends.NamedTensor, error) {
 	// Count total text tokens (excluding special tokens added by tokenizer)
 	totalTextTokens := 0
 	for _, wt := range textTokens {
@@ -1151,7 +1149,6 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	clsID := int64(1) // DeBERTa [CLS]
 	sepID := int64(2) // DeBERTa [SEP]
 	padID := int64(0) // DeBERTa [PAD]
-	_ = padID         // unused for now, padding handled later
 
 	idx := 0
 	inputIDs[idx] = clsID
@@ -1176,16 +1173,9 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	textStartIdx := idx
 
 	// Add text tokens with word tracking.
-	// Track per-word sub-token boundaries so we can build word-level spans.
-	// wordFirstToken[w] = index of first sub-token for word w (relative to textStartIdx)
-	// wordLastToken[w]  = index of last sub-token for word w (relative to textStartIdx)
-	wordFirstToken := make([]int, 0, len(textTokens))
-	wordLastToken := make([]int, 0, len(textTokens))
-
 	wordIdx := int64(1) // Start at 1 (0 reserved for non-word tokens)
 	for _, wordTokens := range textTokens {
-		first := -1
-		last := -1
+		added := false
 		for _, tok := range wordTokens {
 			// Skip special tokens that tokenizer adds
 			if tok == 0 || tok == 1 || tok == 2 {
@@ -1194,19 +1184,13 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 			if idx >= seqLen-1 {
 				break
 			}
-			relPos := idx - textStartIdx
-			if first < 0 {
-				first = relPos
-			}
-			last = relPos
 			inputIDs[idx] = int64(tok)
 			attentionMask[idx] = 1
 			wordsMask[idx] = wordIdx
 			idx++
+			added = true
 		}
-		if first >= 0 {
-			wordFirstToken = append(wordFirstToken, first)
-			wordLastToken = append(wordLastToken, last)
+		if added {
 			wordIdx++
 		}
 		if idx >= seqLen-1 {
@@ -1217,7 +1201,6 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 	// Record text length (number of sub-tokens)
 	numTextTokens := idx - textStartIdx
 	textLengths[0] = int64(numTextTokens)
-	numWords := len(wordFirstToken)
 
 	// Add final separator
 	if idx < seqLen {
@@ -1234,58 +1217,24 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 
 	maxWidth := p.PipelineConfig.MaxWidth
 
-	var numSpans int
-	var spanIdx []int64
-	var spanMask []bool
+	// GLiNER v1: Build span indices at sub-token level.
+	// The v1 ONNX model has an internal Reshape that expects
+	// numSpans = numTextTokens * maxWidth.
+	if numTextTokens < 1 {
+		numTextTokens = 1
+	}
+	numSpans := numTextTokens * maxWidth
+	spanIdx := make([]int64, numSpans*2)
+	spanMask := make([]bool, numSpans)
 
-	if p.IsGLiNER2() {
-		// GLiNER2: Build span indices at word level.
-		// The ONNX wrapper uses torch.gather on span_idx positions directly,
-		// so we map word pairs to their sub-token boundaries.
-		// For span (w, w+wi): start = first sub-token of word w, end = last sub-token of word w+wi.
-		// This gives numSpans = numWords * maxWidth, aligned with parseOutputs.
-		if numWords < 1 {
-			numWords = 1
-		}
-		numSpans = numWords * maxWidth
-		spanIdx = make([]int64, numSpans*2)
-		spanMask = make([]bool, numSpans)
-
-		for w := 0; w < numWords; w++ {
-			for wi := range maxWidth {
-				spanI := w*maxWidth + wi
-				endWord := w + wi
-				if w < len(wordFirstToken) && endWord < len(wordLastToken) {
-					spanIdx[spanI*2] = int64(wordFirstToken[w])
-					spanIdx[spanI*2+1] = int64(wordLastToken[endWord])
-					spanMask[spanI] = true
-				} else {
-					spanIdx[spanI*2] = 0
-					spanIdx[spanI*2+1] = 0
-					spanMask[spanI] = false
-				}
-			}
-		}
-	} else {
-		// GLiNER v1: Build span indices at sub-token level.
-		// The v1 ONNX model has an internal Reshape that expects
-		// numSpans = numTextTokens * maxWidth.
-		if numTextTokens < 1 {
-			numTextTokens = 1
-		}
-		numSpans = numTextTokens * maxWidth
-		spanIdx = make([]int64, numSpans*2)
-		spanMask = make([]bool, numSpans)
-
-		for t := 0; t < numTextTokens; t++ {
-			for wi := range maxWidth {
-				spanI := t*maxWidth + wi
-				start := t
-				end := t + wi
-				spanIdx[spanI*2] = int64(start)
-				spanIdx[spanI*2+1] = int64(end)
-				spanMask[spanI] = end < numTextTokens
-			}
+	for t := 0; t < numTextTokens; t++ {
+		for wi := range maxWidth {
+			spanI := t*maxWidth + wi
+			start := t
+			end := t + wi
+			spanIdx[spanI*2] = int64(start)
+			spanIdx[spanI*2+1] = int64(end)
+			spanMask[spanI] = end < numTextTokens
 		}
 	}
 
@@ -1327,30 +1276,33 @@ func (p *GLiNERPipeline) buildInputs(promptTokens []int, textTokens [][]int, wor
 }
 
 // parseOutputs extracts entities from model outputs.
-func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string, threshold float32, flatNER bool) ([]GLiNEREntity, error) {
-	// Find the logits output
+func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []string, wordStartChars, wordEndChars []int, labels []string, originalText string, threshold float32, flatNER bool) ([]NEREntity, error) {
+	// Find the logits output: prefer named "logits"/"output", fall back to first float32.
 	var logits []float32
 	var logitsShape []int64
+	var fallbackLogits []float32
+	var fallbackShape []int64
 
 	for _, out := range outputs {
-		if strings.Contains(strings.ToLower(out.Name), "logits") || out.Name == "output" {
-			if data, ok := out.Data.([]float32); ok {
-				logits = data
-				logitsShape = out.Shape
-				break
-			}
+		data, ok := out.Data.([]float32)
+		if !ok {
+			continue
+		}
+		name := strings.ToLower(out.Name)
+		if strings.Contains(name, "logits") || out.Name == "output" {
+			logits = data
+			logitsShape = out.Shape
+			break
+		}
+		if fallbackLogits == nil {
+			fallbackLogits = data
+			fallbackShape = out.Shape
 		}
 	}
 
 	if logits == nil {
-		// Try first float32 output
-		for _, out := range outputs {
-			if data, ok := out.Data.([]float32); ok {
-				logits = data
-				logitsShape = out.Shape
-				break
-			}
-		}
+		logits = fallbackLogits
+		logitsShape = fallbackShape
 	}
 
 	if logits == nil {
@@ -1371,12 +1323,17 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 		numLabels = int(logitsShape[2])
 	}
 
+	// Clamp to actual label count to prevent out-of-bounds access
+	if numLabels > len(labels) {
+		numLabels = len(labels)
+	}
+
 	// Extract entities from spans with scores above threshold
 	// The span grid is [numTokens, maxWidth] where:
 	// - First index is the token position
 	// - Second index is the span width index (0 = width 1, 1 = width 2, etc.)
 	// We need to map token positions back to word positions for entity extraction
-	var entities []GLiNEREntity
+	var entities []NEREntity
 
 	// For now, use word-based iteration since we need word boundaries for entity text
 	// The logits are indexed by word position (after the prompt), not raw token position
@@ -1415,7 +1372,7 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 						entityText = originalText[charStart:charEnd]
 					}
 
-					entities = append(entities, GLiNEREntity{
+					entities = append(entities, NEREntity{
 						Text:  entityText,
 						Label: labels[labelIdx],
 						Start: charStart,
@@ -1433,30 +1390,30 @@ func (p *GLiNERPipeline) parseOutputs(outputs []backends.NamedTensor, words []st
 	}
 
 	// Sort by position
-	sort.Slice(entities, func(i, j int) bool {
-		if entities[i].Start != entities[j].Start {
-			return entities[i].Start < entities[j].Start
+	slices.SortFunc(entities, func(a, b NEREntity) int {
+		if c := cmp.Compare(a.Start, b.Start); c != 0 {
+			return c
 		}
-		return entities[i].End < entities[j].End
+		return cmp.Compare(a.End, b.End)
 	})
 
 	return entities, nil
 }
 
 // removeOverlappingEntities removes overlapping entities, keeping highest scoring ones.
-func (p *GLiNERPipeline) removeOverlappingEntities(entities []GLiNEREntity) []GLiNEREntity {
+func (p *GLiNERPipeline) removeOverlappingEntities(entities []NEREntity) []NEREntity {
 	if len(entities) <= 1 {
 		return entities
 	}
 
 	// Sort by score descending
-	sorted := make([]GLiNEREntity, len(entities))
+	sorted := make([]NEREntity, len(entities))
 	copy(sorted, entities)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Score > sorted[j].Score
+	slices.SortFunc(sorted, func(a, b NEREntity) int {
+		return cmp.Compare(b.Score, a.Score) // descending
 	})
 
-	var result []GLiNEREntity
+	var result []NEREntity
 	for _, ent := range sorted {
 		overlaps := false
 		for _, existing := range result {
@@ -1549,8 +1506,11 @@ func (p *GLiNERPipeline) PrecomputeLabelEmbeddings(labels []string) error {
 		p.labelCache.embeddings[label] = embeddings[i]
 	}
 
-	// Update cached labels list
-	p.labelCache.labels = labels
+	// Rebuild cached labels list from the map (single source of truth)
+	p.labelCache.labels = make([]string, 0, len(p.labelCache.embeddings))
+	for label := range p.labelCache.embeddings {
+		p.labelCache.labels = append(p.labelCache.labels, label)
+	}
 
 	return nil
 }
@@ -1626,24 +1586,25 @@ func (p *GLiNERPipeline) computeLabelEmbeddings(labels []string) ([][]float32, e
 }
 
 // extractLabelEmbedding extracts the label embedding from model outputs.
+// Prefers named embedding/pooler/label outputs, falls back to first float32.
 func extractLabelEmbedding(outputs []backends.NamedTensor) ([]float32, error) {
-	// Look for the embedding output
+	var fallback []float32
 	for _, out := range outputs {
+		data, ok := out.Data.([]float32)
+		if !ok {
+			continue
+		}
 		name := strings.ToLower(out.Name)
 		if strings.Contains(name, "embedding") || strings.Contains(name, "pooler") || strings.Contains(name, "label") {
-			if data, ok := out.Data.([]float32); ok {
-				return data, nil
-			}
-		}
-	}
-
-	// Fall back to first float32 output
-	for _, out := range outputs {
-		if data, ok := out.Data.([]float32); ok {
 			return data, nil
 		}
+		if fallback == nil {
+			fallback = data
+		}
 	}
-
+	if fallback != nil {
+		return fallback, nil
+	}
 	return nil, fmt.Errorf("no float32 embedding found in outputs")
 }
 
@@ -1704,16 +1665,41 @@ func (p *GLiNERPipeline) SupportsRelationExtraction() bool {
 	if p.Config == nil {
 		return false
 	}
-	// GLiNER2 and MultiTask models support relation extraction
-	isRelationCapable := p.Config.ModelType == GLiNERModelMultiTask ||
-		p.Config.ModelType == GLiNERModelGLiNER2
-	return isRelationCapable
+	if slices.Contains(p.Config.Capabilities, "relations") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2
+}
+
+// SupportsQA returns true if the model supports question answering.
+func (p *GLiNERPipeline) SupportsQA() bool {
+	if p.Config == nil {
+		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "answers") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2
 }
 
 // SupportsClassification returns true if the model supports text classification.
 func (p *GLiNERPipeline) SupportsClassification() bool {
 	if p.Config == nil {
 		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "classification") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelGLiNER2
+}
+
+// SupportsExtraction returns true if the model supports structured schema-based extraction.
+func (p *GLiNERPipeline) SupportsExtraction() bool {
+	if p.Config == nil {
+		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "extraction") {
+		return true
 	}
 	return p.Config.ModelType == GLiNERModelGLiNER2
 }
@@ -1792,7 +1778,6 @@ func LoadGLiNERPipeline(
 	// Apply options
 	loaderCfg := &glinerLoaderConfig{
 		threshold: 0.5,
-		maxWidth:  12,
 		flatNER:   true,
 	}
 	for _, opt := range opts {
@@ -1859,19 +1844,9 @@ func LoadGLiNERPipeline(
 // JSON Extraction Support
 // ============================================================================
 
-// GLiNERExtractedSpan represents a span extracted for JSON extraction.
-type GLiNERExtractedSpan struct {
-	// Text is the extracted span text
-	Text string
-	// Label is the field label this span was extracted for
-	Label string
-	// Start is the character offset where the span begins
-	Start int
-	// End is the character offset where the span ends (exclusive)
-	End int
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32
-}
+// NERExtractedSpan is a span extracted for JSON extraction.
+// It is a type alias for NEREntity since they share the same structure.
+type NERExtractedSpan = NEREntity
 
 // ExtractSpansForLabels extracts entity spans using the given labels and threshold.
 // This is a thin wrapper around processText for use by JSON extraction.
@@ -1881,7 +1856,7 @@ func (p *GLiNERPipeline) ExtractSpansForLabels(
 	labels []string,
 	threshold float32,
 	flatNER bool,
-) ([]GLiNERExtractedSpan, error) {
+) ([]NERExtractedSpan, error) {
 	if text == "" || len(labels) == 0 {
 		return nil, nil
 	}
@@ -1891,11 +1866,8 @@ func (p *GLiNERPipeline) ExtractSpansForLabels(
 		return nil, err
 	}
 
-	spans := make([]GLiNERExtractedSpan, len(entities))
-	for i, e := range entities {
-		spans[i] = GLiNERExtractedSpan(e)
-	}
-	return spans, nil
+	// NERExtractedSpan is a type alias for NEREntity, so no conversion needed.
+	return entities, nil
 }
 
 // ClassifySpanText classifies a span of text against a set of choices.
@@ -1910,7 +1882,7 @@ func (p *GLiNERPipeline) ClassifySpanText(
 		return "", 0, nil
 	}
 
-	config := &GLiNER2ClassificationConfig{
+	config := &NERClassificationConfig{
 		Threshold:  0.0, // Accept any score
 		MultiLabel: false,
 		TopK:       1,

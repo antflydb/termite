@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/antflydb/termite/lib/utils"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/pool"
@@ -29,19 +30,9 @@ import (
 // Check capabilities before calling methods to avoid this error.
 var ErrNotSupported = errors.New("operation not supported by this model")
 
-// Entity represents a named entity extracted from text.
-type Entity struct {
-	// Text is the entity text (e.g., "John Smith")
-	Text string `json:"text"`
-	// Label is the entity type (e.g., "PER", "ORG", "LOC", "MISC")
-	Label string `json:"label"`
-	// Start is the character offset where the entity begins
-	Start int `json:"start"`
-	// End is the character offset where the entity ends (exclusive)
-	End int `json:"end"`
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32 `json:"score"`
-}
+// Entity is a named entity extracted from text.
+// It is a type alias for pipelines.NEREntity to avoid conversion boilerplate.
+type Entity = pipelines.NEREntity
 
 // Model defines the interface for Named Entity Recognition models.
 type Model interface {
@@ -53,17 +44,9 @@ type Model interface {
 	Close() error
 }
 
-// Relation represents a relationship between two entities.
-type Relation struct {
-	// HeadEntity is the source entity in the relationship
-	HeadEntity Entity `json:"head"`
-	// TailEntity is the target entity in the relationship
-	TailEntity Entity `json:"tail"`
-	// Label is the relationship type (e.g., "founded", "works_at", "located_in")
-	Label string `json:"label"`
-	// Score is the model's confidence in this relationship (0.0-1.0)
-	Score float32 `json:"score"`
-}
+// Relation is a relationship between two entities.
+// It is a type alias for pipelines.NERRelation to avoid conversion boilerplate.
+type Relation = pipelines.NERRelation
 
 // Answer represents an extracted answer span from question answering.
 type Answer struct {
@@ -77,17 +60,15 @@ type Answer struct {
 	Score float32 `json:"score"`
 }
 
-// Recognizer extends Model with zero-shot NER and extraction capabilities.
+// Recognizer extends Model with zero-shot NER capabilities.
 // Models implementing this interface can recognize any entity types specified
 // at inference time without requiring model retraining (e.g., GLiNER, REBEL).
 //
-// Not all models support all methods. Use capabilities to check support:
-//   - "labels": Supports RecognizeWithLabels
-//   - "zeroshot": Supports arbitrary labels at inference time
-//   - "relations": Supports ExtractRelations
-//   - "answers": Supports ExtractAnswers
-//
-// Methods return ErrNotSupported if the model lacks the required capability.
+// For additional capabilities, type-assert to:
+//   - RelationExtractor: relation extraction between entities
+//   - AnswerExtractor: extractive question answering
+//   - Classifier: zero-shot text classification
+//   - Extractor: structured schema-based extraction
 type Recognizer interface {
 	Model
 
@@ -98,50 +79,43 @@ type Recognizer interface {
 
 	// Labels returns the default entity labels this model uses.
 	Labels() []string
+}
 
+// RelationExtractor extracts relationships between entities.
+// Type-assert from Model or Recognizer to check support.
+type RelationExtractor interface {
 	// ExtractRelations extracts both entities and relationships between them.
-	// Returns ErrNotSupported if the model doesn't have the "relations" capability.
 	ExtractRelations(ctx context.Context, texts []string, entityLabels []string, relationLabels []string) ([][]Entity, [][]Relation, error)
 
-	// ExtractAnswers performs extractive question answering.
-	// Given questions and contexts, extracts answer spans from the contexts.
-	// Returns ErrNotSupported if the model doesn't have the "answers" capability.
-	ExtractAnswers(ctx context.Context, questions []string, contexts []string) ([]Answer, error)
-
 	// RelationLabels returns the default relation labels this model uses.
-	// Returns nil if the model doesn't support relation extraction.
 	RelationLabels() []string
+}
+
+// AnswerExtractor performs extractive question answering.
+// Type-assert from Model or Recognizer to check support.
+type AnswerExtractor interface {
+	// ExtractAnswers extracts answer spans from context given questions.
+	ExtractAnswers(ctx context.Context, questions []string, contexts []string) ([]Answer, error)
 }
 
 // Classifier defines the interface for text classification models.
 // Models implementing this interface can perform zero-shot text classification
 // where labels are specified at inference time (e.g., GLiNER2).
+//
+// Type-assert from Model or Recognizer to check support.
 type Classifier interface {
 	// ClassifyText performs zero-shot text classification.
 	// Returns classification results for each input text.
 	ClassifyText(ctx context.Context, texts []string, labels []string, config *ClassificationConfig) ([][]Classification, error)
-
-	// SupportsClassification returns true if the model supports classification.
-	SupportsClassification() bool
 }
 
-// Classification represents a text classification result.
-type Classification struct {
-	// Label is the classification label
-	Label string `json:"label"`
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32 `json:"score"`
-}
+// Classification is a text classification result.
+// It is a type alias for pipelines.NERClassification to avoid conversion boilerplate.
+type Classification = pipelines.NERClassification
 
 // ClassificationConfig holds configuration for classification.
-type ClassificationConfig struct {
-	// Threshold is the score threshold for positive classification
-	Threshold float32
-	// MultiLabel if true, allow multiple labels per text
-	MultiLabel bool
-	// TopK returns top K predictions (0 = all above threshold)
-	TopK int
-}
+// It is a type alias for pipelines.NERClassificationConfig to avoid conversion boilerplate.
+type ClassificationConfig = pipelines.NERClassificationConfig
 
 // DefaultClassificationConfig returns sensible defaults for classification.
 func DefaultClassificationConfig() ClassificationConfig {
@@ -205,7 +179,7 @@ func NewPooledNER(
 
 	var backendUsed backends.BackendType
 
-	p, first, err := pool.New(pool.Config[*pipelines.NERPipeline]{
+	p, _, err := pool.New(pool.Config[*pipelines.NERPipeline]{
 		Size: poolSize,
 		Factory: func() (*pipelines.NERPipeline, error) {
 			pipeline, bt, err := pipelines.LoadNERPipeline(
@@ -232,9 +206,6 @@ func NewPooledNER(
 		return nil, "", err
 	}
 
-	// backendUsed is set by the factory call for slot 0
-	_ = first
-
 	logger.Info("Successfully created pooled NER pipeline pool",
 		zap.Int("size", poolSize),
 		zap.String("backend", string(backendUsed)))
@@ -255,10 +226,9 @@ func (p *PooledNER) BackendType() backends.BackendType {
 // Thread-safe: uses pool semaphore to limit concurrent pipeline access.
 func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
 	if len(texts) == 0 {
-		return nil, nil
+		return [][]Entity{}, nil
 	}
 
-	// Acquire a pipeline from the pool (blocks if all pipelines busy)
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
@@ -269,8 +239,9 @@ func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, 
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)))
 
-	// Delegate to NERPipeline.ExtractEntities
-	pipelineEntities, err := pipeline.ExtractEntities(ctx, texts)
+	// pipelines.Entity is an alias for NEREntity (same as ner.Entity),
+	// so no conversion is needed.
+	results, err := pipeline.ExtractEntities(ctx, texts)
 	if err != nil {
 		p.logger.Error("NER failed",
 			zap.Int("pipelineIndex", idx),
@@ -278,25 +249,10 @@ func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, 
 		return nil, fmt.Errorf("extracting entities: %w", err)
 	}
 
-	// Convert pipelines.Entity to ner.Entity
-	results := make([][]Entity, len(pipelineEntities))
-	for i, entities := range pipelineEntities {
-		results[i] = make([]Entity, len(entities))
-		for j, e := range entities {
-			results[i][j] = Entity{
-				Text:  e.Text,
-				Label: e.Label,
-				Start: e.Start,
-				End:   e.End,
-				Score: e.Score,
-			}
-		}
-	}
-
 	p.logger.Debug("NER completed",
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)),
-		zap.Int("total_entities", countEntities(results)))
+		zap.Int("total_entities", utils.CountNested(results)))
 
 	return results, nil
 }
@@ -306,11 +262,3 @@ func (p *PooledNER) Close() error {
 	return p.pool.Close()
 }
 
-// countEntities counts the total number of entities across all texts.
-func countEntities(results [][]Entity) int {
-	count := 0
-	for _, entities := range results {
-		count += len(entities)
-	}
-	return count
-}

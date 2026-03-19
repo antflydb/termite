@@ -15,8 +15,9 @@
 package ner
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
@@ -71,7 +72,7 @@ func extractStructure(
 	}
 
 	// Group spans by field label
-	spansByField := make(map[string][]pipelines.GLiNERExtractedSpan)
+	spansByField := make(map[string][]pipelines.NERExtractedSpan)
 	for _, span := range spans {
 		spansByField[span.Label] = append(spansByField[span.Label], span)
 	}
@@ -98,7 +99,7 @@ func extractStructure(
 		exactMatch := false
 		for _, c := range field.Choices {
 			if strings.EqualFold(bestSpan.Text, c) {
-				spansByField[field.Name] = []pipelines.GLiNERExtractedSpan{{
+				spansByField[field.Name] = []pipelines.NERExtractedSpan{{
 					Text:  c,
 					Label: field.Name,
 					Start: bestSpan.Start,
@@ -122,7 +123,7 @@ func extractStructure(
 			continue
 		}
 		// Replace span text with the classified choice
-		spansByField[field.Name] = []pipelines.GLiNERExtractedSpan{
+		spansByField[field.Name] = []pipelines.NERExtractedSpan{
 			{
 				Text:  choice,
 				Label: field.Name,
@@ -143,19 +144,19 @@ func extractStructure(
 // Uses positional clustering: spans close together form one instance.
 func assembleInstances(
 	schema ExtractionSchema,
-	spansByField map[string][]pipelines.GLiNERExtractedSpan,
+	spansByField map[string][]pipelines.NERExtractedSpan,
 	config ExtractionConfig,
 	textLength int,
 ) []ExtractedInstance {
 	// Sort spans by position for each field
 	for field := range spansByField {
-		sort.Slice(spansByField[field], func(i, j int) bool {
-			return spansByField[field][i].Start < spansByField[field][j].Start
+		slices.SortFunc(spansByField[field], func(a, b pipelines.NERExtractedSpan) int {
+			return cmp.Compare(a.Start, b.Start)
 		})
 	}
 
 	// Collect all spans to determine instance boundaries
-	var allSpans []pipelines.GLiNERExtractedSpan
+	var allSpans []pipelines.NERExtractedSpan
 	for _, fieldSpans := range spansByField {
 		allSpans = append(allSpans, fieldSpans...)
 	}
@@ -164,8 +165,8 @@ func assembleInstances(
 		return []ExtractedInstance{}
 	}
 
-	sort.Slice(allSpans, func(i, j int) bool {
-		return allSpans[i].Start < allSpans[j].Start
+	slices.SortFunc(allSpans, func(a, b pipelines.NERExtractedSpan) int {
+		return cmp.Compare(a.Start, b.Start)
 	})
 
 	// Cluster spans into instances based on positional gaps.
@@ -195,9 +196,9 @@ func assembleInstances(
 // clusterSpans groups spans into clusters based on positional proximity.
 // clusterGap overrides the adaptive threshold when > 0.
 // textLength is used for the adaptive floor calculation.
-func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLength int) [][]pipelines.GLiNERExtractedSpan {
+func clusterSpans(spans []pipelines.NERExtractedSpan, clusterGap int, textLength int) [][]pipelines.NERExtractedSpan {
 	if len(spans) <= 1 {
-		return [][]pipelines.GLiNERExtractedSpan{spans}
+		return [][]pipelines.NERExtractedSpan{spans}
 	}
 
 	// Calculate gaps between consecutive spans
@@ -218,32 +219,14 @@ func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLen
 		threshold = max(medianGap*3, minGap)
 	}
 
-	// Check if we have repeated field labels (necessary for multiple instances)
-	labelCounts := make(map[string]int)
-	for _, span := range spans {
-		labelCounts[span.Label]++
-	}
-	hasRepeatedLabels := false
-	for _, count := range labelCounts {
-		if count > 1 {
-			hasRepeatedLabels = true
-			break
-		}
-	}
-
-	if !hasRepeatedLabels {
-		// No repeated labels, single instance
-		return [][]pipelines.GLiNERExtractedSpan{spans}
-	}
-
 	// Split into clusters at large gaps
-	var clusters [][]pipelines.GLiNERExtractedSpan
-	currentCluster := []pipelines.GLiNERExtractedSpan{spans[0]}
+	var clusters [][]pipelines.NERExtractedSpan
+	currentCluster := []pipelines.NERExtractedSpan{spans[0]}
 
 	for i := range gaps {
 		if gaps[i] > threshold {
 			clusters = append(clusters, currentCluster)
-			currentCluster = []pipelines.GLiNERExtractedSpan{spans[i+1]}
+			currentCluster = []pipelines.NERExtractedSpan{spans[i+1]}
 		} else {
 			currentCluster = append(currentCluster, spans[i+1])
 		}
@@ -256,11 +239,11 @@ func clusterSpans(spans []pipelines.GLiNERExtractedSpan, clusterGap int, textLen
 // buildInstance creates a single ExtractedInstance from a cluster of spans.
 func buildInstance(
 	schema ExtractionSchema,
-	spans []pipelines.GLiNERExtractedSpan,
+	spans []pipelines.NERExtractedSpan,
 	config ExtractionConfig,
 ) ExtractedInstance {
 	// Index spans by label
-	spansByLabel := make(map[string][]pipelines.GLiNERExtractedSpan)
+	spansByLabel := make(map[string][]pipelines.NERExtractedSpan)
 	for _, span := range spans {
 		spansByLabel[span.Label] = append(spansByLabel[span.Label], span)
 	}
@@ -286,8 +269,8 @@ func buildInstance(
 
 		case FieldTypeList:
 			// Keep all spans, sorted by position
-			sort.Slice(fieldSpans, func(i, j int) bool {
-				return fieldSpans[i].Start < fieldSpans[j].Start
+			slices.SortFunc(fieldSpans, func(a, b pipelines.NERExtractedSpan) int {
+				return cmp.Compare(a.Start, b.Start)
 			})
 			values := make([]ExtractedFieldValue, len(fieldSpans))
 			for i, s := range fieldSpans {
@@ -301,7 +284,7 @@ func buildInstance(
 }
 
 // spanToFieldValue converts a span to an ExtractedFieldValue.
-func spanToFieldValue(span pipelines.GLiNERExtractedSpan, config ExtractionConfig) ExtractedFieldValue {
+func spanToFieldValue(span pipelines.NERExtractedSpan, config ExtractionConfig) ExtractedFieldValue {
 	v := ExtractedFieldValue{
 		Value: span.Text,
 	}
@@ -324,7 +307,7 @@ func medianInt(values []int) int {
 	}
 	sorted := make([]int, len(values))
 	copy(sorted, values)
-	sort.Ints(sorted)
+	slices.Sort(sorted)
 
 	mid := len(sorted) / 2
 	if len(sorted)%2 == 0 {
