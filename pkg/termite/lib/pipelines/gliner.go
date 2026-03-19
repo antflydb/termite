@@ -224,7 +224,7 @@ func IsGLiNERModel(modelPath string) bool {
 }
 
 // ============================================================================
-// GLiNER Entity Types
+// NER Entity Types (shared by NERPipeline and GLiNERPipeline)
 // ============================================================================
 
 // NEREntity represents a named entity extracted from text.
@@ -1866,11 +1866,8 @@ func (p *GLiNERPipeline) ExtractSpansForLabels(
 		return nil, err
 	}
 
-	spans := make([]NERExtractedSpan, len(entities))
-	for i, e := range entities {
-		spans[i] = NERExtractedSpan(e)
-	}
-	return spans, nil
+	// NERExtractedSpan is a type alias for NEREntity, so no conversion needed.
+	return entities, nil
 }
 
 // ClassifySpanText classifies a span of text against a set of choices.

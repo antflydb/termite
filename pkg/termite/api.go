@@ -902,7 +902,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Model          string          `json:"model"`           // Model name to use (required)
 		Texts          []string        `json:"texts"`           // Texts to extract entities from
-		Labels         []string        `json:"labels"`          // Custom labels for GLiNER models (optional)
+		Labels         []string        `json:"labels"`          // Custom labels for zero-shot models (optional)
 		RelationLabels []string        `json:"relation_labels"` // Relation types to extract (optional, for models with relations capability)
 		Resolver       *ResolverConfig `json:"resolver"`        // Entity resolution config (optional)
 	}
@@ -1853,7 +1853,7 @@ func (ln *TermiteNode) handleApiRewrite(w http.ResponseWriter, r *http.Request) 
 func (ln *TermiteNode) handleApiClassify(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
-	// Check if classification is available (from either classifier registry or NER registry with GLiNER2)
+	// Check if classification is available (from either classifier registry or NER registry with multi-task models)
 	hasClassifiers := ln.classifierRegistry != nil && len(ln.classifierRegistry.List()) > 0
 	hasNERClassifiers := false
 	if ln.nerRegistry != nil {

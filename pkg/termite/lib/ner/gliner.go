@@ -540,5 +540,3 @@ func (p *PooledGLiNER) ClearLabelEmbeddingCache() {
 	p.logger.Debug("Cleared label embedding cache")
 }
 
-
-
