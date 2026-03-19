@@ -1073,6 +1073,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 		numSpans = maxWidth
 	}
 	spanIdx := make([]int64, numSpans*2)
+	spanMask := make([]bool, numSpans)
 
 	for w := 0; w < numWords; w++ {
 		for wi := range maxWidth {
@@ -1081,11 +1082,7 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 			if endWord < numWords {
 				spanIdx[si*2] = int64(w)
 				spanIdx[si*2+1] = int64(endWord)
-			} else {
-				// Out-of-bounds: point to the last valid word so it
-				// won't create phantom entities at position 0.
-				spanIdx[si*2] = int64(numWords - 1)
-				spanIdx[si*2+1] = int64(numWords - 1)
+				spanMask[si] = true
 			}
 		}
 	}
@@ -1110,6 +1107,11 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 			Name:  "span_idx",
 			Shape: []int64{1, int64(numSpans), 2},
 			Data:  spanIdx,
+		},
+		{
+			Name:  "span_mask",
+			Shape: []int64{1, int64(numSpans)},
+			Data:  spanMask,
 		},
 	}, nil
 }
@@ -1775,7 +1777,6 @@ func LoadGLiNERPipeline(
 	// Apply options
 	loaderCfg := &glinerLoaderConfig{
 		threshold: 0.5,
-		maxWidth:  12,
 		flatNER:   true,
 	}
 	for _, opt := range opts {
