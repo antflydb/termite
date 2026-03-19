@@ -218,7 +218,7 @@ func (p *PooledGLiNER) RecognizeWithLabels(ctx context.Context, texts []string, 
 		return nil, fmt.Errorf("running GLiNER pipeline: %w", err)
 	}
 
-	// Entity is a type alias for GLiNEREntity, so no conversion needed.
+	// Entity is a type alias for NEREntity, so no conversion needed.
 	results := output.Entities
 
 	p.logger.Debug("GLiNER recognition completed",
@@ -415,7 +415,7 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		zap.Strings("labels", labels),
 		zap.Bool("multi_label", config.MultiLabel))
 
-	// ClassificationConfig is a type alias for GLiNER2ClassificationConfig,
+	// ClassificationConfig is a type alias for NERClassificationConfig,
 	// so we can pass it directly.
 	output, err := pipeline.ClassifyText(ctx, texts, labels, config)
 	if err != nil {
@@ -425,7 +425,7 @@ func (p *PooledGLiNER) ClassifyText(ctx context.Context, texts []string, labels 
 		return nil, fmt.Errorf("classifying text: %w", err)
 	}
 
-	// Classification is a type alias for GLiNER2Classification, so no conversion needed.
+	// Classification is a type alias for NERClassification, so no conversion needed.
 	results := output
 
 	p.logger.Debug("GLiNER2 classification completed",

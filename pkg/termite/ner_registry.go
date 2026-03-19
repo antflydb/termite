@@ -25,6 +25,7 @@ import (
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/modelregistry"
 	"github.com/antflydb/termite/pkg/termite/lib/ner"
+	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"go.uber.org/zap"
 )
 
@@ -144,7 +145,7 @@ func (r *NERRegistry) discoverModels() error {
 		modelPath := dm.Path
 		registryFullName := dm.FullName()
 
-		isGLiNER := ner.IsGLiNERModel(modelPath)
+		isGLiNER := pipelines.IsGLiNERModel(modelPath)
 		isREBEL := ner.IsREBELModel(modelPath)
 
 		if isREBEL {
@@ -201,7 +202,9 @@ func (r *NERRegistry) discoverModels() error {
 
 			glinerConfigPath := filepath.Join(modelPath, "gliner_config.json")
 			if data, err := os.ReadFile(glinerConfigPath); err == nil {
-				var glinerConfig ner.GLiNERConfig
+				var glinerConfig struct {
+					Capabilities []string `json:"capabilities"`
+				}
 				if err := json.Unmarshal(data, &glinerConfig); err == nil && len(glinerConfig.Capabilities) > 0 {
 					for _, cap := range glinerConfig.Capabilities {
 						if !slices.Contains(caps, cap) {
@@ -209,11 +212,6 @@ func (r *NERRegistry) discoverModels() error {
 						}
 					}
 				}
-			}
-
-			if slices.Contains(caps, string(modelregistry.CapabilityRelations)) &&
-				!slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
-				caps = append(caps, string(modelregistry.CapabilityExtraction))
 			}
 
 			r.base.discovered[registryFullName] = &NERModelInfo{
@@ -331,26 +329,13 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 		if err != nil {
 			return nil, fmt.Errorf("loading GLiNER model %s: %w", info.Name, err)
 		}
-		caps := info.Capabilities
-		if modelCaps := model.Capabilities(); len(modelCaps) > 0 {
-			for _, cap := range modelCaps {
-				if !slices.Contains(caps, cap) {
-					caps = append(caps, cap)
-				}
-			}
-		}
-		if model.SupportsRelationExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityRelations)) {
-			caps = append(caps, string(modelregistry.CapabilityRelations))
-		}
-		if model.SupportsQA() && !slices.Contains(caps, string(modelregistry.CapabilityAnswers)) {
-			caps = append(caps, string(modelregistry.CapabilityAnswers))
-		}
-		if model.SupportsClassification() && !slices.Contains(caps, string(modelregistry.CapabilityClassification)) {
-			caps = append(caps, string(modelregistry.CapabilityClassification))
-		}
-		if model.SupportsExtraction() && !slices.Contains(caps, string(modelregistry.CapabilityExtraction)) {
-			caps = append(caps, string(modelregistry.CapabilityExtraction))
-		}
+		// Use the pipeline's authoritative capabilities, supplemented by manifest extras.
+		caps := slices.Concat(
+			[]string{string(modelregistry.CapabilityLabels), string(modelregistry.CapabilityZeroshot)},
+			model.Capabilities(),
+			info.Capabilities,
+		)
+		caps = slices.Compact(slices.Sorted(slices.Values(caps)))
 		r.base.logger.Info("Successfully loaded GLiNER model",
 			zap.String("name", info.Name),
 			zap.Bool("quantized", info.Quantized),
@@ -392,11 +377,15 @@ func (r *NERRegistry) loadModel(info *NERModelInfo) (*loadedNERModel, error) {
 	return loaded, nil
 }
 
-// Get returns a NER model by name, loading it if necessary
+// Get returns a NER model by name, loading it if necessary.
+// Returns ner.Recognizer when available (GLiNER, REBEL), otherwise ner.Model.
 func (r *NERRegistry) Get(modelName string) (ner.Model, error) {
 	loaded, err := r.base.get(modelName)
 	if err != nil {
 		return nil, err
+	}
+	if loaded.recognizer != nil {
+		return loaded.recognizer, nil
 	}
 	return loaded.model, nil
 }

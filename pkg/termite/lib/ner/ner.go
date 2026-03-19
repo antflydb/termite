@@ -31,8 +31,8 @@ import (
 var ErrNotSupported = errors.New("operation not supported by this model")
 
 // Entity is a named entity extracted from text.
-// It is a type alias for pipelines.GLiNEREntity to avoid conversion boilerplate.
-type Entity = pipelines.GLiNEREntity
+// It is a type alias for pipelines.NEREntity to avoid conversion boilerplate.
+type Entity = pipelines.NEREntity
 
 // Model defines the interface for Named Entity Recognition models.
 type Model interface {
@@ -45,8 +45,8 @@ type Model interface {
 }
 
 // Relation is a relationship between two entities.
-// It is a type alias for pipelines.GLiNERRelation to avoid conversion boilerplate.
-type Relation = pipelines.GLiNERRelation
+// It is a type alias for pipelines.NERRelation to avoid conversion boilerplate.
+type Relation = pipelines.NERRelation
 
 // Answer represents an extracted answer span from question answering.
 type Answer struct {
@@ -110,12 +110,12 @@ type Classifier interface {
 }
 
 // Classification is a text classification result.
-// It is a type alias for pipelines.GLiNER2Classification to avoid conversion boilerplate.
-type Classification = pipelines.GLiNER2Classification
+// It is a type alias for pipelines.NERClassification to avoid conversion boilerplate.
+type Classification = pipelines.NERClassification
 
 // ClassificationConfig holds configuration for classification.
-// It is a type alias for pipelines.GLiNER2ClassificationConfig to avoid conversion boilerplate.
-type ClassificationConfig = pipelines.GLiNER2ClassificationConfig
+// It is a type alias for pipelines.NERClassificationConfig to avoid conversion boilerplate.
+type ClassificationConfig = pipelines.NERClassificationConfig
 
 // DefaultClassificationConfig returns sensible defaults for classification.
 func DefaultClassificationConfig() ClassificationConfig {
@@ -226,10 +226,9 @@ func (p *PooledNER) BackendType() backends.BackendType {
 // Thread-safe: uses pool semaphore to limit concurrent pipeline access.
 func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, error) {
 	if len(texts) == 0 {
-		return nil, nil
+		return [][]Entity{}, nil
 	}
 
-	// Acquire a pipeline from the pool (blocks if all pipelines busy)
 	pipeline, idx, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquiring pipeline slot: %w", err)
@@ -240,22 +239,14 @@ func (p *PooledNER) Recognize(ctx context.Context, texts []string) ([][]Entity, 
 		zap.Int("pipelineIndex", idx),
 		zap.Int("num_texts", len(texts)))
 
-	// Delegate to NERPipeline.ExtractEntities
-	pipelineEntities, err := pipeline.ExtractEntities(ctx, texts)
+	// pipelines.Entity is an alias for NEREntity (same as ner.Entity),
+	// so no conversion is needed.
+	results, err := pipeline.ExtractEntities(ctx, texts)
 	if err != nil {
 		p.logger.Error("NER failed",
 			zap.Int("pipelineIndex", idx),
 			zap.Error(err))
 		return nil, fmt.Errorf("extracting entities: %w", err)
-	}
-
-	// Convert pipelines.Entity to ner.Entity (identical struct layouts)
-	results := make([][]Entity, len(pipelineEntities))
-	for i, entities := range pipelineEntities {
-		results[i] = make([]Entity, len(entities))
-		for j, e := range entities {
-			results[i][j] = Entity(e)
-		}
 	}
 
 	p.logger.Debug("NER completed",
