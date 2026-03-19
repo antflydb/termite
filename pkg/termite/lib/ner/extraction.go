@@ -96,12 +96,11 @@ type ExtractedInstance map[string]any
 type ExtractionResult map[string][]ExtractedInstance
 
 // Extractor defines the interface for models that support structured schema-based extraction.
+//
+// Type-assert from Model or Recognizer to check support.
 type Extractor interface {
 	// Extract extracts structured data from text based on the given schemas.
 	Extract(ctx context.Context, texts []string, schemas []ExtractionSchema, config ExtractionConfig) ([]ExtractionResult, error)
-
-	// SupportsExtraction returns true if the model supports schema-based extraction.
-	SupportsExtraction() bool
 }
 
 // ParseSchemaString parses a schema map (e.g., {"person": ["name::str", "age::str", "skills::list"]})

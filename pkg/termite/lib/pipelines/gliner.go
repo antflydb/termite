@@ -89,6 +89,10 @@ type GLiNERModelConfig struct {
 
 	// WordsJoiner is the character used to join words (typically space)
 	WordsJoiner string
+
+	// Capabilities lists the model's capabilities from gliner_config.json
+	// (e.g., "ner", "zeroshot", "classification", "relations", "extraction").
+	Capabilities []string
 }
 
 // LoadGLiNERModelConfig loads and parses configuration for a GLiNER model.
@@ -152,6 +156,9 @@ func LoadGLiNERModelConfig(modelPath string) (*GLiNERModelConfig, error) {
 			if rawConfig.WordsJoiner != "" {
 				config.WordsJoiner = rawConfig.WordsJoiner
 			}
+			if len(rawConfig.Capabilities) > 0 {
+				config.Capabilities = rawConfig.Capabilities
+			}
 		}
 	}
 
@@ -176,6 +183,7 @@ type rawGLiNERConfig struct {
 	RelationLabels    []string `json:"relation_labels"`
 	RelationThreshold float32  `json:"relation_threshold"`
 	WordsJoiner       string   `json:"words_joiner"`
+	Capabilities      []string `json:"capabilities"`
 }
 
 // detectGLiNERModelType attempts to detect the model type from the model name.
@@ -253,16 +261,13 @@ type GLiNEROutput struct {
 	Relations [][]GLiNERRelation
 }
 
-// GLiNER2TaskType represents different task types for GLiNER2.
-type GLiNER2TaskType int
+// glinerTaskType represents different task types for GLiNER2 prompt construction.
+type glinerTaskType int
 
 const (
-	// GLiNER2TaskNER is standard named entity recognition
-	GLiNER2TaskNER GLiNER2TaskType = iota
-	// GLiNER2TaskRelations extracts relationships between entities
-	GLiNER2TaskRelations
-	// GLiNER2TaskClassification performs text classification
-	GLiNER2TaskClassification
+	glinerTaskNER glinerTaskType = iota
+	glinerTaskRelations
+	glinerTaskClassification
 )
 
 // GLiNER2Classification represents a text classification result.
@@ -292,13 +297,6 @@ func DefaultGLiNER2ClassificationConfig() *GLiNER2ClassificationConfig {
 	}
 }
 
-// GLiNER2RelationOutput holds the output from relation extraction.
-type GLiNER2RelationOutput struct {
-	// Entities holds all extracted entities
-	Entities [][]GLiNEREntity
-	// Relations holds extracted relations
-	Relations [][]GLiNERRelation
-}
 
 // ============================================================================
 // GLiNER Pipeline
@@ -544,7 +542,7 @@ func isWordChar(r rune) bool {
 // GLiNER v1 uses: <<ENT>>label<<SEP>> (special tokens 128002/128003)
 // GLiNER2 uses:   [E]label[SEP_TEXT]  (special tokens 128005/128002)
 func (p *GLiNERPipeline) buildPrompt(labels []string) string {
-	return p.buildPromptForTask(labels, GLiNER2TaskNER)
+	return p.buildPromptForTask(labels, glinerTaskNER)
 }
 
 // buildPromptForTask constructs the label prompt for different GLiNER tasks.
@@ -555,17 +553,17 @@ func (p *GLiNERPipeline) buildPrompt(labels []string) string {
 //   - NER:            [E]label[SEP_TEXT]
 //   - Relations:      [R]entity::relation[SEP_TEXT]
 //   - Classification: [C]label[SEP_TEXT]
-func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType GLiNER2TaskType) string {
+func (p *GLiNERPipeline) buildPromptForTask(labels []string, taskType glinerTaskType) string {
 	var sb strings.Builder
 
 	if p.IsGLiNER2() {
 		var prefix string
 		switch taskType {
-		case GLiNER2TaskNER:
+		case glinerTaskNER:
 			prefix = "[E]"
-		case GLiNER2TaskRelations:
+		case glinerTaskRelations:
 			prefix = "[R]"
-		case GLiNER2TaskClassification:
+		case glinerTaskClassification:
 			prefix = "[C]"
 		default:
 			prefix = "[E]"
@@ -613,13 +611,13 @@ func (p *GLiNERPipeline) ExtractRelations(
 	texts []string,
 	entityLabels []string,
 	relationLabels []string,
-) (*GLiNER2RelationOutput, error) {
+) (*GLiNEROutput, error) {
 	if !p.IsGLiNER2() {
 		return nil, fmt.Errorf("relation extraction requires GLiNER2 model")
 	}
 
 	if len(texts) == 0 {
-		return &GLiNER2RelationOutput{
+		return &GLiNEROutput{
 			Entities:  [][]GLiNEREntity{},
 			Relations: [][]GLiNERRelation{},
 		}, nil
@@ -646,7 +644,7 @@ func (p *GLiNERPipeline) ExtractRelations(
 		allRelations[i] = relations
 	}
 
-	return &GLiNER2RelationOutput{
+	return &GLiNEROutput{
 		Entities:  allEntities,
 		Relations: allRelations,
 	}, nil
@@ -689,12 +687,19 @@ func (p *GLiNERPipeline) processTextForRelations(
 	return entities, relations, nil
 }
 
-// matchRelations matches extracted relation head spans to entities and finds relations.
+// matchRelations matches extracted relation head spans to entities to form relations.
+//
+// GLiNER2 encodes relations as composite labels "entity_type::relation". The model
+// produces a head span for each relation; the span's position and score carry the
+// relation-specific evidence. We match each head span to its closest non-overlapping
+// entity (the tail) by positional proximity, rather than forming a cartesian product.
 func (p *GLiNERPipeline) matchRelations(
 	entities []GLiNEREntity,
 	relationHeadSpans []GLiNEREntity,
 ) []GLiNERRelation {
-	var relations []GLiNERRelation
+	if len(entities) == 0 || len(relationHeadSpans) == 0 {
+		return nil
+	}
 
 	// Build a map of entity positions for quick lookup
 	entityByPos := make(map[string]*GLiNEREntity)
@@ -703,7 +708,13 @@ func (p *GLiNERPipeline) matchRelations(
 		entityByPos[key] = &entities[i]
 	}
 
-	// Process each relation head span
+	threshold := float32(0)
+	if p.Config != nil {
+		threshold = p.Config.RelationThreshold
+	}
+
+	var relations []GLiNERRelation
+
 	for _, headSpan := range relationHeadSpans {
 		// Parse the composite label: "entity_type::relation"
 		parts := strings.SplitN(headSpan.Label, "::", 2)
@@ -713,11 +724,10 @@ func (p *GLiNERPipeline) matchRelations(
 		headEntityType := parts[0]
 		relationLabel := parts[1]
 
-		// Find the matching entity for this head span
+		// Find the matching entity for this head span by position
 		headKey := fmt.Sprintf("%d-%d", headSpan.Start, headSpan.End)
 		headEntity := entityByPos[headKey]
 		if headEntity == nil {
-			// Create a head entity from the span
 			headEntity = &GLiNEREntity{
 				Text:  headSpan.Text,
 				Label: headEntityType,
@@ -727,37 +737,48 @@ func (p *GLiNERPipeline) matchRelations(
 			}
 		}
 
-		// Find potential tail entities (non-overlapping entities)
+		// Find the closest non-overlapping entity as the tail.
+		// The head span's score is the relation-specific evidence from the model.
+		var bestTail *GLiNEREntity
+		bestDist := math.MaxInt
 		for i := range entities {
 			tail := &entities[i]
-
-			// Skip if same span or overlapping
 			if overlapsSpan(headSpan.Start, headSpan.End, tail.Start, tail.End) {
 				continue
 			}
-
-			// Create relation
-			relations = append(relations, GLiNERRelation{
-				HeadEntity: *headEntity,
-				TailEntity: *tail,
-				Label:      relationLabel,
-				Score:      (headSpan.Score + tail.Score) / 2, // Average confidence
-			})
-		}
-	}
-
-	// Apply threshold filtering if configured
-	if p.Config != nil && p.Config.RelationThreshold > 0 {
-		filtered := make([]GLiNERRelation, 0, len(relations))
-		for _, rel := range relations {
-			if rel.Score >= p.Config.RelationThreshold {
-				filtered = append(filtered, rel)
+			dist := charDistance(headSpan.Start, headSpan.End, tail.Start, tail.End)
+			if dist < bestDist {
+				bestDist = dist
+				bestTail = tail
 			}
 		}
-		relations = filtered
+
+		if bestTail == nil {
+			continue
+		}
+
+		score := headSpan.Score
+		if threshold > 0 && score < threshold {
+			continue
+		}
+
+		relations = append(relations, GLiNERRelation{
+			HeadEntity: *headEntity,
+			TailEntity: *bestTail,
+			Label:      relationLabel,
+			Score:      score,
+		})
 	}
 
 	return relations
+}
+
+// charDistance returns the character distance between two non-overlapping spans.
+func charDistance(start1, end1, start2, end2 int) int {
+	if end1 <= start2 {
+		return start2 - end1
+	}
+	return start1 - end2
 }
 
 // overlapsSpan checks if two spans overlap.
@@ -840,7 +861,7 @@ func (p *GLiNERPipeline) classifySingleText(
 		results := make([]GLiNER2Classification, 0, len(labels))
 		for li, label := range labels {
 			score := p.maxLabelScore(outputs, li, len(labels))
-			if config.MultiLabel && score < config.Threshold {
+			if score < config.Threshold {
 				continue
 			}
 			results = append(results, GLiNER2Classification{
@@ -858,7 +879,7 @@ func (p *GLiNERPipeline) classifySingleText(
 	results := make([]GLiNER2Classification, 0, len(labels))
 	for _, label := range labels {
 		singleLabel := []string{label}
-		prompt := p.buildPromptForTask(singleLabel, GLiNER2TaskClassification)
+		prompt := p.buildPromptForTask(singleLabel, glinerTaskClassification)
 		promptTokens := p.Tokenizer.EncodeWithOptions(prompt, false)
 
 		inputs, err := p.buildInputs(promptTokens, textTokens)
@@ -872,7 +893,7 @@ func (p *GLiNERPipeline) classifySingleText(
 		}
 
 		score := p.maxSpanScore(outputs)
-		if config.MultiLabel && score < config.Threshold {
+		if score < config.Threshold {
 			continue
 		}
 
@@ -1060,6 +1081,11 @@ func (p *GLiNERPipeline) buildGLiNER2Inputs(words []string, labels []string) ([]
 			if endWord < numWords {
 				spanIdx[si*2] = int64(w)
 				spanIdx[si*2+1] = int64(endWord)
+			} else {
+				// Out-of-bounds: point to the last valid word so it
+				// won't create phantom entities at position 0.
+				spanIdx[si*2] = int64(numWords - 1)
+				spanIdx[si*2+1] = int64(numWords - 1)
 			}
 		}
 	}
@@ -1477,8 +1503,11 @@ func (p *GLiNERPipeline) PrecomputeLabelEmbeddings(labels []string) error {
 		p.labelCache.embeddings[label] = embeddings[i]
 	}
 
-	// Update cached labels list
-	p.labelCache.labels = labels
+	// Rebuild cached labels list from the map (single source of truth)
+	p.labelCache.labels = make([]string, 0, len(p.labelCache.embeddings))
+	for label := range p.labelCache.embeddings {
+		p.labelCache.labels = append(p.labelCache.labels, label)
+	}
 
 	return nil
 }
@@ -1630,14 +1659,44 @@ func (p *GLiNERPipeline) ClearLabelEmbeddingCache() {
 
 // SupportsRelationExtraction returns true if the model supports relation extraction.
 func (p *GLiNERPipeline) SupportsRelationExtraction() bool {
-	return p.Config != nil &&
-		(p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2)
+	if p.Config == nil {
+		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "relations") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2
+}
+
+// SupportsQA returns true if the model supports question answering.
+func (p *GLiNERPipeline) SupportsQA() bool {
+	if p.Config == nil {
+		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "answers") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelMultiTask || p.Config.ModelType == GLiNERModelGLiNER2
 }
 
 // SupportsClassification returns true if the model supports text classification.
 func (p *GLiNERPipeline) SupportsClassification() bool {
 	if p.Config == nil {
 		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "classification") {
+		return true
+	}
+	return p.Config.ModelType == GLiNERModelGLiNER2
+}
+
+// SupportsExtraction returns true if the model supports structured schema-based extraction.
+func (p *GLiNERPipeline) SupportsExtraction() bool {
+	if p.Config == nil {
+		return false
+	}
+	if slices.Contains(p.Config.Capabilities, "extraction") {
+		return true
 	}
 	return p.Config.ModelType == GLiNERModelGLiNER2
 }
@@ -1783,19 +1842,9 @@ func LoadGLiNERPipeline(
 // JSON Extraction Support
 // ============================================================================
 
-// GLiNERExtractedSpan represents a span extracted for JSON extraction.
-type GLiNERExtractedSpan struct {
-	// Text is the extracted span text
-	Text string
-	// Label is the field label this span was extracted for
-	Label string
-	// Start is the character offset where the span begins
-	Start int
-	// End is the character offset where the span ends (exclusive)
-	End int
-	// Score is the confidence score (0.0 to 1.0)
-	Score float32
-}
+// GLiNERExtractedSpan is a span extracted for JSON extraction.
+// It is a type alias for GLiNEREntity since they share the same structure.
+type GLiNERExtractedSpan = GLiNEREntity
 
 // ExtractSpansForLabels extracts entity spans using the given labels and threshold.
 // This is a thin wrapper around processText for use by JSON extraction.

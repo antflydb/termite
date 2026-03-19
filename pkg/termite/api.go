@@ -40,6 +40,7 @@ import (
 	json "github.com/antflydb/antfly/pkg/libaf/json"
 	"github.com/antflydb/antfly/pkg/libaf/s3"
 	"github.com/antflydb/antfly/pkg/libaf/scraping"
+	"github.com/antflydb/termite/lib/utils"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"
@@ -130,6 +131,17 @@ func stringsToModelInfoMap(names []string) map[string]ModelInfo {
 }
 
 // capsMapToModelInfoMap converts a map of model name to capabilities to a ModelInfo map.
+// writeModelAcquireError writes an appropriate HTTP error for model acquire failures,
+// distinguishing "not found" from load/infrastructure errors.
+func writeModelAcquireError(w http.ResponseWriter, logger *zap.Logger, model string, err error) {
+	if strings.Contains(err.Error(), "not found") {
+		http.Error(w, fmt.Sprintf("model not found: %s", model), http.StatusNotFound)
+	} else {
+		logger.Error("Failed to load model", zap.String("model", model), zap.Error(err))
+		http.Error(w, fmt.Sprintf("failed to load model %s: %v", model, err), http.StatusServiceUnavailable)
+	}
+}
+
 func capsMapToModelInfoMap(caps map[string][]string) map[string]ModelInfo {
 	m := make(map[string]ModelInfo, len(caps))
 	for name, c := range caps {
@@ -912,7 +924,7 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 	// Acquire model from registry
 	model, err := ln.nerRegistry.Acquire(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		writeModelAcquireError(w, ln.logger, req.Model, err)
 		return
 	}
 	defer ln.nerRegistry.Release(req.Model)
@@ -920,14 +932,13 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 	var entities [][]ner.Entity
 	var relations [][]ner.Relation
 
-	// Check if the model supports relations and we should extract them
-	hasRelationsCap := ln.nerRegistry.HasCapability(req.Model, modelregistry.CapabilityRelations)
+	// Only extract relations when the client explicitly requests them
+	wantRelations := len(req.RelationLabels) > 0
 
-	// Check if this is a Recognizer (zero-shot capable)
-	if recognizer, ok := model.(ner.Recognizer); ok {
-		// If model supports relations, use ExtractRelations to get both entities and relations
-		if hasRelationsCap {
-			entities, relations, err = recognizer.ExtractRelations(r.Context(), req.Texts, req.Labels, req.RelationLabels)
+	// Try relation extraction first (type assertion replaces capability check)
+	if wantRelations {
+		if relExtractor, ok := model.(ner.RelationExtractor); ok {
+			entities, relations, err = relExtractor.ExtractRelations(r.Context(), req.Texts, req.Labels, req.RelationLabels)
 			if err != nil {
 				ln.logger.Error("Relation extraction failed",
 					zap.String("model", req.Model),
@@ -938,29 +949,25 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 				http.Error(w, fmt.Sprintf("Relation extraction failed: %v", err), http.StatusInternalServerError)
 				return
 			}
-		} else if len(req.Labels) > 0 {
-			// Use Recognizer with custom labels (zero-shot NER)
-			entities, err = recognizer.RecognizeWithLabels(r.Context(), req.Texts, req.Labels)
-			if err != nil {
-				ln.logger.Error("Recognition failed",
-					zap.String("model", req.Model),
-					zap.Strings("labels", req.Labels),
-					zap.Int("num_texts", len(req.Texts)),
-					zap.Error(err))
-				http.Error(w, fmt.Sprintf("Recognition failed: %v", err), http.StatusInternalServerError)
-				return
-			}
 		} else {
-			// Use Recognizer without custom labels (use default labels)
-			entities, err = recognizer.RecognizeWithLabels(r.Context(), req.Texts, recognizer.Labels())
-			if err != nil {
-				ln.logger.Error("Recognition failed",
-					zap.String("model", req.Model),
-					zap.Int("num_texts", len(req.Texts)),
-					zap.Error(err))
-				http.Error(w, fmt.Sprintf("Recognition failed: %v", err), http.StatusInternalServerError)
-				return
-			}
+			http.Error(w, fmt.Sprintf("model %s does not support relation extraction", req.Model), http.StatusBadRequest)
+			return
+		}
+	} else if recognizer, ok := model.(ner.Recognizer); ok {
+		// Zero-shot NER with custom or default labels
+		labels := req.Labels
+		if len(labels) == 0 {
+			labels = recognizer.Labels()
+		}
+		entities, err = recognizer.RecognizeWithLabels(r.Context(), req.Texts, labels)
+		if err != nil {
+			ln.logger.Error("Recognition failed",
+				zap.String("model", req.Model),
+				zap.Strings("labels", labels),
+				zap.Int("num_texts", len(req.Texts)),
+				zap.Error(err))
+			http.Error(w, fmt.Sprintf("Recognition failed: %v", err), http.StatusInternalServerError)
+			return
 		}
 	} else {
 		// Standard NER model - wrap with caching for deduplicated requests
@@ -980,17 +987,14 @@ func (ln *TermiteNode) handleApiRecognize(w http.ResponseWriter, r *http.Request
 
 	// Record metrics
 	RecordNERRequest(req.Model)
-	totalEntities := 0
-	for _, textEntities := range entities {
-		totalEntities += len(textEntities)
-	}
+	totalEntities := utils.CountNested(entities)
 	RecordNERCreation(req.Model, totalEntities)
 
 	ln.logger.Info("NER request completed",
 		zap.String("model", req.Model),
 		zap.Int("num_texts", len(req.Texts)),
 		zap.Int("total_entities", totalEntities),
-		zap.Int("total_relations", countRelations(relations)))
+		zap.Int("total_relations", utils.CountNested(relations)))
 
 	// Convert internal Entity type to API response type
 	apiEntities := make([][]RecognizeEntity, len(entities))
@@ -1193,13 +1197,13 @@ func (ln *TermiteNode) handleApiExtract(w http.ResponseWriter, r *http.Request) 
 	// Acquire model and check extraction support
 	model, err := ln.nerRegistry.Acquire(req.Model)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("model not found: %s", req.Model), http.StatusNotFound)
+		writeModelAcquireError(w, ln.logger, req.Model, err)
 		return
 	}
 	defer ln.nerRegistry.Release(req.Model)
 
 	extractor, ok := model.(ner.Extractor)
-	if !ok || !extractor.SupportsExtraction() {
+	if !ok {
 		http.Error(w, fmt.Sprintf("model %s does not support extraction", req.Model), http.StatusBadRequest)
 		return
 	}
@@ -1295,14 +1299,6 @@ func convertFieldValue(v ner.ExtractedFieldValue) extractFieldValueJSON {
 	}
 }
 
-// countRelations returns the total number of relations across all texts
-func countRelations(relations [][]ner.Relation) int {
-	total := 0
-	for _, textRelations := range relations {
-		total += len(textRelations)
-	}
-	return total
-}
 
 // generateCompletionID generates a unique ID like OpenAI's "chatcmpl-xxx" format
 func generateCompletionID() string {
