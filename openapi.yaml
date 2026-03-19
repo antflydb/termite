@@ -2105,8 +2105,9 @@ components:
           description: |
             Number of concurrent inference pipelines per model. Each pipeline loads
             a copy of the model, so higher values use more memory but allow more
-            concurrent requests. Set to 0 to use the default (min(NumCPU, 4)).
-          default: 0
+            concurrent requests. Note: pool_size multiplies per-model memory
+            independently of max_loaded_models.
+          default: 1
           example: 1
         backend_priority:
           type: array

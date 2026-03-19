@@ -28,8 +28,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// Ensure PooledREBEL implements the Recognizer interface
-var _ Recognizer = (*PooledREBEL)(nil)
+// Ensure PooledREBEL implements Recognizer and RelationExtractor interfaces.
+var (
+	_ Recognizer        = (*PooledREBEL)(nil)
+	_ RelationExtractor = (*PooledREBEL)(nil)
+)
 
 // REBELConfig holds configuration for REBEL models.
 type REBELConfig struct {
