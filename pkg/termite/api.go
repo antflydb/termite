@@ -40,7 +40,7 @@ import (
 	json "github.com/antflydb/antfly/pkg/libaf/json"
 	"github.com/antflydb/antfly/pkg/libaf/s3"
 	"github.com/antflydb/antfly/pkg/libaf/scraping"
-	"github.com/antflydb/termite/lib/utils"
+	"github.com/antflydb/termite/pkg/termite/lib/utils"
 	termchunking "github.com/antflydb/termite/pkg/termite/lib/chunking"
 	"github.com/antflydb/termite/pkg/termite/lib/classification"
 	"github.com/antflydb/termite/pkg/termite/lib/generation"

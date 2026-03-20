@@ -19,7 +19,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/antflydb/termite/lib/utils"
+	"github.com/antflydb/termite/pkg/termite/lib/utils"
 	"github.com/antflydb/termite/pkg/termite/lib/backends"
 	"github.com/antflydb/termite/pkg/termite/lib/pipelines"
 	"github.com/antflydb/termite/pkg/termite/lib/pool"
