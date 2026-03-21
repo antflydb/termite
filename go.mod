@@ -26,7 +26,7 @@ require (
 	github.com/knights-analytics/ortgenai v0.1.0
 	github.com/kovidgoyal/imaging v1.8.20
 	github.com/nikolalohinski/gonja/v2 v2.7.0
-	github.com/oapi-codegen/runtime v1.2.0
+	github.com/oapi-codegen/runtime v1.3.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -53,16 +53,16 @@ require (
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
-	github.com/gomlx/go-xla v0.2.0 // indirect
+	github.com/gomlx/go-xla v0.2.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kovidgoyal/go-parallel v1.1.1 // indirect
-	github.com/mailru/easyjson v0.9.1 // indirect
+	github.com/mailru/easyjson v0.9.2 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/minio-go/v7 v7.0.99 // indirect
@@ -83,7 +83,7 @@ require (
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/speakeasy-api/jsonpath v0.6.2 // indirect
 	github.com/speakeasy-api/openapi-overlay v0.10.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

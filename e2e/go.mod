@@ -39,20 +39,20 @@ require (
 	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e // indirect
 	github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4 // indirect
-	github.com/gomlx/go-xla v0.2.0 // indirect
+	github.com/gomlx/go-xla v0.2.1 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.4 // indirect
+	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/knights-analytics/ortgenai v0.1.0 // indirect
 	github.com/kovidgoyal/go-parallel v1.1.1 // indirect
 	github.com/kovidgoyal/imaging v1.8.20 // indirect
-	github.com/mailru/easyjson v0.9.1 // indirect
+	github.com/mailru/easyjson v0.9.2 // indirect
 	github.com/minio/crc64nvme v1.1.1 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/minio-go/v7 v7.0.99 // indirect
@@ -61,7 +61,7 @@ require (
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nikolalohinski/gonja/v2 v2.7.0 // indirect
-	github.com/oapi-codegen/runtime v1.2.0 // indirect
+	github.com/oapi-codegen/runtime v1.3.0 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
@@ -73,7 +73,7 @@ require (
 	github.com/prometheus/common v0.67.5 // indirect
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/tinylib/msgp v1.6.3 // indirect
 	github.com/woodsbury/decimal128 v1.4.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
