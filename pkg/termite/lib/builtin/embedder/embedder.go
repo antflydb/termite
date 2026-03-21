@@ -14,7 +14,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	mlctx "github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 )
 
 //go:embed builtin_model/model_i8.onnx
@@ -56,7 +56,7 @@ func Get() (*BuiltinEmbedder, error) {
 			return
 		}
 
-		om, err := onnx.Parse(embeddedModelONNX)
+		om, err := parser.Parse(embeddedModelONNX)
 		if err != nil {
 			initErr = fmt.Errorf("parsing embedded ONNX model: %w", err)
 			return

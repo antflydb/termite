@@ -29,6 +29,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/tensors/bucketing"
 	mlctx "github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 	"golang.org/x/sync/errgroup"
 
 	// Import Go backend - always available (pure Go, no CGO)
@@ -537,7 +538,7 @@ type onnxModel struct {
 	pooling          string
 	normalize        bool
 	maxCacheSize     int
-	onnxModel        *onnx.Model
+	onnxModel        onnx.Model
 	ctx              *mlctx.Context
 	engine           backends.Backend
 	exec             *mlctx.Exec // Cached compiled inference graph
@@ -554,7 +555,7 @@ type onnxModel struct {
 // buckets controls both the compiled graph cache and optional pre-compilation of bucket shapes.
 func newONNXModel(onnxPath string, engine backends.Backend, pooling string, normalize bool, buckets bucketConfig) (*onnxModel, error) {
 	// Load the ONNX model
-	om, err := onnx.ReadFile(onnxPath)
+	om, err := parser.ParseFile(onnxPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading ONNX model: %w", err)
 	}
@@ -937,7 +938,7 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 	}
 
 	// Load the ONNX model
-	om, err := onnx.ReadFile(modelPath)
+	om, err := parser.ParseFile(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading ONNX model: %w", err)
 	}
@@ -949,20 +950,9 @@ func (f *gomlxSessionFactory) CreateSession(modelPath string, opts ...SessionOpt
 		om.WithInputsAsConstants(cfg.InputConstants)
 	}
 
-	// Override fixed input dimensions to dynamic. Some ONNX exports bake
-	// specific integer values into dimensions that should be symbolic
-	// (e.g., seq_len=16 from the tracing pass).
-	for _, override := range cfg.DynamicAxes {
-		for i, name := range om.InputsNames {
-			if name == override.InputName {
-				if override.Axis < len(om.InputsShapes[i].Dimensions) {
-					om.InputsShapes[i].Dimensions[override.Axis] = -1
-					om.InputsShapes[i].Names[override.Axis] = override.ParamName
-				}
-				break
-			}
-		}
-	}
+	// NOTE: DynamicAxes overrides are not applied here — the onnx.Model
+	// interface does not expose internal shape mutation. This is safe because
+	// antfly never calls ValidateInputs, and CallGraph uses runtime shapes.
 
 	// Create context and load variables
 	ctx := mlctx.New()
@@ -1021,7 +1011,7 @@ func (f *gomlxSessionFactory) Backend() BackendType {
 
 // gomlxSession implements Session for raw tensor I/O using GoMLX.
 type gomlxSession struct {
-	onnxModel   *onnx.Model
+	onnxModel   onnx.Model
 	ctx         *mlctx.Context
 	engine      backends.Backend
 	exec        *mlctx.Exec // Cached compiled graph

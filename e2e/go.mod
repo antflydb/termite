@@ -5,8 +5,8 @@ go 1.26.0
 replace (
 	github.com/antflydb/termite => ../
 	github.com/antflydb/termite/pkg/client => ../pkg/client
-	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
-	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
+	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly011
+	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly011
 	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly002
 	github.com/kovidgoyal/imaging => github.com/antflydb/imaging v1.8.21-antfly001
 )
@@ -15,13 +15,13 @@ require (
 	github.com/antflydb/antfly/pkg/libaf v0.0.1
 	github.com/antflydb/termite v0.0.0-00010101000000-000000000000
 	github.com/antflydb/termite/pkg/client v0.0.0
-	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
+	github.com/gomlx/gomlx v0.27.2
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/zap v1.27.1
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.12 // indirect
+	github.com/ajroetker/go-highway v0.0.13-0.20260309234436-8d249c4caa48 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -29,7 +29,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eliben/go-sentencepiece v0.7.0 // indirect
-	github.com/getkin/kin-openapi v0.133.0 // indirect
+	github.com/getkin/kin-openapi v0.134.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.22.5 // indirect
@@ -38,8 +38,8 @@ require (
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e // indirect
-	github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4 // indirect
-	github.com/gomlx/go-xla v0.2.1 // indirect
+	github.com/gomlx/go-huggingface v0.3.4 // indirect
+	github.com/gomlx/go-xla v0.2.2 // indirect
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
@@ -62,8 +62,8 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nikolalohinski/gonja/v2 v2.7.0 // indirect
 	github.com/oapi-codegen/runtime v1.3.0 // indirect
-	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
-	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
+	github.com/oasdiff/yaml v0.0.1 // indirect
+	github.com/oasdiff/yaml3 v0.0.1 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

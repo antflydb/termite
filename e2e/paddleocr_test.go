@@ -20,7 +20,6 @@ import (
 	"image"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,10 +43,7 @@ func TestPaddleOCRMetadata(t *testing.T) {
 		t.Skip("Skipping PaddleOCR metadata test in short mode")
 	}
 
-	modelPath := findPaddleOCRModel(t)
-	if modelPath == "" {
-		t.Skip("No pre-exported PaddleOCR model found")
-	}
+	modelPath := ensureRegistryModel(t, paddleOCRModelRepo, ModelTypeReader)
 
 	metaPath := filepath.Join(modelPath, "termite_metadata.json")
 	if _, err := os.Stat(metaPath); os.IsNotExist(err) {
@@ -90,10 +86,7 @@ func TestPaddleOCRDetection(t *testing.T) {
 		t.Skip("Skipping PaddleOCR detection test in short mode")
 	}
 
-	modelPath := findPaddleOCRModel(t)
-	if modelPath == "" {
-		t.Skip("No exported PaddleOCR model found")
-	}
+	modelPath := ensureRegistryModel(t, paddleOCRModelRepo, ModelTypeReader)
 
 	pageImagePath := filepath.Join("testdata", "sample-page-1.png")
 	if _, err := os.Stat(pageImagePath); os.IsNotExist(err) {
@@ -127,10 +120,7 @@ func TestPaddleOCRFullPipeline(t *testing.T) {
 		t.Skip("Skipping PaddleOCR full pipeline test in short mode")
 	}
 
-	modelPath := findPaddleOCRModel(t)
-	if modelPath == "" {
-		t.Skip("No exported PaddleOCR model found")
-	}
+	modelPath := ensureRegistryModel(t, paddleOCRModelRepo, ModelTypeReader)
 
 	pageImagePath := filepath.Join("testdata", "sample-page-1.png")
 	if _, err := os.Stat(pageImagePath); os.IsNotExist(err) {
@@ -177,10 +167,7 @@ func TestPaddleOCRRegionsInAPIResponse(t *testing.T) {
 		t.Skip("Skipping PaddleOCR regions test in short mode")
 	}
 
-	modelPath := findPaddleOCRModel(t)
-	if modelPath == "" {
-		t.Skip("No exported PaddleOCR model found")
-	}
+	modelPath := ensureRegistryModel(t, paddleOCRModelRepo, ModelTypeReader)
 
 	pageImagePath := filepath.Join("testdata", "sample-page-1.png")
 	if _, err := os.Stat(pageImagePath); os.IsNotExist(err) {
@@ -218,52 +205,3 @@ func TestPaddleOCRRegionsInAPIResponse(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// PaddleOCR Test Helpers
-// =============================================================================
-
-// findPaddleOCRModel searches for a pre-exported PaddleOCR model in the test models directory.
-func findPaddleOCRModel(t *testing.T) string {
-	t.Helper()
-
-	candidates := []string{
-		filepath.Join(getTestModelsDir(), "readers", "monkt", "paddleocr-onnx"),
-		filepath.Join(getTestModelsDir(), "readers", "paddleocr"),
-		filepath.Join(getTestModelsDir(), "readers", "monkt", "paddleocr"),
-	}
-
-	for _, path := range candidates {
-		metaPath := filepath.Join(path, "termite_metadata.json")
-		if fileExists(metaPath) {
-			data, err := os.ReadFile(metaPath)
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(data), "multistage_ocr") {
-				t.Logf("Found PaddleOCR model at: %s", path)
-				return path
-			}
-		}
-	}
-
-	return ""
-}
-
-// findONNXFile looks for an ONNX file matching a prefix in a model directory.
-func findONNXFile(t *testing.T, dir, prefix string) string {
-	t.Helper()
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
-		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".onnx") {
-			return filepath.Join(dir, name)
-		}
-	}
-
-	return ""
-}

@@ -3,23 +3,23 @@ module github.com/antflydb/termite
 go 1.26.0
 
 replace (
-	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly008
-	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly008
+	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly011
+	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly011
 	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly002
 	github.com/kovidgoyal/imaging => github.com/antflydb/imaging v1.8.21-antfly001
 )
 
 require (
-	github.com/ajroetker/go-highway v0.0.12
+	github.com/ajroetker/go-highway v0.0.13-0.20260309234436-8d249c4caa48
 	github.com/antflydb/antfly/pkg/libaf v0.0.1
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/daulet/tokenizers v1.26.0
 	github.com/eliben/go-sentencepiece v0.7.0
-	github.com/getkin/kin-openapi v0.133.0
+	github.com/getkin/kin-openapi v0.134.0
 	github.com/goccy/go-json v0.10.6
 	github.com/gomlx/go-coreml/gomlx v0.0.0-20260301010621-8fdf6ad8655e
-	github.com/gomlx/go-huggingface v0.3.3-0.20260316090437-1a6ca7ca09c4
-	github.com/gomlx/gomlx v0.26.1-0.20260220075116-8da82ca8aaad
+	github.com/gomlx/go-huggingface v0.3.4
+	github.com/gomlx/gomlx v0.27.2
 	github.com/gomlx/onnx-gomlx v0.0.0-00010101000000-000000000000
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jellydator/ttlcache/v3 v3.4.0
@@ -53,7 +53,7 @@ require (
 	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gomlx/exceptions v0.0.3 // indirect
 	github.com/gomlx/go-coreml v0.0.0-20260301010621-8fdf6ad8655e // indirect
-	github.com/gomlx/go-xla v0.2.1 // indirect
+	github.com/gomlx/go-xla v0.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
@@ -71,8 +71,8 @@ require (
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/oapi-codegen/v2 v2.5.1 // indirect
-	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
-	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
+	github.com/oasdiff/yaml v0.0.1 // indirect
+	github.com/oasdiff/yaml3 v0.0.1 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect

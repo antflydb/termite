@@ -15,7 +15,7 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	mlctx "github.com/gomlx/gomlx/pkg/ml/context"
-	"github.com/gomlx/onnx-gomlx/onnx"
+	"github.com/gomlx/onnx-gomlx/onnx/parser"
 )
 
 //go:embed builtin_model/model_i8.onnx
@@ -67,7 +67,7 @@ func Get() (*BuiltinReranker, error) {
 			return
 		}
 
-		om, err := onnx.Parse(rerankerModelONNX)
+		om, err := parser.Parse(rerankerModelONNX)
 		if err != nil {
 			initErr = fmt.Errorf("parsing reranker ONNX model: %w", err)
 			return
