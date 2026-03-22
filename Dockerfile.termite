@@ -1,6 +1,10 @@
 # Build the termite binary
 FROM golang:1.26-alpine AS builder
 
+LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
+LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
 WORKDIR /workspace
 
 # Copy the Go Modules manifests

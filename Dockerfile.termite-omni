@@ -29,6 +29,10 @@ ARG LIBTPU_VERSION=1.12.0
 # =============================================================================
 FROM golang:${GO_VERSION} AS builder
 
+LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
+LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking (ONNX + XLA)"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
 ARG ONNXRUNTIME_VERSION
 ARG TOKENIZERS_VERSION
 ARG TARGETARCH
