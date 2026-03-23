@@ -29,10 +29,6 @@ ARG LIBTPU_VERSION=1.12.0
 # =============================================================================
 FROM golang:${GO_VERSION} AS builder
 
-LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
-LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking (ONNX + XLA)"
-LABEL org.opencontainers.image.licenses=Apache-2.0
-
 ARG ONNXRUNTIME_VERSION
 ARG TOKENIZERS_VERSION
 ARG TARGETARCH
@@ -86,6 +82,10 @@ RUN GOEXPERIMENT=simd CGO_ENABLED=1 \
 # =============================================================================
 FROM debian:bookworm-slim AS runtime
 
+LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
+LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking (ONNX + XLA)"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
 ARG ONNXRUNTIME_VERSION
 ARG LIBTPU_VERSION
 ARG TARGETARCH
@@ -131,13 +131,6 @@ ENV LD_LIBRARY_PATH="/usr/local/onnxruntime/lib:/usr/local/lib/go-xla"
 ENV ORT_DYLIB_PATH="/usr/local/onnxruntime/lib/libonnxruntime.so"
 ENV PJRT_PLUGIN_LIBRARY_PATH="/usr/local/lib/go-xla"
 
-# Default backend priority: ONNX > XLA > Go
-# Can be overridden via TERMITE_BACKEND_PRIORITY or config file
-ENV TERMITE_BACKEND_PRIORITY="onnx,xla,go"
-
-# API server configuration (used by termite run command)
-ENV TERMITE_API_URL="http://0.0.0.0:8080"
-
 # Model directory (mounted at runtime, contains embedders/, chunkers/, rerankers/ subdirs)
 ENV TERMITE_MODELS_DIR="/models"
 
@@ -147,12 +140,12 @@ RUN mkdir -p /models/embedders /models/chunkers /models/rerankers && \
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8080/api/models || exit 1
+    CMD curl -f http://localhost:4200/readyz || exit 1
 
 # Run as non-root
 USER termite
 
-EXPOSE 8080
+EXPOSE 11433 4200
 
 ENTRYPOINT ["/termite"]
 CMD ["run"]
