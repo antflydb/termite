@@ -1,10 +1,6 @@
 # Build the termite binary
 FROM golang:1.26-alpine AS builder
 
-LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
-LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking"
-LABEL org.opencontainers.image.licenses=Apache-2.0
-
 WORKDIR /workspace
 
 # Copy the Go Modules manifests
@@ -24,17 +20,19 @@ RUN GOEXPERIMENT=simd CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go bui
 # Use distroless as minimal base image to package the termite binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
+
+LABEL org.opencontainers.image.source=https://github.com/antflydb/antfly
+LABEL org.opencontainers.image.description="Termite - ML inference service for embeddings, chunking, and reranking"
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
 WORKDIR /
 COPY --from=builder /workspace/termite .
 USER 65532:65532
 
-# API server configuration (used by termite run command)
-ENV TERMITE_API_URL="http://0.0.0.0:8080"
-
 # Model directory (mounted at runtime, contains embedders/, chunkers/, rerankers/ subdirs)
 ENV TERMITE_MODELS_DIR="/models"
 
-EXPOSE 8080
+EXPOSE 11433
 
 ENTRYPOINT ["/termite"]
 CMD ["run"]
