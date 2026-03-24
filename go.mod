@@ -2,11 +2,17 @@ module github.com/antflydb/termite
 
 go 1.26.0
 
+// Pin deps compatible with oapi-codegen v2.5.1.
+// kin-openapi v0.134.0 breaks oapi-codegen (MappingRef type change) and
+// oasdiff/yaml v0.0.1 breaks kin-openapi v0.133.0 (OriginOpt API change).
 replace (
+	github.com/getkin/kin-openapi v0.134.0 => github.com/getkin/kin-openapi v0.133.0
 	github.com/gomlx/gomlx => github.com/ajroetker/gomlx v0.0.0-antfly011
 	github.com/gomlx/onnx-gomlx => github.com/ajroetker/onnx-gomlx v0.0.0-antfly011
 	github.com/knights-analytics/ortgenai => github.com/ajroetker/ortgenai v0.1.1-antfly002
 	github.com/kovidgoyal/imaging => github.com/antflydb/imaging v1.8.21-antfly001
+	github.com/oasdiff/yaml v0.0.1 => github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037
+	github.com/oasdiff/yaml3 v0.0.1 => github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90
 )
 
 require (
