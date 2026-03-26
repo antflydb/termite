@@ -7,13 +7,20 @@ Termite is a standalone ML inference service for embeddings, chunking, and reran
 - `cmd/termite/` - CLI entrypoint (cobra-based: `run`, `pull`, `list` subcommands)
 - `cmd/termite-operator/` - Kubernetes operator entrypoint
 - `cmd/termite-proxy/` - Load-balancing proxy entrypoint
-- `pkg/termite/` - Core service logic, API handlers, caching
+- `pkg/termite/` - Core service logic, API handlers, caching, per-task registries
 - `pkg/operator/` - Kubernetes operator (CRDs, controllers)
 - `pkg/proxy/` - Request routing and K8s service discovery
-- `lib/hugot/` - Inference session abstraction (ONNX, XLA, pure Go backends)
-- `lib/embeddings/` - Embedding model implementations
+- `lib/backends/` - Backend interface, SessionManager, ONNX/GoMLX/XLA/CoreML implementations
+- `lib/pipelines/` - Task-specific pipelines (embedding, seq2seq, vision2seq, speech2seq, NER, etc.)
+- `lib/embeddings/` - Embedding model wrappers with pooling
 - `lib/chunking/` - Text chunking implementations
 - `lib/reranking/` - Reranker implementations
+- `lib/ner/` - Named entity recognition
+- `lib/seq2seq/` - Seq2Seq utilities
+- `lib/generation/` - Text generation infrastructure
+- `lib/reading/` - Document reading (OCR)
+- `lib/transcribing/` - Speech transcription
+- `lib/classification/` - Text classification
 - `lib/modelregistry/` - Model download/management
 
 ## Build Tags
@@ -24,7 +31,9 @@ Termite is a standalone ML inference service for embeddings, chunking, and reran
 
 ## Patterns
 
-**Session abstraction** (`lib/hugot/session*.go`): Build tags select the backend implementation. `session.go` has the interface, `session_go.go`, `session_onnx.go`, and `session_xla.go` provide implementations.
+**Backend abstraction** (`lib/backends/`): Backends implement a `Backend` interface with self-registration via `init()`. `SessionManager` handles backend selection by priority. Pipelines depend only on abstract `backends.Model` interface, never on concrete backend types.
+
+**Encoder-decoder pipeline** (`lib/pipelines/encoder_decoder.go`): Shared base for Seq2Seq, Vision2Seq, and Speech2Seq. Manages encoder execution, autoregressive decoding, and KV-cache.
 
 **Lazy model loading**: Models loaded on first request, configurable via `keep_alive` and `max_loaded_models`.
 
