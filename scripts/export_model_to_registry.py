@@ -1198,81 +1198,6 @@ def export_gliner_model(
     return output_dir
 
 
-def export_gliner2_model(
-    model_id: str,
-    output_dir: Path,
-    variants: list[str] | None = None,
-) -> Path:
-    """
-    Export a GLiNER2 multi-task model to ONNX format.
-
-    GLiNER2 is a unified model supporting NER, classification, structured
-    extraction, and relation extraction. Unlike GLiNER v1, it requires
-    manual ONNX export since there's no built-in export_to_onnx() method.
-
-    Args:
-        model_id: HuggingFace model ID (e.g., fastino/gliner2-base-v1)
-        output_dir: Directory to save the model
-        variants: List of variant types to create (e.g., ["f16", "i8"])
-    """
-    import shutil
-    import subprocess
-    import sys
-
-    variants = variants or []
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    logger.info(f"Exporting GLiNER2 model: {model_id}")
-    logger.info(f"Output: {output_dir}")
-
-    # Use the dedicated GLiNER2 export script
-    script_path = Path(__file__).parent / "export_gliner2_onnx.py"
-
-    if not script_path.exists():
-        raise FileNotFoundError(
-            f"GLiNER2 export script not found: {script_path}\n"
-            "Please ensure export_gliner2_onnx.py is in the scripts directory."
-        )
-
-    # Build command
-    cmd = [
-        sys.executable,
-        str(script_path),
-        model_id,
-        str(output_dir),
-    ]
-
-    if variants:
-        cmd.extend(["--variants"] + variants)
-
-    cmd.append("--test")  # Run inference test after export
-
-    logger.info(f"Running: {' '.join(cmd)}")
-
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        logger.info(result.stdout)
-        if result.stderr:
-            logger.warning(result.stderr)
-    except subprocess.CalledProcessError as e:
-        logger.error(f"GLiNER2 export failed:\n{e.stdout}\n{e.stderr}")
-        raise RuntimeError(f"GLiNER2 export failed: {e}")
-
-    # Verify required files exist
-    required_files = ["model.onnx", "gliner_config.json"]
-    for fname in required_files:
-        fpath = output_dir / fname
-        if not fpath.exists():
-            raise FileNotFoundError(f"Expected file not found: {fpath}")
-
-    logger.info(f"GLiNER2 export complete: {output_dir}")
-    return output_dir
-
 
 def export_rebel_model(
     model_id: str,
@@ -2723,10 +2648,22 @@ def test_gliner_model(model_dir: Path) -> bool:
 
 
 def test_gliner2_model(model_dir: Path) -> bool:
-    """Test a GLiNER2 model."""
+    """Test a GLiNER2 model exported with the structured schema prompt format.
+
+    The ONNX model expects 5 inputs matching the Go inference code:
+      input_ids, attention_mask, words_mask, span_idx, span_mask
+
+    Input format: ( [P] entities ( [E] label1 [E] label2 ... ) ) [SEP_TEXT] word1 word2 ...
+    Output shape: [1, num_words, max_width, num_labels]
+    """
+    import json
     import onnxruntime as ort
     import numpy as np
-    from transformers import AutoTokenizer
+
+    # GLiNER2 special token IDs (DeBERTa-v3 with added tokens)
+    E_TOKEN_ID = 128005   # [E] entity marker
+    P_TOKEN_ID = 128003   # [P] prompt/schema marker
+    SEP_TEXT_ID = 128002  # [SEP_TEXT] separator
 
     try:
         onnx_path = model_dir / "model.onnx"
@@ -2734,44 +2671,70 @@ def test_gliner2_model(model_dir: Path) -> bool:
             logger.error(f"model.onnx not found in {model_dir}")
             return False
 
+        config_path = model_dir / "gliner_config.json"
+        max_width = 8
+        if config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
+                max_width = config.get("max_width", 8)
+
         logger.info("Loading GLiNER2 ONNX model...")
         session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
 
-        logger.info("Loading tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        logger.info("Model inputs:")
+        input_names = set()
+        for inp in session.get_inputs():
+            logger.info(f"  {inp.name}: {inp.shape} ({inp.type})")
+            input_names.add(inp.name)
 
-        # Test with sample input - GLiNER2 requires span_idx in addition to token inputs
-        test_text = "Tim Cook is the CEO of Apple Inc. in Cupertino."
-        inputs = tokenizer(
-            test_text,
-            return_tensors="np",
-            padding="max_length",
-            max_length=128,
-            truncation=True,
-        )
+        # Build structured schema prompt with [P]/[E] tokens
+        num_words = 10
+        num_labels = 3
+        num_spans = num_words * max_width
 
-        # Create dummy span indices (batch=1, num_spans=10, 2)
-        # These represent (start, end) word indices for candidate spans
-        span_idx = np.array([[[i, i + 1] for i in range(10)]], dtype=np.int64)
+        schema_tokens = [287, P_TOKEN_ID, 6967, 287]  # ( [P] entities (
+        for i in range(num_labels):
+            schema_tokens.extend([E_TOKEN_ID, 604 + i])  # [E] labelN
+        schema_tokens.extend([1263, 1263, SEP_TEXT_ID])   # ) ) [SEP_TEXT]
 
-        # Create words_mask (same shape as input_ids, marking word boundaries)
-        words_mask = np.ones_like(inputs["input_ids"], dtype=np.int64)
+        text_tokens = [300 + i for i in range(num_words)]
+        all_tokens = schema_tokens + text_tokens
+        seq_len = 64
+        while len(all_tokens) < seq_len:
+            all_tokens.append(0)
+        all_tokens = all_tokens[:seq_len]
 
-        logger.info(f"Test input: \"{test_text}\"")
-        logger.info(f"Input shape: {inputs['input_ids'].shape}")
+        text_start = len(schema_tokens)
 
-        # Run inference
-        outputs = session.run(
-            None,
-            {
-                "input_ids": inputs["input_ids"],
-                "attention_mask": inputs["attention_mask"],
-                "words_mask": words_mask,
-                "span_idx": span_idx,
-            },
-        )
+        all_inputs = {
+            "input_ids": np.array([all_tokens], dtype=np.int64),
+            "attention_mask": np.zeros((1, seq_len), dtype=np.int64),
+            "words_mask": np.zeros((1, seq_len), dtype=np.int64),
+            "span_idx": np.zeros((1, num_spans, 2), dtype=np.int64),
+            "span_mask": np.zeros((1, num_spans), dtype=np.bool_),
+        }
 
+        all_inputs["attention_mask"][0, :text_start + num_words] = 1
+        for w in range(num_words):
+            pos = text_start + w
+            if pos < seq_len:
+                all_inputs["words_mask"][0, pos] = w + 1
+
+        for w in range(num_words):
+            for wi in range(max_width):
+                si = w * max_width + wi
+                end_word = w + wi
+                if end_word < num_words:
+                    all_inputs["span_idx"][0, si, 0] = w
+                    all_inputs["span_idx"][0, si, 1] = end_word
+                    all_inputs["span_mask"][0, si] = True
+
+        inputs = {k: v for k, v in all_inputs.items() if k in input_names}
+        logger.info(f"Using inputs: {list(inputs.keys())}")
+
+        outputs = session.run(None, inputs)
         logger.info(f"Output shape: {outputs[0].shape}")
+        logger.info(f"Output range: [{outputs[0].min():.4f}, {outputs[0].max():.4f}]")
         logger.info("Test passed!")
         return True
 
@@ -3320,8 +3283,6 @@ def cmd_export(args):
             export_classifier_model(model_id, model_dir, args.variants, from_onnx=args.from_onnx)
         elif args.model_type == "reader":
             export_reader_model(model_id, model_dir, args.variants, trust_remote_code=args.trust_remote_code)
-        elif recognizer_arch == "gliner2":
-            export_gliner2_model(model_id, model_dir, args.variants)
         elif recognizer_arch == "gliner":
             export_gliner_model(model_id, model_dir, args.variants)
         elif recognizer_arch == "rebel":

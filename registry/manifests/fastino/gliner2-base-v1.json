@@ -6,50 +6,30 @@
   "source": "fastino/gliner2-base-v1",
   "files": [
     {
-      "name": "added_tokens.json",
-      "digest": "sha256:3c274ca559be8b7b18febf616724ec05f8a8abccd428bd2744608f45f7a0b067",
-      "size": 230
-    },
-    {
-      "name": "config.json",
-      "digest": "sha256:33d8aa009deed4b5435d162e08b5a720b252a0084e59d30d366b37da8c0193c5",
-      "size": 236
-    },
-    {
       "name": "gliner_config.json",
-      "digest": "sha256:65f14c2ed45736a77c920e53de9f07df282ea18e5288431ee876b33ce9cf3d56",
-      "size": 1185
+      "digest": "sha256:162f5a53ffc2bbf59c5a979e62a4aadfda7357db6f52c694f8ecd92468ee28c2",
+      "size": 1030
     },
     {
       "name": "model.onnx",
-      "digest": "sha256:3b48ea7f99ab22fbe010c8c4f09beaf66e488e949dd89e2e1aed44b785e5483e",
-      "size": 806806828
-    },
-    {
-      "name": "special_tokens_map.json",
-      "digest": "sha256:84ea70143f533d7e99b393d87f20010887a9ac2cba955828ef313886e4e83f4f",
-      "size": 2414
-    },
-    {
-      "name": "spm.model",
-      "digest": "sha256:c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd",
-      "size": 2464616
+      "digest": "sha256:a59c58905b3b8b3bf6a973491794b8b3acbfee199aacc8de7dea584808d66037",
+      "size": 825255422
     },
     {
       "name": "tokenizer.json",
-      "digest": "sha256:1b7fbabfb4c690bed84c6793bfecae9b8dfe205751b04f9ffd1e76a1e7df9c16",
-      "size": 8650701
+      "digest": "sha256:3ad87d9ffe669147063e70850927dd2da90249e2acc5c8527f1eb65df467bcc8",
+      "size": 8333952
     },
     {
       "name": "tokenizer_config.json",
-      "digest": "sha256:d53b9e4665ea984792aab93a0b49a326500105b1144e763da1550957b57a7ffa",
-      "size": 3236
+      "digest": "sha256:cf297d3554fb563cbb43741bc61ec152c1e307a91bf1a1a8bd29ca91e6d61064",
+      "size": 683
     }
   ],
   "owner": "fastino",
   "provenance": {
     "downloadedFrom": "https://huggingface.co/fastino/gliner2-base-v1",
-    "downloadedAt": "2026-03-06T05:55:58.177801+00:00"
+    "downloadedAt": "2026-03-26T23:17:45.394853+00:00"
   },
   "capabilities": [
     "labels",
@@ -61,13 +41,13 @@
     "f16": [
       {
         "name": "model_f16.onnx",
-        "digest": "sha256:f9b377af7d29cc88edc07934358b5894623a286941e63f513c234c64897853cf",
-        "size": 931433
+        "digest": "sha256:aa0681a5ae2cf76af37a76196c478fcda5a7851ef13aabe0391becdae2eb9724",
+        "size": 1006423
       },
       {
         "name": "model_f16.onnx_data",
-        "digest": "sha256:87b7760abcfdf18469e6ab4d418e59be416350bc7b1d82a43bec220cba8f45c8",
-        "size": 1206469632
+        "digest": "sha256:04d32294eaecf6c0aa056d858df2acdf290f43a49588e85dd5694d049ab50258",
+        "size": 412129280
       }
     ]
   }
