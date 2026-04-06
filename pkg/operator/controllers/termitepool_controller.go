@@ -443,6 +443,7 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 									LocalObjectReference: corev1.LocalObjectReference{Name: pool.Name + "-config"},
 								}},
 							},
+							Resources: r.buildModelPullerResources(pool),
 						},
 					},
 					Containers: []corev1.Container{
@@ -450,7 +451,7 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 							Name:    "termite",
 							Image:   image,
 							Command: []string{"/termite"},
-							Args:    []string{"run", "--config", "/config/config.json"},
+							Args:    []string{"run", "--config", "/config/config.json", "--models-dir", "/models"},
 							Ports: []corev1.ContainerPort{
 								{Name: "http", ContainerPort: TermiteAPIPort, Protocol: corev1.ProtocolTCP},
 							},
@@ -470,7 +471,9 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 						{
 							Name: "models",
 							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{},
+								EmptyDir: &corev1.EmptyDirVolumeSource{
+									SizeLimit: quantityPtr(resource.MustParse("20Gi")),
+								},
 							},
 						},
 						{
@@ -808,6 +811,7 @@ func (r *TermitePoolReconciler) buildResources(pool *antflyaiv1alpha1.TermitePoo
 	// If user provided explicit resources, use those
 	if pool.Spec.Resources != nil {
 		resources := pool.Spec.Resources.DeepCopy()
+		ensureEphemeralStorage(resources, "10Gi")
 		// Ensure TPU resources are set if accelerator is configured
 		r.ensureTPUResources(resources, pool)
 		return *resources
@@ -824,11 +828,56 @@ func (r *TermitePoolReconciler) buildResources(pool *antflyaiv1alpha1.TermitePoo
 			corev1.ResourceCPU:    resource.MustParse("2"),
 		},
 	}
+	ensureEphemeralStorage(&resources, "10Gi")
 
 	// Add TPU resources if accelerator is configured
 	r.ensureTPUResources(&resources, pool)
 
 	return resources
+}
+
+func (r *TermitePoolReconciler) buildModelPullerResources(pool *antflyaiv1alpha1.TermitePool) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+		},
+		Limits: corev1.ResourceList{},
+	}
+
+	if pool.Spec.Resources != nil {
+		if req, ok := pool.Spec.Resources.Requests[corev1.ResourceEphemeralStorage]; ok {
+			resources.Requests[corev1.ResourceEphemeralStorage] = req.DeepCopy()
+		}
+		if lim, ok := pool.Spec.Resources.Limits[corev1.ResourceEphemeralStorage]; ok {
+			resources.Limits[corev1.ResourceEphemeralStorage] = lim.DeepCopy()
+		}
+	}
+
+	ensureEphemeralStorage(&resources, "10Gi")
+	return resources
+}
+
+func ensureEphemeralStorage(resources *corev1.ResourceRequirements, defaultValue string) {
+	if resources == nil {
+		return
+	}
+	if resources.Requests == nil {
+		resources.Requests = corev1.ResourceList{}
+	}
+	if resources.Limits == nil {
+		resources.Limits = corev1.ResourceList{}
+	}
+	if _, exists := resources.Requests[corev1.ResourceEphemeralStorage]; !exists {
+		resources.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse(defaultValue)
+	}
+	if _, exists := resources.Limits[corev1.ResourceEphemeralStorage]; !exists {
+		resources.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse(defaultValue)
+	}
+}
+
+func quantityPtr(q resource.Quantity) *resource.Quantity {
+	return &q
 }
 
 // ensureTPUResources adds google.com/tpu resource requests/limits if an accelerator is configured
