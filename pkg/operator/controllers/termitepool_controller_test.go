@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -112,6 +113,19 @@ var _ = Describe("TermitePool Controller", func() {
 			Expect(createdSts.Spec.ServiceName).To(Equal(poolName))
 			Expect(createdSts.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(createdSts.Spec.Template.Spec.Containers[0].Name).To(Equal("termite"))
+			Expect(createdSts.Spec.Template.Spec.Containers[0].Args).To(ContainElements("run", "--config", "/config/config.json", "--models-dir", "/models"))
+			Expect(createdSts.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+
+			var modelsVolume *corev1.Volume
+			for i := range createdSts.Spec.Template.Spec.Volumes {
+				if createdSts.Spec.Template.Spec.Volumes[i].Name == "models" {
+					modelsVolume = &createdSts.Spec.Template.Spec.Volumes[i]
+					break
+				}
+			}
+			Expect(modelsVolume).NotTo(BeNil())
+			Expect(modelsVolume.EmptyDir).NotTo(BeNil())
+			Expect(modelsVolume.EmptyDir.SizeLimit).To(BeNil())
 
 			// Verify TPU node selector
 			Expect(createdSts.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue(
@@ -126,6 +140,67 @@ var _ = Describe("TermitePool Controller", func() {
 			Expect(container.LivenessProbe).NotTo(BeNil())
 
 			// Cleanup
+			Expect(k8sClient.Delete(ctx, pool)).Should(Succeed())
+		})
+
+		It("Should derive model storage sizing from pool ephemeral-storage resources", func() {
+			ctx := context.Background()
+
+			pool := &antflyaiv1alpha1.TermitePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "storage-sized-pool",
+					Namespace: poolNamespace,
+				},
+				Spec: antflyaiv1alpha1.TermitePoolSpec{
+					WorkloadType: antflyaiv1alpha1.WorkloadTypeGeneral,
+					Models: antflyaiv1alpha1.ModelConfig{
+						Preload: []antflyaiv1alpha1.ModelSpec{
+							{Name: "bge-small-en-v1.5"},
+						},
+						LoadingStrategy: antflyaiv1alpha1.LoadingStrategyEager,
+					},
+					Replicas: antflyaiv1alpha1.ReplicaConfig{
+						Min: 1,
+						Max: 2,
+					},
+					Hardware: antflyaiv1alpha1.HardwareConfig{},
+					Resources: &corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceEphemeralStorage: resource.MustParse("7Gi"),
+						},
+						Limits: corev1.ResourceList{
+							corev1.ResourceEphemeralStorage: resource.MustParse("9Gi"),
+						},
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, pool)).Should(Succeed())
+
+			stsLookupKey := types.NamespacedName{Name: "storage-sized-pool", Namespace: poolNamespace}
+			createdSts := &appsv1.StatefulSet{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, stsLookupKey, createdSts)
+				return err == nil
+			}, timeout, interval).Should(BeTrue())
+
+			Expect(createdSts.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+			puller := createdSts.Spec.Template.Spec.InitContainers[0]
+			Expect(puller.Resources.Requests).To(HaveKeyWithValue(corev1.ResourceEphemeralStorage, resource.MustParse("7Gi")))
+			Expect(puller.Resources.Limits).To(HaveKeyWithValue(corev1.ResourceEphemeralStorage, resource.MustParse("9Gi")))
+
+			var modelsVolume *corev1.Volume
+			for i := range createdSts.Spec.Template.Spec.Volumes {
+				if createdSts.Spec.Template.Spec.Volumes[i].Name == "models" {
+					modelsVolume = &createdSts.Spec.Template.Spec.Volumes[i]
+					break
+				}
+			}
+			Expect(modelsVolume).NotTo(BeNil())
+			Expect(modelsVolume.EmptyDir).NotTo(BeNil())
+			Expect(modelsVolume.EmptyDir.SizeLimit).NotTo(BeNil())
+			Expect(modelsVolume.EmptyDir.SizeLimit.String()).To(Equal("9Gi"))
+
 			Expect(k8sClient.Delete(ctx, pool)).Should(Succeed())
 		})
 	})

@@ -18,6 +18,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -624,6 +625,8 @@ type Proxy struct {
 
 	defaultPool string
 	listenAddr  string
+
+	backgroundOnce sync.Once
 }
 
 // Config holds proxy configuration
@@ -671,33 +674,80 @@ func NewProxy(cfg Config) *Proxy {
 	return p
 }
 
-// Start starts the proxy server
-func (p *Proxy) Start(ctx context.Context) error {
-	// Main API mux
+// ResolutionError represents a request resolution failure that maps directly to
+// an HTTP response status.
+type ResolutionError struct {
+	StatusCode int
+	Message    string
+	RetryAfter int
+	Pool       string
+}
+
+func (e *ResolutionError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return http.StatusText(e.StatusCode)
+}
+
+// ResolveRequest contains the routing inputs needed to select an upstream
+// Termite endpoint. This is exported so external services (for example Colony)
+// can reuse the proxy's model/pool/route resolution without reimplementing it.
+type ResolveRequest struct {
+	Operation OperationType
+	Model     string
+	Headers   map[string]string
+	Timestamp time.Time
+}
+
+// ResolvedRequest is the result of routing a request to a concrete endpoint.
+type ResolvedRequest struct {
+	Pool         string
+	WorkloadType WorkloadType
+	Endpoint     *Endpoint
+	MatchedRoute *Route
+}
+
+// Handler returns the proxy's public HTTP handler without starting an HTTP
+// server. This makes the package easier to embed in another service.
+func (p *Proxy) Handler() http.Handler {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/embed", p.handleEmbed)
 	apiMux.HandleFunc("/api/chunk", p.handleChunk)
 	apiMux.HandleFunc("/api/rerank", p.handleRerank)
+	apiMux.HandleFunc("/api/recognize", p.handleRecognize)
+	apiMux.HandleFunc("/api/extract", p.handleExtract)
 	apiMux.HandleFunc("/healthz", p.handleHealth)
 	apiMux.HandleFunc("/readyz", p.handleReady)
+	return apiMux
+}
 
+// StartBackground starts the registry refresh loop and optional RouteWatcher
+// without binding an HTTP listener. Embedding services should call this once.
+func (p *Proxy) StartBackground(ctx context.Context) {
+	p.backgroundOnce.Do(func() {
+		if p.registry.refreshInterval > 0 {
+			go p.refreshLoop(ctx)
+		}
+		if p.routeWatcher != nil {
+			go func() {
+				if err := p.routeWatcher.Start(ctx); err != nil {
+					p.logger.Error("RouteWatcher stopped", zap.Error(err))
+				}
+			}()
+		}
+	})
+}
+
+// Start starts the proxy server
+func (p *Proxy) Start(ctx context.Context) error {
 	p.server = &http.Server{
 		Addr:              p.listenAddr,
-		Handler:           apiMux,
+		Handler:           p.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start background refresh
-	go p.refreshLoop(ctx)
-
-	// Start RouteWatcher if configured
-	if p.routeWatcher != nil {
-		go func() {
-			if err := p.routeWatcher.Start(ctx); err != nil {
-				p.logger.Error("RouteWatcher stopped", zap.Error(err))
-			}
-		}()
-	}
+	p.StartBackground(ctx)
 
 	return p.server.ListenAndServe()
 }
@@ -720,6 +770,96 @@ func (p *Proxy) handleChunk(w http.ResponseWriter, r *http.Request) {
 // handleRerank routes reranking requests
 func (p *Proxy) handleRerank(w http.ResponseWriter, r *http.Request) {
 	p.proxyRequest(w, r, "rerank")
+}
+
+// handleRecognize routes NER/recognition requests.
+func (p *Proxy) handleRecognize(w http.ResponseWriter, r *http.Request) {
+	p.proxyRequest(w, r, "recognize")
+}
+
+// handleExtract routes schema-based extraction requests.
+func (p *Proxy) handleExtract(w http.ResponseWriter, r *http.Request) {
+	p.proxyRequest(w, r, "extract")
+}
+
+// ResolveRequest resolves an operation/model/header tuple to a concrete
+// endpoint. This is the main library seam for embedding the Termite proxy logic
+// in another service without depending on the proxy's own HTTP server.
+func (p *Proxy) ResolveRequest(ctx context.Context, req ResolveRequest) (*ResolvedRequest, error) {
+	requestTime := req.Timestamp
+	if requestTime.IsZero() {
+		requestTime = time.Now()
+	}
+
+	headers := req.Headers
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	requestedPool := requestedPoolFromHeaders(headers, p.defaultPool)
+
+	routeReq := &RouteRequest{
+		Operation: req.Operation,
+		Model:     req.Model,
+		Headers:   headers,
+		Timestamp: requestTime,
+	}
+
+	pool := requestedPool
+	var matchedRoute *Route
+	if route := p.router.RouteManager().Match(routeReq); route != nil {
+		matchedRoute = route
+		routePool := inferRoutePool(route, requestedPool)
+		if route.RateLimiter != nil && !route.RateLimiter.Allow(req.Model) {
+			return nil, &ResolutionError{
+				StatusCode: http.StatusTooManyRequests,
+				Message:    "rate limit exceeded",
+				Pool:       routePool,
+			}
+		}
+
+		dest, err := p.router.RouteManager().SelectDestination(route, routeReq, p.registry)
+		if err == nil && dest != nil {
+			pool = dest.Pool
+		} else if route.Fallback != nil {
+			switch route.Fallback.Action {
+			case "reject":
+				statusCode := route.Fallback.StatusCode
+				if statusCode == 0 {
+					statusCode = http.StatusServiceUnavailable
+				}
+				msg := route.Fallback.Message
+				if msg == "" {
+					msg = "no healthy endpoints available"
+				}
+				return nil, &ResolutionError{
+					StatusCode: statusCode,
+					Message:    msg,
+					RetryAfter: route.Fallback.RetryAfter,
+					Pool:       routePool,
+				}
+			case "redirect":
+				pool = route.Fallback.RedirectPool
+			}
+		}
+	}
+
+	workloadType := workloadTypeForRequest(req.Operation, headers["X-Termite-Workload-Type"])
+
+	endpoint, err := p.router.RouteRequest(ctx, req.Model, pool, workloadType)
+	if err != nil {
+		return nil, &ResolutionError{
+			StatusCode: http.StatusServiceUnavailable,
+			Message:    err.Error(),
+			Pool:       pool,
+		}
+	}
+
+	return &ResolvedRequest{
+		Pool:         pool,
+		WorkloadType: workloadType,
+		Endpoint:     endpoint,
+		MatchedRoute: matchedRoute,
+	}, nil
 }
 
 func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation string) {
@@ -746,77 +886,31 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 		headers[k] = r.Header.Get(k)
 	}
 
-	// Try route-based matching first
-	var pool string
-	routeReq := &RouteRequest{
+	resolved, err := p.ResolveRequest(r.Context(), ResolveRequest{
 		Operation: OperationType(operation),
 		Model:     req.Model,
 		Headers:   headers,
 		Timestamp: start,
-	}
-
-	if matchedRoute := p.router.RouteManager().Match(routeReq); matchedRoute != nil {
-		// Check rate limiting
-		if matchedRoute.RateLimiter != nil && !matchedRoute.RateLimiter.Allow(req.Model) {
-			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+	})
+	if err != nil {
+		var resolutionErr *ResolutionError
+		if errors.As(err, &resolutionErr) {
+			if resolutionErr.RetryAfter > 0 {
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", resolutionErr.RetryAfter))
+			}
+			statusLabel := "error"
+			if resolutionErr.StatusCode == http.StatusServiceUnavailable {
+				statusLabel = "no_endpoint"
+			}
+			requestsTotal.WithLabelValues(metricPoolLabel(resolutionErr.Pool, p.defaultPool), req.Model, operation, statusLabel).Inc()
+			http.Error(w, resolutionErr.Message, resolutionErr.StatusCode)
 			return
 		}
-
-		// Select destination from matched route
-		dest, err := p.router.RouteManager().SelectDestination(matchedRoute, routeReq, p.registry)
-		if err == nil && dest != nil {
-			pool = dest.Pool
-		} else if matchedRoute.Fallback != nil {
-			// Handle fallback
-			switch matchedRoute.Fallback.Action {
-			case "reject":
-				statusCode := matchedRoute.Fallback.StatusCode
-				if statusCode == 0 {
-					statusCode = 503
-				}
-				msg := matchedRoute.Fallback.Message
-				if msg == "" {
-					msg = "no healthy endpoints available"
-				}
-				if matchedRoute.Fallback.RetryAfter > 0 {
-					w.Header().Set("Retry-After", fmt.Sprintf("%d", matchedRoute.Fallback.RetryAfter))
-				}
-				http.Error(w, msg, statusCode)
-				return
-			case "redirect":
-				pool = matchedRoute.Fallback.RedirectPool
-			}
-		}
-	}
-
-	// Fall back to X-Termite-Pool header or default pool
-	if pool == "" {
-		pool = r.Header.Get("X-Termite-Pool")
-	}
-	if pool == "" {
-		pool = p.defaultPool
-	}
-
-	// Determine workload type from header or infer from operation
-	workloadType := WorkloadType(r.Header.Get("X-Termite-Workload-Type"))
-	if workloadType == "" {
-		switch operation {
-		case "embed", "rerank":
-			workloadType = WorkloadTypeReadHeavy
-		case "chunk":
-			workloadType = WorkloadTypeWriteHeavy
-		default:
-			workloadType = WorkloadTypeGeneral
-		}
-	}
-
-	// Route the request
-	endpoint, err := p.router.RouteRequest(r.Context(), req.Model, pool, workloadType)
-	if err != nil {
-		requestsTotal.WithLabelValues(pool, req.Model, operation, "no_endpoint").Inc()
+		requestsTotal.WithLabelValues(p.defaultPool, req.Model, operation, "no_endpoint").Inc()
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	endpoint := resolved.Endpoint
 
 	// Track active connections
 	atomic.AddInt32(&endpoint.Connections, 1)
@@ -855,6 +949,62 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 	}
 
 	proxy.ServeHTTP(w, r) //nolint:gosec // G704: endpoint address is from trusted internal registry
+}
+
+func workloadTypeForRequest(operation OperationType, headerValue string) WorkloadType {
+	if headerValue != "" {
+		return WorkloadType(headerValue)
+	}
+
+	switch operation {
+	case "embed", "rerank", "recognize", "extract":
+		return WorkloadTypeReadHeavy
+	case "chunk":
+		return WorkloadTypeWriteHeavy
+	default:
+		return WorkloadTypeGeneral
+	}
+}
+
+func requestedPoolFromHeaders(headers map[string]string, defaultPool string) string {
+	if pool := headers["X-Termite-Pool"]; pool != "" {
+		return pool
+	}
+	return defaultPool
+}
+
+func inferRoutePool(route *Route, requestedPool string) string {
+	if route == nil {
+		return requestedPool
+	}
+	if route.Fallback != nil && route.Fallback.Action == "redirect" && route.Fallback.RedirectPool != "" {
+		return route.Fallback.RedirectPool
+	}
+
+	var pool string
+	for _, dest := range route.Destinations {
+		if dest.Pool == "" {
+			continue
+		}
+		if pool == "" {
+			pool = dest.Pool
+			continue
+		}
+		if pool != dest.Pool {
+			return requestedPool
+		}
+	}
+	if pool != "" {
+		return pool
+	}
+	return requestedPool
+}
+
+func metricPoolLabel(pool, defaultPool string) string {
+	if pool != "" {
+		return pool
+	}
+	return defaultPool
 }
 
 type bodyReader struct {
