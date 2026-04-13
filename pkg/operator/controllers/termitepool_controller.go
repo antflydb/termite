@@ -471,9 +471,7 @@ func (r *TermitePoolReconciler) reconcileStatefulSet(ctx context.Context, pool *
 						{
 							Name: "models",
 							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{
-									SizeLimit: quantityPtr(resource.MustParse("20Gi")),
-								},
+								EmptyDir: r.buildModelsEmptyDir(pool),
 							},
 						},
 						{
@@ -811,7 +809,6 @@ func (r *TermitePoolReconciler) buildResources(pool *antflyaiv1alpha1.TermitePoo
 	// If user provided explicit resources, use those
 	if pool.Spec.Resources != nil {
 		resources := pool.Spec.Resources.DeepCopy()
-		ensureEphemeralStorage(resources, "10Gi")
 		// Ensure TPU resources are set if accelerator is configured
 		r.ensureTPUResources(resources, pool)
 		return *resources
@@ -828,7 +825,6 @@ func (r *TermitePoolReconciler) buildResources(pool *antflyaiv1alpha1.TermitePoo
 			corev1.ResourceCPU:    resource.MustParse("2"),
 		},
 	}
-	ensureEphemeralStorage(&resources, "10Gi")
 
 	// Add TPU resources if accelerator is configured
 	r.ensureTPUResources(&resources, pool)
@@ -836,6 +832,10 @@ func (r *TermitePoolReconciler) buildResources(pool *antflyaiv1alpha1.TermitePoo
 	return resources
 }
 
+// buildModelPullerResources gives the init container a small CPU/memory
+// footprint while mirroring any user-provided ephemeral-storage budget from
+// the main pool resources. The puller downloads into the shared /models
+// emptyDir, so it needs the same disk budget when one is specified.
 func (r *TermitePoolReconciler) buildModelPullerResources(pool *antflyaiv1alpha1.TermitePool) corev1.ResourceRequirements {
 	resources := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{
@@ -854,30 +854,21 @@ func (r *TermitePoolReconciler) buildModelPullerResources(pool *antflyaiv1alpha1
 		}
 	}
 
-	ensureEphemeralStorage(&resources, "10Gi")
 	return resources
 }
 
-func ensureEphemeralStorage(resources *corev1.ResourceRequirements, defaultValue string) {
-	if resources == nil {
-		return
+func (r *TermitePoolReconciler) buildModelsEmptyDir(pool *antflyaiv1alpha1.TermitePool) *corev1.EmptyDirVolumeSource {
+	emptyDir := &corev1.EmptyDirVolumeSource{}
+	if pool.Spec.Resources == nil || pool.Spec.Resources.Limits == nil {
+		return emptyDir
 	}
-	if resources.Requests == nil {
-		resources.Requests = corev1.ResourceList{}
-	}
-	if resources.Limits == nil {
-		resources.Limits = corev1.ResourceList{}
-	}
-	if _, exists := resources.Requests[corev1.ResourceEphemeralStorage]; !exists {
-		resources.Requests[corev1.ResourceEphemeralStorage] = resource.MustParse(defaultValue)
-	}
-	if _, exists := resources.Limits[corev1.ResourceEphemeralStorage]; !exists {
-		resources.Limits[corev1.ResourceEphemeralStorage] = resource.MustParse(defaultValue)
-	}
-}
 
-func quantityPtr(q resource.Quantity) *resource.Quantity {
-	return &q
+	if lim, ok := pool.Spec.Resources.Limits[corev1.ResourceEphemeralStorage]; ok {
+		limit := lim.DeepCopy()
+		emptyDir.SizeLimit = &limit
+	}
+
+	return emptyDir
 }
 
 // ensureTPUResources adds google.com/tpu resource requests/limits if an accelerator is configured

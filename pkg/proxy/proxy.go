@@ -680,6 +680,7 @@ type ResolutionError struct {
 	StatusCode int
 	Message    string
 	RetryAfter int
+	Pool       string
 }
 
 func (e *ResolutionError) Error() string {
@@ -794,6 +795,7 @@ func (p *Proxy) ResolveRequest(ctx context.Context, req ResolveRequest) (*Resolv
 	if headers == nil {
 		headers = map[string]string{}
 	}
+	requestedPool := requestedPoolFromHeaders(headers, p.defaultPool)
 
 	routeReq := &RouteRequest{
 		Operation: req.Operation,
@@ -802,14 +804,16 @@ func (p *Proxy) ResolveRequest(ctx context.Context, req ResolveRequest) (*Resolv
 		Timestamp: requestTime,
 	}
 
-	var pool string
+	pool := requestedPool
 	var matchedRoute *Route
 	if route := p.router.RouteManager().Match(routeReq); route != nil {
 		matchedRoute = route
+		routePool := inferRoutePool(route, requestedPool)
 		if route.RateLimiter != nil && !route.RateLimiter.Allow(req.Model) {
 			return nil, &ResolutionError{
 				StatusCode: http.StatusTooManyRequests,
 				Message:    "rate limit exceeded",
+				Pool:       routePool,
 			}
 		}
 
@@ -831,18 +835,12 @@ func (p *Proxy) ResolveRequest(ctx context.Context, req ResolveRequest) (*Resolv
 					StatusCode: statusCode,
 					Message:    msg,
 					RetryAfter: route.Fallback.RetryAfter,
+					Pool:       routePool,
 				}
 			case "redirect":
 				pool = route.Fallback.RedirectPool
 			}
 		}
-	}
-
-	if pool == "" {
-		pool = headers["X-Termite-Pool"]
-	}
-	if pool == "" {
-		pool = p.defaultPool
 	}
 
 	workloadType := workloadTypeForRequest(req.Operation, headers["X-Termite-Workload-Type"])
@@ -852,6 +850,7 @@ func (p *Proxy) ResolveRequest(ctx context.Context, req ResolveRequest) (*Resolv
 		return nil, &ResolutionError{
 			StatusCode: http.StatusServiceUnavailable,
 			Message:    err.Error(),
+			Pool:       pool,
 		}
 	}
 
@@ -903,7 +902,7 @@ func (p *Proxy) proxyRequest(w http.ResponseWriter, r *http.Request, operation s
 			if resolutionErr.StatusCode == http.StatusServiceUnavailable {
 				statusLabel = "no_endpoint"
 			}
-			requestsTotal.WithLabelValues(p.defaultPool, req.Model, operation, statusLabel).Inc()
+			requestsTotal.WithLabelValues(metricPoolLabel(resolutionErr.Pool, p.defaultPool), req.Model, operation, statusLabel).Inc()
 			http.Error(w, resolutionErr.Message, resolutionErr.StatusCode)
 			return
 		}
@@ -965,6 +964,47 @@ func workloadTypeForRequest(operation OperationType, headerValue string) Workloa
 	default:
 		return WorkloadTypeGeneral
 	}
+}
+
+func requestedPoolFromHeaders(headers map[string]string, defaultPool string) string {
+	if pool := headers["X-Termite-Pool"]; pool != "" {
+		return pool
+	}
+	return defaultPool
+}
+
+func inferRoutePool(route *Route, requestedPool string) string {
+	if route == nil {
+		return requestedPool
+	}
+	if route.Fallback != nil && route.Fallback.Action == "redirect" && route.Fallback.RedirectPool != "" {
+		return route.Fallback.RedirectPool
+	}
+
+	var pool string
+	for _, dest := range route.Destinations {
+		if dest.Pool == "" {
+			continue
+		}
+		if pool == "" {
+			pool = dest.Pool
+			continue
+		}
+		if pool != dest.Pool {
+			return requestedPool
+		}
+	}
+	if pool != "" {
+		return pool
+	}
+	return requestedPool
+}
+
+func metricPoolLabel(pool, defaultPool string) string {
+	if pool != "" {
+		return pool
+	}
+	return defaultPool
 }
 
 type bodyReader struct {
