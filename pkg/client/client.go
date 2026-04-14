@@ -100,19 +100,48 @@ type TermiteClient struct {
 	baseURL string
 }
 
+// Option configures a TermiteClient.
+type Option func(*clientConfig)
+
+// clientConfig holds configuration applied via Option values.
+type clientConfig struct {
+	apiKey string
+}
+
+// WithAPIKey configures the client to send "Authorization: Bearer <key>" on
+// every request. Use this when targeting an authenticated deployment such as
+// the Colony-hosted termite edge.
+func WithAPIKey(key string) Option {
+	return func(c *clientConfig) {
+		c.apiKey = key
+	}
+}
+
 // NewTermiteClient creates a new Termite client.
 // The baseURL should be the server address (e.g., "http://localhost:8080").
 // The /api prefix is automatically appended.
-func NewTermiteClient(baseURL string, httpClient *http.Client) (*TermiteClient, error) {
+func NewTermiteClient(baseURL string, httpClient *http.Client, opts ...Option) (*TermiteClient, error) {
 	// Append /api prefix for the Termite API
 	apiURL := strings.TrimSuffix(baseURL, "/") + "/api"
 
-	var opts []oapi.ClientOption
-	if httpClient != nil {
-		opts = append(opts, oapi.WithHTTPClient(httpClient))
+	cfg := &clientConfig{}
+	for _, opt := range opts {
+		opt(cfg)
 	}
 
-	client, err := oapi.NewClientWithResponses(apiURL, opts...)
+	var oapiOpts []oapi.ClientOption
+	if httpClient != nil {
+		oapiOpts = append(oapiOpts, oapi.WithHTTPClient(httpClient))
+	}
+	if cfg.apiKey != "" {
+		apiKey := cfg.apiKey
+		oapiOpts = append(oapiOpts, oapi.WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			return nil
+		}))
+	}
+
+	client, err := oapi.NewClientWithResponses(apiURL, oapiOpts...)
 	if err != nil {
 		return nil, err
 	}

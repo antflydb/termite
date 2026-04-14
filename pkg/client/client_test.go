@@ -621,6 +621,119 @@ func TestClient_ServerErr(t *testing.T) {
 	assert.Contains(t, err.Error(), "server error")
 }
 
+func TestWithAPIKey_InjectsAuthHeader(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil, WithAPIKey("searchaf_abc_def"))
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer searchaf_abc_def", gotHeader)
+}
+
+func TestWithoutAPIKey_NoAuthHeader(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil)
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, gotHeader)
+}
+
+func TestWithAPIKey_PersistsAcrossRequests(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer searchaf_abc_def", r.Header.Get("Authorization"))
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil, WithAPIKey("searchaf_abc_def"))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = termiteClient.ListModels(ctx)
+	require.NoError(t, err)
+	_, err = termiteClient.ListModels(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestWithAPIKey_PreservesOtherHeaders(t *testing.T) {
+	// EmbedJSON sets Accept: application/json via its own RequestEditorFn.
+	// Verify that the auth header and the Accept header coexist.
+	expectedEmbeddings := [][]float32{{0.1, 0.2, 0.3}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer searchaf_abc_def", r.Header.Get("Authorization"))
+		assert.Contains(t, r.Header.Get("Accept"), "application/json")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model":      "test-model",
+			"embeddings": expectedEmbeddings,
+		})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil, WithAPIKey("searchaf_abc_def"))
+	require.NoError(t, err)
+
+	resp, err := termiteClient.EmbedJSON(context.Background(), "test-model", []string{"hello"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Embeddings, 1)
+}
+
 func TestClient_URLNormalization(t *testing.T) {
 	// Test that trailing slash is handled correctly
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
