@@ -22,6 +22,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -100,48 +101,27 @@ type TermiteClient struct {
 	baseURL string
 }
 
-// Option configures a TermiteClient.
-type Option func(*clientConfig)
-
-// clientConfig holds configuration applied via Option values.
-type clientConfig struct {
-	apiKey string
-}
-
-// WithAPIKey configures the client to send "Authorization: Bearer <key>" on
-// every request. Use this when targeting an authenticated deployment such as
-// the Colony-hosted termite edge.
-func WithAPIKey(key string) Option {
-	return func(c *clientConfig) {
-		c.apiKey = key
-	}
-}
-
 // NewTermiteClient creates a new Termite client.
 // The baseURL should be the server address (e.g., "http://localhost:8080").
 // The /api prefix is automatically appended.
-func NewTermiteClient(baseURL string, httpClient *http.Client, opts ...Option) (*TermiteClient, error) {
+//
+// Pass authentication by wrapping one of WithBasicAuth, WithApiKey, or
+// WithBearerToken in oapi.WithRequestEditorFn and supplying it as an option,
+// matching the pattern used by the Antfly Go client:
+//
+//	c, err := client.NewTermiteClient(baseURL, nil,
+//	    oapi.WithRequestEditorFn(client.WithBearerToken(token)))
+func NewTermiteClient(baseURL string, httpClient *http.Client, opts ...oapi.ClientOption) (*TermiteClient, error) {
 	// Append /api prefix for the Termite API
 	apiURL := strings.TrimSuffix(baseURL, "/") + "/api"
 
-	cfg := &clientConfig{}
-	for _, opt := range opts {
-		opt(cfg)
-	}
-
-	var oapiOpts []oapi.ClientOption
+	allOpts := make([]oapi.ClientOption, 0, len(opts)+1)
 	if httpClient != nil {
-		oapiOpts = append(oapiOpts, oapi.WithHTTPClient(httpClient))
+		allOpts = append(allOpts, oapi.WithHTTPClient(httpClient))
 	}
-	if cfg.apiKey != "" {
-		apiKey := cfg.apiKey
-		oapiOpts = append(oapiOpts, oapi.WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
-			req.Header.Set("Authorization", "Bearer "+apiKey)
-			return nil
-		}))
-	}
+	allOpts = append(allOpts, opts...)
 
-	client, err := oapi.NewClientWithResponses(apiURL, oapiOpts...)
+	client, err := oapi.NewClientWithResponses(apiURL, allOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +129,35 @@ func NewTermiteClient(baseURL string, httpClient *http.Client, opts ...Option) (
 		client:  client,
 		baseURL: apiURL,
 	}, nil
+}
+
+// WithBasicAuth returns a RequestEditorFn that adds HTTP Basic Authentication.
+func WithBasicAuth(username, password string) oapi.RequestEditorFn {
+	encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	return func(_ context.Context, req *http.Request) error {
+		req.Header.Set("Authorization", "Basic "+encoded)
+		return nil
+	}
+}
+
+// WithApiKey returns a RequestEditorFn that adds API Key authentication.
+// The credential is sent as: Authorization: ApiKey base64(keyID:keySecret)
+func WithApiKey(keyID, keySecret string) oapi.RequestEditorFn {
+	encoded := base64.StdEncoding.EncodeToString([]byte(keyID + ":" + keySecret))
+	return func(_ context.Context, req *http.Request) error {
+		req.Header.Set("Authorization", "ApiKey "+encoded)
+		return nil
+	}
+}
+
+// WithBearerToken returns a RequestEditorFn that adds Bearer token authentication.
+// The token should be base64(keyID:keySecret) for Antfly API keys, or an opaque
+// token from a proxy (e.g., Colony's termite edge).
+func WithBearerToken(token string) oapi.RequestEditorFn {
+	return func(_ context.Context, req *http.Request) error {
+		req.Header.Set("Authorization", "Bearer "+token)
+		return nil
+	}
 }
 
 // Client returns the underlying oapi-codegen client for direct API access.
