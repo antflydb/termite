@@ -16,6 +16,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antflydb/termite/pkg/client/oapi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -619,6 +621,141 @@ func TestClient_ServerErr(t *testing.T) {
 	_, err = termiteClient.Embed(ctx, "test-model", []string{"hello"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "server error")
+}
+
+// modelsListHandler returns an HTTP handler that emits a minimal but valid
+// /api/models response. Used by the auth-header tests which only care about
+// request headers, not response content.
+func modelsListHandler(onRequest func(r *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if onRequest != nil {
+			onRequest(r)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embedders":    map[string]any{},
+			"chunkers":     map[string]any{},
+			"rerankers":    map[string]any{},
+			"generators":   map[string]any{},
+			"recognizers":  map[string]any{},
+			"extractors":   map[string]any{},
+			"rewriters":    map[string]any{},
+			"classifiers":  map[string]any{},
+			"readers":      map[string]any{},
+			"transcribers": map[string]any{},
+		})
+	}
+}
+
+func TestWithBearerToken_InjectsAuthHeader(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(modelsListHandler(func(r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil,
+		oapi.WithRequestEditorFn(WithBearerToken("searchaf_abc_def")))
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer searchaf_abc_def", gotHeader)
+}
+
+func TestWithApiKey_InjectsBase64Credentials(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(modelsListHandler(func(r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil,
+		oapi.WithRequestEditorFn(WithApiKey("key-id", "key-secret")))
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	expected := "ApiKey " + base64.StdEncoding.EncodeToString([]byte("key-id:key-secret"))
+	assert.Equal(t, expected, gotHeader)
+}
+
+func TestWithBasicAuth_InjectsBase64Credentials(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(modelsListHandler(func(r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil,
+		oapi.WithRequestEditorFn(WithBasicAuth("user", "pass")))
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("user:pass"))
+	assert.Equal(t, expected, gotHeader)
+}
+
+func TestWithoutAuth_NoAuthHeader(t *testing.T) {
+	var gotHeader string
+	server := httptest.NewServer(modelsListHandler(func(r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil)
+	require.NoError(t, err)
+
+	_, err = termiteClient.ListModels(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, gotHeader)
+}
+
+func TestAuthHeader_PersistsAcrossRequests(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(modelsListHandler(func(r *http.Request) {
+		assert.Equal(t, "Bearer searchaf_abc_def", r.Header.Get("Authorization"))
+		callCount++
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil,
+		oapi.WithRequestEditorFn(WithBearerToken("searchaf_abc_def")))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = termiteClient.ListModels(ctx)
+	require.NoError(t, err)
+	_, err = termiteClient.ListModels(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestAuthHeader_PreservesOtherHeaders(t *testing.T) {
+	// EmbedJSON sets Accept: application/json via its own RequestEditorFn.
+	// Verify that the auth header and the Accept header coexist.
+	expectedEmbeddings := [][]float32{{0.1, 0.2, 0.3}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer searchaf_abc_def", r.Header.Get("Authorization"))
+		assert.Contains(t, r.Header.Get("Accept"), "application/json")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model":      "test-model",
+			"embeddings": expectedEmbeddings,
+		})
+	}))
+	defer server.Close()
+
+	termiteClient, err := NewTermiteClient(server.URL, nil,
+		oapi.WithRequestEditorFn(WithBearerToken("searchaf_abc_def")))
+	require.NoError(t, err)
+
+	resp, err := termiteClient.EmbedJSON(context.Background(), "test-model", []string{"hello"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Embeddings, 1)
 }
 
 func TestClient_URLNormalization(t *testing.T) {
