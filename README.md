@@ -24,7 +24,7 @@ Termite is the companion ML service for [Antfly](https://github.com/antflydb/ant
 - **Multiple backends** — ONNX Runtime, XLA (TPU/CUDA), pure Go
 - **SIMD / SME acceleration** — vector math uses hardware intrinsics via [go-highway](https://github.com/ajroetker/go-highway) on x86 and ARM
 - **Native Go ML** — XLA backend powered by [GoMLX](https://github.com/gomlx/gomlx) and [GoLLMX](https://github.com/gomlx/gollmx), working toward making native Go ML/LLM inference a reality
-- **Kubernetes operator** — autoscaling with TermitePool and TermiteRoute CRDs
+- **Kubernetes operator** — autoscaling with TermitePool and TermiteRoute CRDs (see [antfly/pkg/termite-operator](https://github.com/antflydb/antfly/tree/main/pkg/termite-operator))
 
 ## Running
 
@@ -361,57 +361,9 @@ backend_priority: ["onnx", "xla", "go"]
 
 ## Kubernetes Operator
 
-Deploy on GKE with TPU support using the Termite Operator.
+The Termite Kubernetes operator — `TermitePool` (autoscaling replicas, hardware selection) and `TermiteRoute` (traffic routing by model/endpoint) — lives in the antfly monorepo at [`pkg/termite-operator`](https://github.com/antflydb/antfly/tree/main/pkg/termite-operator). See that directory for CRD definitions, manifests, and deployment docs.
 
-### Custom Resources
-
-**TermitePool**: manages a pool of Termite replicas with autoscaling.
-
-```yaml
-apiVersion: termite.antfly.io/v1alpha1
-kind: TermitePool
-metadata:
-  name: embeddings-pool
-spec:
-  workloadType: read-heavy
-  models:
-    preload:
-      - name: bge-small-en-v1.5
-        variant: i8
-        priority: high
-        strategy: eager    # Always loaded, never evicted
-      - name: mxbai-rerank-base-v1
-        variant: i8
-        priority: high
-        # strategy defaults to loadingStrategy (lazy)
-    loadingStrategy: lazy  # Default for models without explicit strategy
-    keepAlive: 5m          # Idle timeout for lazy models
-  replicas:
-    min: 2
-    max: 10
-  hardware:
-    accelerator: tpu-v5-lite-podslice
-    topology: "2x2"
-  autoscaling:
-    enabled: true
-    metrics:
-      - type: queue-depth
-        target: "50"
-```
-
-**TermiteRoute**: routes traffic to pools based on model or endpoint.
-
-### Running the Operator
-
-```bash
-# Build operator
-go build -o termite-operator ./cmd/termite-operator
-
-# Generate CRDs and RBAC manifests
-make generate
-```
-
-See `pkg/operator/` for CRD definitions and controller implementation. The [model registry protocol](specs/tla/model-registry-protocol.tla) is formally specified in TLA+.
+The [model registry protocol](specs/tla/model-registry-protocol.tla) used by the operator is formally specified in TLA+ in this repo.
 
 ## Community
 

@@ -168,7 +168,7 @@ jobs:
       - name: Download dependencies
         run: |
           # Multi-module workspace - download deps for each module
-          for mod in pkg/client pkg/operator pkg/proxy pkg/termite; do
+          for mod in pkg/client pkg/termite; do
             (cd $mod && go mod download)
           done
 
@@ -181,7 +181,7 @@ jobs:
             cd pkg/termite && go build -v -tags="${{ matrix.tags }}" ./...
           else
             # Pure-go builds all modules
-            for mod in pkg/client pkg/operator pkg/proxy pkg/termite; do
+            for mod in pkg/client pkg/termite; do
               (cd $mod && go build -v ./...)
             done
           fi

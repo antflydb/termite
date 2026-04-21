@@ -15,24 +15,6 @@ updates:
         update-types: ["minor", "patch"]
 
   - package-ecosystem: "gomod"
-    directory: "/pkg/operator"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "gomod"
-    directory: "/pkg/proxy"
-    schedule:
-      interval: "weekly"
-    groups:
-      go-dependencies:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "gomod"
     directory: "/pkg/client"
     schedule:
       interval: "weekly"

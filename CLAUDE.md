@@ -4,12 +4,8 @@ Termite is a standalone ML inference service for embeddings, chunking, and reran
 
 ## Key Directories
 
-- `cmd/termite/` - CLI entrypoint (cobra-based: `run`, `pull`, `list` subcommands)
-- `cmd/termite-operator/` - Kubernetes operator entrypoint
-- `cmd/termite-proxy/` - Load-balancing proxy entrypoint
 - `pkg/termite/` - Core service logic, API handlers, caching, per-task registries
-- `pkg/operator/` - Kubernetes operator (CRDs, controllers)
-- `pkg/proxy/` - Request routing and K8s service discovery
+- `pkg/termite/cmd/` - CLI entrypoint (cobra-based: `run`, `pull`, `list` subcommands)
 - `lib/backends/` - Backend interface, SessionManager, ONNX/GoMLX/XLA/CoreML implementations
 - `lib/pipelines/` - Task-specific pipelines (embedding, seq2seq, vision2seq, speech2seq, NER, etc.)
 - `lib/embeddings/` - Embedding model wrappers with pooling
@@ -39,8 +35,6 @@ Termite is a standalone ML inference service for embeddings, chunking, and reran
 
 **Two-tier caching**: Memory cache + singleflight for deduplication.
 
-**Operator CRDs**: `TermitePool` (scaling/hardware) and `TermiteRoute` (traffic routing) in `pkg/operator/api/v1alpha1/`.
-
 ## Testing
 
 ```bash
@@ -62,7 +56,8 @@ make e2e E2E_TIMEOUT=15m            # Custom timeout (default: 15m)
 Tags follow Go module conventions and trigger CI:
 
 - `v*` — root module release + container build
-- `pkg/operator/v*` — operator + proxy container build
+
+The Termite operator and proxy now live in the antfly monorepo (`pkg/termite-operator`, `pkg/termite-proxy`); their release tags (`pkg/termite-operator/v*`, `pkg/termite-proxy/v*`) are managed there.
 
 ## Code Generation
 

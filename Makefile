@@ -8,8 +8,6 @@
 GO := GOEXPERIMENT=simd go
 
 # Image URLs for building/pushing
-OPERATOR_IMG ?= ghcr.io/antflydb/termite-operator:latest
-PROXY_IMG ?= ghcr.io/antflydb/termite-proxy:latest
 TERMITE_IMG ?= ghcr.io/antflydb/termite:latest
 VERSION ?= latest
 
@@ -59,11 +57,7 @@ build-docs: ## Bundle and lint OpenAPI specification.
 generate: build-docs ## Generate CRDs, DeepCopy methods, and RBAC.
 	@echo "Generating manifests..."
 	cd pkg/client && $(GO) generate ./...
-	cd pkg/operator && $(GO) generate ./...
-	cd pkg/proxy && $(GO) generate ./...
 	cd pkg/termite && $(GO) generate ./...
-	@echo "Generated CRDs in pkg/operator/manifests/crd/"
-	@echo "Generated RBAC in pkg/operator/manifests/rbac/"
 
 .PHONY: manifests
 manifests: generate ## Alias for generate.
@@ -71,61 +65,37 @@ manifests: generate ## Alias for generate.
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	cd pkg/client && $(GO) fmt ./...
-	cd pkg/operator && $(GO) fmt ./...
-	cd pkg/proxy && $(GO) fmt ./...
 	cd pkg/termite && $(GO) fmt ./...
 
 .PHONY: vet
 vet: ## Run go vet against code.
 	cd pkg/client && $(GO) vet ./...
-	cd pkg/operator && $(GO) vet ./...
-	cd pkg/proxy && $(GO) vet ./...
 	cd pkg/termite && $(GO) vet ./...
 
 .PHONY: test
-test: envtest ## Run tests.
+test: ## Run tests.
 	cd pkg/client && $(GO) test -v ./...
-	cd pkg/proxy && $(GO) test -v ./...
 	cd pkg/termite && $(GO) test -v ./...
-	cd pkg/operator && KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GO) test -v ./...
 
 .PHONY: lint
 lint: ## Run linters against code (modernize, golangci-lint, testifylint).
 	cd pkg/client && $(GO) run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
-	cd pkg/operator && $(GO) run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
-	cd pkg/proxy && $(GO) run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
 	cd pkg/termite && $(GO) run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
 	cd pkg/client && $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --fix ./...
-	cd pkg/operator && $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --fix ./...
-	cd pkg/proxy && $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --fix ./...
 	cd pkg/termite && $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run --fix ./...
 	cd pkg/client && $(GO) run github.com/Antonboom/testifylint@latest --fix ./...
-	cd pkg/operator && $(GO) run github.com/Antonboom/testifylint@latest --fix ./...
-	cd pkg/proxy && $(GO) run github.com/Antonboom/testifylint@latest --fix ./...
 	cd pkg/termite && $(GO) run github.com/Antonboom/testifylint@latest --fix ./...
 
 .PHONY: update-deps
 update-deps: ## Update Go dependencies to latest versions.
 	cd pkg/client && $(GO) get -u ./... && $(GO) mod tidy
-	cd pkg/operator && $(GO) get -u ./... && $(GO) mod tidy
-	cd pkg/proxy && $(GO) get -u ./... && $(GO) mod tidy
 	cd pkg/termite && $(GO) get -u ./... && $(GO) mod tidy
 	cd e2e && $(GO) get -u ./... && $(GO) mod tidy
 
 ##@ Build
 
 .PHONY: build
-build: generate fmt vet build-operator build-proxy build-termite ## Build all binaries.
-
-.PHONY: build-operator
-build-operator: ## Build operator binary.
-	@echo "Building operator..."
-	$(GO) build -o bin/manager ./pkg/operator/cmd/termite-operator
-
-.PHONY: build-proxy
-build-proxy: ## Build proxy binary.
-	@echo "Building proxy..."
-	$(GO) build -o bin/termite-proxy ./pkg/proxy/cmd/termite-proxy
+build: generate fmt vet build-termite ## Build all binaries.
 
 .PHONY: build-termite
 build-termite: ## Build termite binary.
@@ -144,24 +114,10 @@ build-omni: download-omni-deps ## Build termite with ONNX + XLA backends (omni).
 	export DYLD_LIBRARY_PATH=$(ONNXRUNTIME_ROOT)/$(PLATFORM)/lib:$$DYLD_LIBRARY_PATH && \
 	$(GO) build -tags="onnx,ORT,xla,XLA,coreml" -o termite ./pkg/termite/cmd
 
-.PHONY: run-operator
-run-operator: generate fmt vet ## Run the operator locally.
-	$(GO) run ./pkg/operator/cmd/termite-operator
-
 ##@ Docker
 
 .PHONY: docker-build
-docker-build: docker-build-operator docker-build-proxy docker-build-termite ## Build all docker images.
-
-.PHONY: docker-build-operator
-docker-build-operator: ## Build operator docker image.
-	@echo "Building operator Docker image..."
-	docker build -f Dockerfile.operator -t ${OPERATOR_IMG} .
-
-.PHONY: docker-build-proxy
-docker-build-proxy: ## Build proxy docker image.
-	@echo "Building proxy Docker image..."
-	docker build -f Dockerfile.proxy -t ${PROXY_IMG} .
+docker-build: docker-build-termite ## Build all docker images.
 
 .PHONY: docker-build-termite
 docker-build-termite: ## Build termite docker image.
@@ -169,36 +125,12 @@ docker-build-termite: ## Build termite docker image.
 	docker build -f Dockerfile.termite -t ${TERMITE_IMG} .
 
 .PHONY: docker-push
-docker-push: docker-push-operator docker-push-proxy docker-push-termite ## Push all docker images.
-
-.PHONY: docker-push-operator
-docker-push-operator: ## Push operator docker image.
-	@echo "Pushing operator Docker image..."
-	docker push ${OPERATOR_IMG}
-
-.PHONY: docker-push-proxy
-docker-push-proxy: ## Push proxy docker image.
-	@echo "Pushing proxy Docker image..."
-	docker push ${PROXY_IMG}
+docker-push: docker-push-termite ## Push all docker images.
 
 .PHONY: docker-push-termite
 docker-push-termite: ## Push termite docker image.
 	@echo "Pushing termite Docker image..."
 	docker push ${TERMITE_IMG}
-
-##@ Multi-arch Docker (for release)
-
-.PHONY: docker-buildx-operator
-docker-buildx-operator: ## Build and push multi-arch operator image.
-	@echo "Building multi-arch operator image..."
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		-f Dockerfile.operator -t ${OPERATOR_IMG} --push .
-
-.PHONY: docker-buildx-proxy
-docker-buildx-proxy: ## Build and push multi-arch proxy image.
-	@echo "Building multi-arch proxy image..."
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		-f Dockerfile.proxy -t ${PROXY_IMG} --push .
 
 ##@ Deployment
 
@@ -274,23 +206,7 @@ kind-delete: ## Delete the local kind cluster.
 	@echo "Deleting kind cluster..."
 	kind delete cluster --name termite-test
 
-.PHONY: kind-deploy
-kind-deploy: docker-build-operator kind-load deploy ## Build, load to kind, and deploy.
-	@echo "Deployed to kind cluster"
-
-.PHONY: kind-load
-kind-load: ## Load operator image into kind cluster.
-	@echo "Loading image into kind cluster..."
-	kind load docker-image ${OPERATOR_IMG} --name termite-test
-
 ##@ GKE TPU Development
-
-.PHONY: gke-deploy
-gke-deploy: deploy deploy-samples ## Deploy operator and sample pools to GKE.
-	@echo "Deployed to GKE cluster"
-	@echo ""
-	@echo "Monitor pools:"
-	@echo "  kubectl get termitepools -n termite-operator-namespace --watch"
 
 .PHONY: gke-logs
 gke-logs: ## View operator logs on GKE.
