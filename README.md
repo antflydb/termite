@@ -1,5 +1,8 @@
 # Termite
 
+> [!IMPORTANT]
+> **This repository is archived.** Termite is no longer a standalone service. It is now Antfly Inference, which runs inside the Antfly process. See the [Antfly Inference docs](https://antfly.io/inference) and the source in [`zig/pkg/inference`](https://github.com/antflydb/antfly/tree/main/zig/pkg/inference).
+
 [![Build status](https://github.com/antflydb/termite/actions/workflows/termite-go.yml/badge.svg)](https://github.com/antflydb/termite/actions)
 [![Docs](https://img.shields.io/badge/docs-antfly.io-blue)](https://antfly.io/termite)
 
